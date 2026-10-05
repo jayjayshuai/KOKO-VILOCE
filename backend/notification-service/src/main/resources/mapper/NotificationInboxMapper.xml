@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.notification.infrastructure.persistence.NotificationInboxMapper">
+    <insert id="insertIdempotent">
+        INSERT IGNORE INTO notification_inbox
+        (id, event_id, recipient_id, actor_id, event_type, resource_id, summary)
+        VALUES (#{id}, #{eventId}, #{recipientId}, #{actorId}, #{eventType}, #{resourceId}, #{summary})
+    </insert>
+    <select id="selectPageForUser" resultType="cn.kokonexus.notification.domain.NotificationInbox">
+        SELECT id, event_id, recipient_id, actor_id, event_type, resource_id, summary, created_at, read_at
+        FROM notification_inbox WHERE recipient_id = #{userId}
+        ORDER BY created_at DESC, id DESC LIMIT #{size} OFFSET #{offset}
+    </select>
+    <select id="countForUser" resultType="long">
+        SELECT COUNT(*) FROM notification_inbox WHERE recipient_id = #{userId}
+    </select>
+    <update id="markRead">
+        UPDATE notification_inbox SET read_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{notificationId} AND recipient_id = #{userId} AND read_at IS NULL
+    </update>
+    <select id="existsForUser" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM notification_inbox
+                      WHERE id = #{notificationId} AND recipient_id = #{userId})
+    </select>
+</mapper>

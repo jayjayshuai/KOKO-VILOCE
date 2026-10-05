@@ -1,0 +1,53 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: koko-nexus-voice
+  datasource:
+    url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_voice?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${DATABASE_USER:koko_nexus}
+    password: ${DATABASE_PASSWORD:}
+  cloud.nacos.discovery:
+    server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    namespace: ${NACOS_NAMESPACE:}
+    # HTTP 实例不得与同名 Dubbo 应用实例混入同一发现列表。
+    group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
+  flyway:
+    enabled: true
+    validate-migration-naming: true
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+dubbo:
+  application:
+    name: koko-nexus-voice
+    qos-enable: false
+  registry:
+    address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
+    parameters:
+      namespace: ${NACOS_NAMESPACE:}
+  consumer:
+    check: false
+    timeout: 10000
+    retries: 0
+
+livekit:
+  api-url: ${LIVEKIT_API_URL:http://localhost:7880}
+  public-url: ${LIVEKIT_PUBLIC_URL:ws://localhost:7880}
+  api-key: ${LIVEKIT_API_KEY:}
+  api-secret: ${LIVEKIT_API_SECRET:}
+
+koko.voice.gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
+
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.show-details: never

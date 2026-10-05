@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.live.infrastructure.persistence.LiveStreamMapper">
+    <!-- 状态和归属在同一条 SQL 中校验，避免读取后被并发请求覆盖。 -->
+    <update id="transitionStatus">
+        UPDATE live_stream
+        SET status = #{targetStatus},
+            version = version + 1,
+            started_at = CASE WHEN #{targetStatus} = 'LIVE' THEN CURRENT_TIMESTAMP(6) ELSE started_at END,
+            ended_at = CASE WHEN #{targetStatus} = 'ENDED' THEN CURRENT_TIMESTAMP(6) ELSE ended_at END
+        WHERE id = #{streamId}
+          AND creator_id = #{creatorId}
+          AND status = #{expectedStatus}
+    </update>
+</mapper>

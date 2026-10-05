@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.community.infrastructure.persistence.PostFavoriteMapper">
+    <insert id="insertFavorite">
+        INSERT IGNORE INTO creator_post_favorite (post_id, user_id) VALUES (#{postId}, #{userId})
+    </insert>
+    <delete id="deleteFavorite">
+        DELETE FROM creator_post_favorite WHERE post_id = #{postId} AND user_id = #{userId}
+    </delete>
+    <select id="hasFavorite" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM creator_post_favorite WHERE post_id = #{postId} AND user_id = #{userId})
+    </select>
+    <update id="incrementFavoriteCount">
+        UPDATE creator_post SET favorite_count = favorite_count + 1
+        WHERE id = #{postId} AND status = 'PUBLISHED'
+    </update>
+    <update id="decrementFavoriteCount">
+        UPDATE creator_post SET favorite_count = GREATEST(favorite_count - 1, 0) WHERE id = #{postId}
+    </update>
+    <select id="selectFavoritePosts" resultType="cn.kokonexus.community.domain.CreatorPost">
+        SELECT p.id, p.owner_id, p.slug, p.title, p.excerpt, p.cover_url, p.kind, p.status, p.version,
+               p.like_count, p.comment_count, p.favorite_count, p.published_at, p.created_at, p.updated_at
+        FROM creator_post_favorite f
+        INNER JOIN creator_post p ON p.id = f.post_id
+        WHERE f.user_id = #{userId} AND p.status = 'PUBLISHED'
+        ORDER BY f.created_at DESC, p.id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+    <select id="countFavoritePosts" resultType="long">
+        SELECT COUNT(*)
+        FROM creator_post_favorite f
+        INNER JOIN creator_post p ON p.id = f.post_id
+        WHERE f.user_id = #{userId} AND p.status = 'PUBLISHED'
+    </select>
+</mapper>

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.community.infrastructure.persistence.CreatorPostCommentMapper">
+    <select id="selectActiveByPostSlug" resultType="cn.kokonexus.community.domain.CreatorPostComment">
+        SELECT c.id, c.post_id, c.user_id, c.body, c.status, c.version, c.created_at, c.updated_at
+        FROM creator_post_comment c
+        INNER JOIN creator_post p ON p.id = c.post_id
+        WHERE p.slug = #{slug} AND p.status = 'PUBLISHED' AND c.status = 'ACTIVE'
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectActivePageByPostSlug" resultType="cn.kokonexus.community.domain.CreatorPostComment">
+        SELECT c.id, c.post_id, c.user_id, c.body, c.status, c.version, c.created_at, c.updated_at
+        FROM creator_post_comment c
+        INNER JOIN creator_post p ON p.id = c.post_id
+        WHERE p.slug = #{slug} AND p.status = 'PUBLISHED' AND c.status = 'ACTIVE'
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countActiveByPostSlug" resultType="long">
+        SELECT COUNT(*) FROM creator_post_comment c
+        INNER JOIN creator_post p ON p.id = c.post_id
+        WHERE p.slug = #{slug} AND p.status = 'PUBLISHED' AND c.status = 'ACTIVE'
+    </select>
+
+    <update id="archiveAuthorized">
+        UPDATE creator_post_comment c
+        INNER JOIN creator_post p ON p.id = c.post_id
+        SET c.status = 'DELETED', c.version = c.version + 1, c.updated_at = CURRENT_TIMESTAMP(6)
+        WHERE c.id = #{id} AND c.post_id = #{postId} AND c.status = 'ACTIVE'
+          AND c.version = #{expectedVersion}
+          AND (c.user_id = #{actorId} OR p.owner_id = #{actorId})
+    </update>
+</mapper>

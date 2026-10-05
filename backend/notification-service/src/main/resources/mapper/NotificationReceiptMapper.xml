@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.notification.infrastructure.persistence.NotificationReceiptMapper">
+    <insert id="claim">
+        INSERT IGNORE INTO notification_event_receipt (event_id, recipient_id, disposition)
+        VALUES (#{eventId}, #{recipientId}, 'PROCESSING')
+    </insert>
+    <update id="setDisposition">
+        UPDATE notification_event_receipt SET disposition = #{disposition}
+        WHERE event_id = #{eventId} AND recipient_id = #{recipientId}
+          AND disposition = 'PROCESSING'
+    </update>
+</mapper>

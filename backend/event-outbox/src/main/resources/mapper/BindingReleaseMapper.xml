@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.outbox.persistence.BindingReleaseMapper">
+  <update id="exhaustExpired">
+    UPDATE asset_binding_release SET status='DEAD', lease_token=NULL, lease_until=NULL,
+      last_failure='lease-exhausted', updated_at=CURRENT_TIMESTAMP(6)
+    WHERE status='LEASED' AND lease_until &lt;= CURRENT_TIMESTAMP(6) AND generation_attempts &gt;= 10
+    ORDER BY lease_until, request_id LIMIT 100
+  </update>
+  <update id="claim">
+    UPDATE asset_binding_release SET status='LEASED', lease_token=#{token},
+      lease_until=TIMESTAMPADD(SECOND,60,CURRENT_TIMESTAMP(6)), attempts=attempts+1, generation_attempts=generation_attempts+1,
+      updated_at=CURRENT_TIMESTAMP(6)
+    WHERE generation_attempts &lt; 10 AND attempts &lt; 110 AND ((status='PENDING' AND next_attempt_at &lt;= CURRENT_TIMESTAMP(6))
+      OR (status='LEASED' AND lease_until &lt;= CURRENT_TIMESTAMP(6)))
+    ORDER BY created_at, request_id LIMIT 4
+  </update>
+  <select id="claimed" resultType="cn.kokonexus.outbox.binding.BindingRelease">
+    SELECT * FROM asset_binding_release WHERE status='LEASED' AND lease_token=#{token}
+    ORDER BY created_at, request_id LIMIT 4
+  </select>
+  <update id="sent">
+    UPDATE asset_binding_release SET status='SENT', lease_token=NULL, lease_until=NULL,
+      last_failure=NULL, updated_at=CURRENT_TIMESTAMP(6)
+    WHERE request_id=#{requestId} AND status='LEASED' AND lease_token=#{token}
+      AND lease_until &gt; CURRENT_TIMESTAMP(6)
+  </update>
+  <update id="failed">
+    UPDATE asset_binding_release SET status=<choose><when test="dead">'DEAD'</when><otherwise
+      >'PENDING'</otherwise></choose>,
+      lease_token=NULL, lease_until=NULL, last_failure='release-unconfirmed',
+      next_attempt_at=TIMESTAMPADD(SECOND,#{delaySeconds},CURRENT_TIMESTAMP(6)), updated_at=CURRENT_TIMESTAMP(6)
+    WHERE request_id=#{requestId} AND status='LEASED' AND lease_token=#{token}
+      AND lease_until &gt; CURRENT_TIMESTAMP(6)
+  </update>
+</mapper>

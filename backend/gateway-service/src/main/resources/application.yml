@@ -1,0 +1,118 @@
+server:
+  port: 8080
+springdoc.api-docs.path: /api/docs/gateway/v3/api-docs
+koko.public-api-base: ${KOKO_PUBLIC_API_BASE:/api}
+koko.operations.enabled: ${OPERATIONS_ENABLED:false}
+# 同步 Sa-Token/Redis 会话访问使用有界专用池；等待数是每线程上限。
+koko.gateway.authentication.workers: ${GATEWAY_AUTH_WORKERS:4}
+koko.gateway.authentication.queued-tasks-per-thread: ${GATEWAY_AUTH_QUEUED_TASKS_PER_THREAD:64}
+
+spring:
+  application:
+    name: koko-nexus-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+        namespace: ${NACOS_NAMESPACE:}
+        # HTTP 发现与 Dubbo 应用实例分组隔离，避免 lb 路由选择 Triple 端口。
+        group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: chat-websocket-service
+              uri: ${CHAT_WS_SERVICE_URI:ws://localhost:8097}
+              predicates: [Path=/api/chat/ws]
+            - id: chat-service
+              uri: ${CHAT_SERVICE_URI:lb://koko-nexus-chat}
+              predicates: [Path=/api/chat/**]
+            - id: community-docs
+              uri: ${COMMUNITY_SERVICE_URI:lb://koko-nexus-community}
+              predicates: [Path=/api/docs/community/v3/api-docs, Method=GET]
+              filters: [SetPath=/v3/api-docs]
+            - id: live-docs
+              uri: ${LIVE_SERVICE_URI:lb://koko-nexus-live}
+              predicates: [Path=/api/docs/live/v3/api-docs, Method=GET]
+              filters: [SetPath=/v3/api-docs]
+            - id: voice-docs
+              uri: ${VOICE_SERVICE_URI:lb://koko-nexus-voice}
+              predicates: [Path=/api/docs/voice/v3/api-docs, Method=GET]
+              filters: [SetPath=/v3/api-docs]
+            - id: notification-docs
+              uri: ${NOTIFICATION_SERVICE_URI:lb://koko-nexus-notification}
+              predicates: [Path=/api/docs/notification/v3/api-docs, Method=GET]
+              filters: [SetPath=/v3/api-docs]
+            - id: asset-docs
+              uri: ${ASSET_SERVICE_URI:lb://koko-nexus-asset}
+              predicates: [Path=/api/docs/asset/v3/api-docs, Method=GET]
+              filters: [SetPath=/v3/api-docs]
+            - id: community-service
+              uri: ${COMMUNITY_SERVICE_URI:lb://koko-nexus-community}
+              predicates:
+                - Path=/api/communities/**,/api/content/**,/api/discovery/**
+            - id: live-service
+              uri: ${LIVE_SERVICE_URI:lb://koko-nexus-live}
+              predicates:
+                - Path=/api/live/**
+            - id: voice-service
+              uri: ${VOICE_SERVICE_URI:lb://koko-nexus-voice}
+              predicates:
+                - Path=/api/voice/**
+            - id: notification-service
+              uri: ${NOTIFICATION_SERVICE_URI:lb://koko-nexus-notification}
+              predicates:
+                - Path=/api/notifications/**
+            - id: asset-service
+              uri: ${ASSET_SERVICE_URI:lb://koko-nexus-asset}
+              predicates:
+                - Path=/api/assets/**
+          default-filters:
+            - AddResponseHeader=X-Content-Type-Options,nosniff
+            - AddResponseHeader=Referrer-Policy,strict-origin-when-cross-origin
+
+dubbo:
+  application:
+    name: koko-nexus-gateway
+    qos-enable: false
+  registry:
+    address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
+    parameters:
+      namespace: ${NACOS_NAMESPACE:}
+  consumer:
+    check: false
+    timeout: 10000
+    retries: 0
+
+sa-token:
+  token-name: koko-nexus-token
+  is-read-header: true
+  is-read-cookie: true
+  is-read-body: false
+  timeout: 604800
+  active-timeout: 1800
+  is-concurrent: true
+  is-share: false
+
+koko.gateway.internal-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never

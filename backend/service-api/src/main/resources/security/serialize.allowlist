@@ -1,0 +1,26 @@
+# 仅允许平台已声明的运营 RPC 契约。保持 Dubbo STRICT 与 Serializable 检查，不开放任意包。
+cn.kokonexus.api.operations.OperationsAccess
+cn.kokonexus.api.operations.OperationsRoleChangeCommand
+cn.kokonexus.api.operations.OperationsRoleChangeReceipt
+cn.kokonexus.api.operations.OutboxAuditPage
+cn.kokonexus.api.operations.OutboxAuditView
+cn.kokonexus.api.operations.OutboxDeadPage
+cn.kokonexus.api.operations.OutboxEventCursor
+cn.kokonexus.api.operations.BindingReleaseView
+cn.kokonexus.api.operations.BindingReleaseCursor
+cn.kokonexus.api.operations.BindingReleasePage
+cn.kokonexus.api.operations.BindingReleaseSnapshot
+cn.kokonexus.api.operations.BindingReleaseReplayCommand
+cn.kokonexus.api.operations.BindingReleaseReplayReceipt
+cn.kokonexus.api.operations.BindingReleaseAuditView
+cn.kokonexus.api.operations.BindingReleaseAuditPage
+cn.kokonexus.api.operations.OutboxEventView
+cn.kokonexus.api.operations.OutboxReplayCommand
+cn.kokonexus.api.operations.OutboxReplayReceipt
+cn.kokonexus.api.operations.ReplayConfirmation
+cn.kokonexus.api.operations.OperationsAccessDeniedException
+cn.kokonexus.api.operations.OperationsNotFoundException
+cn.kokonexus.api.operations.OperationsRateLimitedException
+cn.kokonexus.api.operations.OperationsUnavailableException
+cn.kokonexus.api.operations.BindingAttemptView
+cn.kokonexus.api.operations.BindingAttemptPage

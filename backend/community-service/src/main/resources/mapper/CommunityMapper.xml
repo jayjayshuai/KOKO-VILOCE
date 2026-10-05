@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.community.infrastructure.persistence.CommunityMapper">
+    <select
+    id="lock"
+    resultType="cn.kokonexus.community.domain.Community"
+    timeout="2"
+    useCache="false"
+    flushCache="true"
+  >
+        SELECT * FROM community WHERE id = #{id} FOR UPDATE
+    </select>
+    <update id="changeMembers">
+        UPDATE community SET member_count = member_count + #{delta},
+            version = version + 1, updated_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id} AND status = 'ACTIVE'
+          AND #{delta} IN (-1, 1) AND member_count + #{delta} BETWEEN 1 AND 1000
+    </update>
+    <select id="joined" resultType="cn.kokonexus.community.domain.Community" timeout="2">
+        SELECT c.* FROM community_member m JOIN community c ON c.id = m.community_id
+        WHERE m.user_id = #{userId} AND c.status = 'ACTIVE'
+        <if test="before != null">AND c.id &lt; #{before}</if>
+        ORDER BY c.id DESC LIMIT #{size}
+    </select>
+    <update id="updateOwned">
+        UPDATE community
+        SET name = #{name},
+            description = #{description},
+            badge = #{badge},
+            visibility = #{visibility},
+            version = version + 1,
+            updated_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id}
+          AND owner_id = #{ownerId}
+          AND status = 'ACTIVE'
+          AND version = #{expectedVersion}
+    </update>
+
+    <update id="archiveOwned">
+        UPDATE community
+        SET status = 'ARCHIVED',
+            visibility = 'PRIVATE',
+            version = version + 1,
+            updated_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id}
+          AND owner_id = #{ownerId}
+          AND status = 'ACTIVE'
+          AND version = #{expectedVersion}
+    </update>
+</mapper>

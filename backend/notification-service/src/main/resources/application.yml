@@ -1,0 +1,42 @@
+server.port: 8085
+spring:
+  application.name: koko-nexus-notification
+  datasource:
+    url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_notification?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${DATABASE_USER:koko}
+    password: ${DATABASE_PASSWORD:koko_local_only}
+  flyway.table: notification_flyway_schema_history
+  cloud.nacos.discovery:
+    server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    namespace: ${NACOS_NAMESPACE:}
+    # HTTP 实例不得与同名 Dubbo 应用实例混入同一发现列表。
+    group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration.map-underscore-to-camel-case: true
+dubbo:
+  application:
+    name: koko-nexus-notification
+    qos-enable: false
+  registry:
+    address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
+    parameters:
+      namespace: ${NACOS_NAMESPACE:}
+  consumer:
+    check: false
+    timeout: 10000
+    retries: 0
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.show-details: never
+  endpoint.health.probes.enabled: true
+koko.notification.consumer:
+  enabled: ${NOTIFICATION_CONSUMER_ENABLED:false}
+  nameserver: ${ROCKETMQ_NAMESERVER:localhost:9876}
+  topic: ${ROCKETMQ_NOTIFICATION_TOPIC:koko_nexus_notifications}
+  group: ${ROCKETMQ_NOTIFICATION_GROUP:koko_nexus_notification_inbox}

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.OperationsRoleMapper">
+    <!-- 运营日期均为 Asia/Shanghai，不修改共用服务器或数据库的时区。 -->
+    <sql id="operationsNow">DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)</sql>
+    <select id="lockGuard" resultType="int">SELECT id FROM ops_authority_guard WHERE id=1 FOR UPDATE</select>
+    <select id="lockUser" resultType="cn.kokonexus.identity.domain.UserAccount" flushCache="true" useCache="false">
+        SELECT id,status,operations_version FROM identity_user WHERE id=#{userId} FOR UPDATE
+    </select>
+    <select
+    id="findAssignment"
+    resultType="cn.kokonexus.identity.domain.OperationsRoleAssignment"
+    flushCache="true"
+    useCache="false"
+  >
+        SELECT user_id,role_code,status,version,expires_at FROM ops_user_role WHERE user_id=#{userId} AND role_code=#{roleCode}
+    </select>
+    <select
+    id="findAudit"
+    resultType="cn.kokonexus.identity.domain.OperationsRoleAudit"
+    flushCache="true"
+    useCache="false"
+  >
+        SELECT request_id,operator_id,source,user_id,role_code,expected_version,accepted_version,previous_status,
+               accepted_status,previous_expires_at,expires_at,reason,created_at
+        FROM ops_role_change_audit WHERE request_id=#{requestId}
+    </select>
+    <select id="validFutureExpiry" resultType="int">
+        SELECT COUNT(*) WHERE #{expiresAt} &gt; <include refid="operationsNow" />
+            AND #{expiresAt} &lt;= DATE_ADD(<include refid="operationsNow" />,INTERVAL 1 YEAR)
+    </select>
+    <select
+    id="enabledRole"
+    resultType="int"
+  >SELECT COUNT(*) FROM ops_role WHERE code=#{roleCode} AND enabled=TRUE</select>
+    <insert id="insertAssignment">
+        INSERT INTO ops_user_role(user_id,role_code,status,version,expires_at)
+        VALUES(#{userId},#{roleCode},#{status},#{version},#{expiresAt})
+    </insert>
+    <update id="updateAssignment">
+        UPDATE ops_user_role SET status=#{assignment.status}, version=#{assignment.version}, expires_at=#{assignment.expiresAt}
+        WHERE user_id=#{assignment.userId} AND role_code=#{assignment.roleCode} AND version=#{expectedVersion}
+    </update>
+    <update id="advanceAuthorityVersion">
+        UPDATE identity_user SET operations_version=operations_version+1 WHERE id=#{userId} AND operations_version=#{version}
+    </update>
+    <insert id="insertAudit">
+        INSERT INTO ops_role_change_audit(request_id,operator_id,source,user_id,role_code,expected_version,
+            accepted_version,previous_status,accepted_status,previous_expires_at,expires_at,reason,created_at)
+        VALUES(#{requestId},#{operatorId},#{source},#{userId},#{roleCode},#{expectedVersion},#{acceptedVersion},
+            #{previousStatus},#{acceptedStatus},#{previousExpiresAt},#{expiresAt},#{reason},<include
+      refid="operationsNow"
+    />)
+    </insert>
+</mapper>

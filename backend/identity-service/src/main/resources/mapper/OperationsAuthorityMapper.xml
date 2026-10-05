@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.OperationsAuthorityMapper">
+    <!-- 新运营 DATETIME 明确为上海时间，不依赖共用 MySQL 的 SYSTEM/UTC 时区。 -->
+    <sql id="operationsNow">DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)</sql>
+    <sql id="activeAssignments">
+        FROM ops_user_role ur JOIN ops_role r ON r.code=ur.role_code
+        JOIN identity_user u ON u.id=ur.user_id
+        WHERE ur.user_id=#{userId} AND u.status='ACTIVE' AND r.enabled=TRUE AND ur.status='ACTIVE'
+          AND (ur.expires_at IS NULL OR ur.expires_at &gt; <include refid="operationsNow" />)
+    </sql>
+    <select id="activeUser" resultType="cn.kokonexus.identity.domain.UserAccount" useCache="false" flushCache="true">
+        SELECT id,status,password_hash,operations_version FROM identity_user WHERE id=#{userId} AND status='ACTIVE'
+    </select>
+    <select id="roles" resultType="string" useCache="false" flushCache="true">
+        SELECT ur.role_code <include refid="activeAssignments" /> ORDER BY ur.role_code
+    </select>
+    <select id="permissions" resultType="string" useCache="false" flushCache="true">
+        SELECT DISTINCT p.permission_code
+        FROM ops_user_role ur JOIN ops_role r ON r.code=ur.role_code
+        JOIN ops_role_permission p ON p.role_code=r.code JOIN identity_user u ON u.id=ur.user_id
+        WHERE ur.user_id=#{userId} AND u.status='ACTIVE' AND r.enabled=TRUE AND ur.status='ACTIVE'
+          AND (ur.expires_at IS NULL OR ur.expires_at &gt; <include refid="operationsNow" />)
+        ORDER BY p.permission_code
+    </select>
+    <select id="lockActiveUser" resultType="long">
+        SELECT id FROM identity_user WHERE id=#{userId} AND status='ACTIVE' FOR UPDATE
+    </select>
+    <select id="recentLimitReached" resultType="int">
+        SELECT COUNT(*) FROM ops_confirmation_rate
+        WHERE user_id=#{userId} AND window_started_at &gt; DATE_SUB(<include refid="operationsNow" />,INTERVAL 1 MINUTE)
+          AND attempts &gt;= 5
+    </select>
+    <insert id="consumeAttempt">
+        INSERT INTO ops_confirmation_rate(user_id,window_started_at,attempts)
+        VALUES(#{userId},<include refid="operationsNow" />,1)
+        ON DUPLICATE KEY UPDATE
+            attempts=IF(window_started_at &lt;= DATE_SUB(<include
+      refid="operationsNow"
+    />,INTERVAL 1 MINUTE),1,attempts+1),
+            window_started_at=IF(window_started_at &lt;= DATE_SUB(<include refid="operationsNow" />,INTERVAL 1 MINUTE),
+                <include refid="operationsNow" />,window_started_at)
+    </insert>
+    <insert id="insertConfirmation">
+        INSERT INTO ops_replay_confirmation
+            (token_hash,user_id,session_hash,command_hash,authority_version,credential_fingerprint,created_at,expires_at)
+        VALUES(#{tokenHash},#{userId},#{sessionHash},#{commandHash},#{authorityVersion},#{credentialFingerprint},
+               <include refid="operationsNow" />,DATE_ADD(<include refid="operationsNow" />,INTERVAL 5 MINUTE))
+    </insert>
+    <select
+    id="findConfirmation"
+    resultType="cn.kokonexus.identity.domain.ReplayConfirmationEntity"
+    useCache="false"
+    flushCache="true"
+  >
+        SELECT token_hash,user_id,session_hash,command_hash,authority_version,credential_fingerprint,expires_at
+        FROM ops_replay_confirmation WHERE token_hash=#{tokenHash} AND expires_at &gt; <include refid="operationsNow" />
+    </select>
+    <delete id="deleteExpiredConfirmations">
+        DELETE FROM ops_replay_confirmation WHERE expires_at &lt;= <include refid="operationsNow" />
+        ORDER BY expires_at, token_hash LIMIT #{limit}
+    </delete>
+</mapper>

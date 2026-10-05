@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.BindingReleaseConfirmationMapper">
+ <!-- 身份运营凭据沿用显式上海时间，业务任务 DATETIME 原值仍独立，不改共享时区。 -->
+ <sql id="now">DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)</sql>
+ <insert id="insert">
+  INSERT INTO ops_binding_release_confirmation
+   (token_hash,user_id,session_hash,command_hash,authority_version,credential_fingerprint,created_at,expires_at)
+  VALUES(#{tokenHash},#{userId},#{sessionHash},#{commandHash},#{authorityVersion},#{credentialFingerprint},
+   <include refid="now" />,DATE_ADD(<include refid="now" />,INTERVAL 5 MINUTE))
+ </insert>
+ <select
+    id="find"
+    resultType="cn.kokonexus.identity.domain.ReplayConfirmationEntity"
+    useCache="false"
+    flushCache="true"
+  >
+  SELECT token_hash,user_id,session_hash,command_hash,authority_version,credential_fingerprint,expires_at
+  FROM ops_binding_release_confirmation WHERE token_hash=#{tokenHash} AND expires_at &gt; <include refid="now" />
+ </select>
+ <delete id="deleteExpired">
+  DELETE FROM ops_binding_release_confirmation WHERE expires_at &lt;= <include refid="now" />
+  ORDER BY expires_at,token_hash LIMIT #{limit}
+ </delete>
+</mapper>

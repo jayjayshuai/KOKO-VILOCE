@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.OperationsBootstrapMapper">
+    <select id="databaseName" resultType="string" useCache="false" flushCache="true">SELECT DATABASE()</select>
+    <select id="databaseServerId" resultType="string" useCache="false" flushCache="true">SELECT @@server_uuid</select>
+    <!-- 主用例取得 guard/账号行锁后刷新当前标识，不读取密码摘要。 -->
+    <select id="inspectUser" resultType="cn.kokonexus.identity.domain.UserAccount" useCache="false" flushCache="true">
+        SELECT id,status,handle,operations_version FROM identity_user WHERE id=#{userId}
+    </select>
+    <!-- 已撤销/过期的历史也阻止再次自举；恢复需要独立审批流程，不能删历史后自动重建。 -->
+    <select id="hasAuthorityHistory" resultType="int" useCache="false" flushCache="true">
+        SELECT EXISTS(SELECT 1 FROM ops_user_role LIMIT 1)
+            OR EXISTS(SELECT 1 FROM ops_role_change_audit LIMIT 1)
+            OR EXISTS(SELECT 1 FROM ops_bootstrap_approval LIMIT 1)
+    </select>
+    <select id="validExpiry" resultType="int" useCache="false" flushCache="true">
+        SELECT COUNT(*) WHERE #{expiresAt} &gt; DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)
+            AND #{expiresAt} &lt;= DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY)+INTERVAL 8 HOUR
+    </select>
+    <select
+    id="findApproval"
+    resultType="cn.kokonexus.identity.domain.OperationsBootstrapApproval"
+    useCache="false"
+    flushCache="true"
+  >
+        SELECT request_id,command_hash,approved_handle FROM ops_bootstrap_approval WHERE request_id=#{requestId}
+    </select>
+    <insert id="insertApproval">
+        INSERT INTO ops_bootstrap_approval(id,request_id,command_hash,approved_handle,created_at)
+        VALUES(1,#{requestId},#{commandHash},#{approvedHandle},DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR))
+    </insert>
+</mapper>

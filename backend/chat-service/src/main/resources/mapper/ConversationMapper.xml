@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.chat.persistence.ConversationMapper">
+    <select id="lock" resultType="cn.kokonexus.chat.domain.Conversation">
+        SELECT * FROM chat_conversation WHERE id = #{id} FOR UPDATE
+    </select>
+    <select id="listMine" resultType="cn.kokonexus.chat.domain.Conversation">
+        SELECT c.* FROM chat_conversation c JOIN chat_member m ON m.conversation_id = c.id
+        WHERE m.user_id = #{userId} AND c.status = 'ACTIVE'
+        <if test="after != null">AND c.id &gt; #{after}</if>
+        ORDER BY c.id LIMIT #{size}
+    </select>
+</mapper>

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.CreatorFollowMapper">
+    <insert id="insertFollow">
+        INSERT IGNORE INTO creator_follow (creator_id, follower_id)
+        SELECT p.user_id, u.id
+        FROM creator_profile p
+        INNER JOIN identity_user u ON u.id = #{followerId} AND u.status = 'ACTIVE'
+        WHERE p.user_id = #{creatorId} AND p.status = 'ACTIVE'
+    </insert>
+
+    <delete id="deleteFollow">
+        DELETE FROM creator_follow WHERE creator_id = #{creatorId} AND follower_id = #{followerId}
+    </delete>
+
+    <select id="hasFollow" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM creator_follow
+                      WHERE creator_id = #{creatorId} AND follower_id = #{followerId})
+    </select>
+
+    <update id="incrementFollowerCount">
+        UPDATE creator_profile SET follower_count = follower_count + 1 WHERE user_id = #{creatorId}
+    </update>
+
+    <update id="decrementFollowerCount">
+        UPDATE creator_profile SET follower_count = GREATEST(follower_count - 1, 0)
+        WHERE user_id = #{creatorId}
+    </update>
+
+    <select id="selectFollowedCreators" resultType="cn.kokonexus.identity.domain.CreatorProfileEntity">
+        SELECT p.user_id, p.slug, p.display_name, p.headline, p.bio, p.avatar_url, p.banner_url,
+               p.status, p.version, p.follower_count, p.created_at, p.updated_at
+        FROM creator_follow f
+        INNER JOIN creator_profile p ON p.user_id = f.creator_id
+        WHERE f.follower_id = #{followerId} AND p.status = 'ACTIVE'
+        ORDER BY f.created_at DESC, p.user_id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countFollowedCreators" resultType="long">
+        SELECT COUNT(*) FROM creator_follow f
+        INNER JOIN creator_profile p ON p.user_id = f.creator_id
+        WHERE f.follower_id = #{followerId} AND p.status = 'ACTIVE'
+    </select>
+
+    <select id="selectFollowerIdsAfter" resultType="long">
+        SELECT f.follower_id FROM creator_follow f
+        INNER JOIN identity_user u ON u.id = f.follower_id AND u.status = 'ACTIVE'
+        INNER JOIN creator_profile p ON p.user_id = f.creator_id AND p.status = 'ACTIVE'
+        WHERE f.creator_id = #{creatorId} AND f.follower_id &gt; #{afterId}
+        ORDER BY f.follower_id LIMIT #{size}
+    </select>
+</mapper>

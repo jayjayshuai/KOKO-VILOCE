@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.outbox.persistence.OutboxOperationsMapper">
+    <sql id="eventFields">
+        id,event_type,recipient_id,actor_id,resource_id,summary,status,attempts,total_attempts,
+        replay_generation,last_error,created_at,next_attempt_at,sent_at
+    </sql>
+    <!-- status/created_at/id 索引；同微秒按 UUID 补足排序，最多取 limit+1 判断下一页。 -->
+    <select
+    id="dead"
+    resultType="cn.kokonexus.outbox.operations.OutboxOperationsEvent"
+    useCache="false"
+    flushCache="true"
+  >
+        <!-- 隔离 EXPLAIN 证明优化器可选 ready 索引而 filesort；固定该页唯一排序索引保证顺序扫描。 -->
+        SELECT <include refid="eventFields" /> FROM outbox_event FORCE INDEX (idx_outbox_operations_dead)
+        WHERE status='DEAD'
+        <if test="cursor != null">
+            AND (created_at &lt; #{cursor.createdAt}
+                OR (created_at=#{cursor.createdAt} AND id &lt; #{cursor.eventId}))
+        </if>
+        ORDER BY created_at DESC,id DESC LIMIT #{limit}
+    </select>
+    <select
+    id="detail"
+    resultType="cn.kokonexus.outbox.operations.OutboxOperationsEvent"
+    useCache="false"
+    flushCache="true"
+  >
+        SELECT <include refid="eventFields" /> FROM outbox_event WHERE id=#{eventId}
+    </select>
+    <sql id="auditFields">
+        request_id,event_id,operator_id,expected_generation,accepted_generation,reason,
+        previous_attempts,total_attempts_snapshot,previous_error,created_at
+    </sql>
+    <select
+    id="receipt"
+    resultType="cn.kokonexus.outbox.operations.OutboxReplayAudit"
+    useCache="false"
+    flushCache="true"
+  >
+        SELECT <include refid="auditFields" /> FROM outbox_replay_audit
+        WHERE event_id=#{eventId} AND request_id=#{requestId}
+    </select>
+    <select
+    id="audits"
+    resultType="cn.kokonexus.outbox.operations.OutboxReplayAudit"
+    useCache="false"
+    flushCache="true"
+  >
+        SELECT <include refid="auditFields" />
+        FROM outbox_replay_audit WHERE event_id=#{eventId}
+        <if test="beforeGeneration != null">AND accepted_generation &lt; #{beforeGeneration}</if>
+        ORDER BY accepted_generation DESC LIMIT #{limit}
+    </select>
+</mapper>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.outbox.persistence.OutboxReplayMapper">
+    <select id="lockEvent" resultType="cn.kokonexus.outbox.operations.OutboxReplayState">
+        SELECT id, status, attempts, total_attempts, replay_generation, claim_token, lease_until, last_error
+        FROM outbox_event WHERE id = #{eventId} FOR UPDATE
+    </select>
+    <select id="findAudit" resultType="cn.kokonexus.outbox.operations.OutboxReplayAudit">
+        SELECT request_id, event_id, operator_id, expected_generation, accepted_generation, reason,
+               previous_attempts, total_attempts_snapshot, previous_error, created_at
+        FROM outbox_replay_audit WHERE request_id = #{requestId}
+    </select>
+    <update id="requeue">
+        UPDATE outbox_event
+        SET status = 'PENDING', attempts = 0, replay_generation = replay_generation + 1,
+            next_attempt_at = CURRENT_TIMESTAMP(6), last_error = NULL, sent_at = NULL
+        WHERE id = #{eventId} AND status = 'DEAD' AND replay_generation = #{expectedGeneration}
+          AND claim_token IS NULL AND lease_until IS NULL
+    </update>
+    <insert id="insertAudit">
+        INSERT INTO outbox_replay_audit
+            (request_id, event_id, operator_id, expected_generation, accepted_generation, reason,
+             previous_attempts, total_attempts_snapshot, previous_error)
+        VALUES
+            (#{requestId}, #{eventId}, #{operatorId}, #{expectedGeneration}, #{acceptedGeneration}, #{reason},
+             #{previousAttempts}, #{totalAttemptsSnapshot}, #{previousError})
+    </insert>
+</mapper>

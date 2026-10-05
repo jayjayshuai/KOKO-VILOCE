@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.outbox.persistence.BindingReleaseReadMapper">
+  <sql
+    id="safeColumns"
+  >request_id, asset_id, purpose, status, attempts, replay_generation, generation_attempts, last_failure, created_at, updated_at, next_attempt_at</sql>
+  <select id="dead" resultType="cn.kokonexus.outbox.binding.BindingRelease">
+    SELECT <include refid="safeColumns" /> FROM asset_binding_release FORCE INDEX (idx_binding_release_status_created)
+    WHERE status='DEAD'
+    <if test="cursor != null">
+      AND (created_at &lt; #{cursor.createdAt}
+        OR (created_at=#{cursor.createdAt} AND request_id &lt; #{cursor.requestId}))
+    </if>
+    ORDER BY created_at DESC, request_id DESC LIMIT #{limit}
+  </select>
+  <select id="detail" resultType="cn.kokonexus.outbox.binding.BindingRelease">
+    SELECT <include refid="safeColumns" /> FROM asset_binding_release WHERE request_id=#{requestId}
+  </select>
+  <select id="snapshot" resultType="cn.kokonexus.api.operations.BindingReleaseSnapshot">
+    SELECT
+      (SELECT COUNT(*) FROM (SELECT 1 FROM asset_binding_release FORCE INDEX (idx_binding_release_status_created)
+        WHERE status='PENDING' LIMIT 1001) p) AS pending,
+      (SELECT COUNT(*) FROM (SELECT 1 FROM asset_binding_release FORCE INDEX (idx_binding_release_status_created)
+        WHERE status='LEASED' LIMIT 1001) l) AS leased,
+      (SELECT COUNT(*) FROM (SELECT 1 FROM asset_binding_release FORCE INDEX (idx_binding_release_status_created)
+        WHERE status='DEAD' LIMIT 1001) d) AS dead,
+      1001 AS sample_limit,
+      COALESCE((SELECT GREATEST(0,TIMESTAMPDIFF(SECOND,created_at,CURRENT_TIMESTAMP(6)))
+        FROM asset_binding_release FORCE INDEX (idx_binding_release_status_created)
+        WHERE status='PENDING' ORDER BY created_at,request_id LIMIT 1),0) AS oldest_pending_age_seconds,
+      COALESCE((SELECT GREATEST(0,TIMESTAMPDIFF(SECOND,created_at,CURRENT_TIMESTAMP(6)))
+        FROM asset_binding_release FORCE INDEX (idx_binding_release_status_created)
+        WHERE status='DEAD' ORDER BY created_at,request_id LIMIT 1),0) AS oldest_dead_age_seconds,
+      CURRENT_TIMESTAMP(6) AS observed_at
+  </select>
+</mapper>

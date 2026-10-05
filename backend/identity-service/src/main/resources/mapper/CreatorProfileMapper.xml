@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.CreatorProfileMapper">
+    <update id="updateOwnedProfile">
+        UPDATE creator_profile
+        SET slug = #{profile.slug},
+            display_name = #{profile.displayName},
+            headline = #{profile.headline},
+            bio = #{profile.bio},
+            avatar_url = #{profile.avatarUrl},
+            avatar_asset_id = #{profile.avatarAssetId},
+            banner_url = #{profile.bannerUrl},
+            banner_asset_id = #{profile.bannerAssetId},
+            version = version + 1,
+            updated_at = CURRENT_TIMESTAMP(6)
+        WHERE user_id = #{profile.userId}
+          AND version = #{expectedVersion}
+          AND status IN ('DRAFT', 'ACTIVE')
+    </update>
+
+    <update id="publishOwnedProfile">
+        UPDATE creator_profile
+        SET status = 'ACTIVE', version = version + 1, updated_at = CURRENT_TIMESTAMP(6)
+        WHERE user_id = #{userId}
+          AND version = #{expectedVersion}
+          AND status = 'DRAFT'
+    </update>
+
+    <select id="selectPublishedBySlug" resultType="cn.kokonexus.identity.domain.CreatorProfileEntity">
+        SELECT user_id, slug, display_name, headline, bio, avatar_url, avatar_asset_id, banner_url, banner_asset_id,
+               status, version, follower_count, created_at, updated_at
+        FROM creator_profile
+        WHERE slug = #{slug} AND status = 'ACTIVE'
+    </select>
+
+    <select id="selectPublished" resultType="cn.kokonexus.identity.domain.CreatorProfileEntity">
+        SELECT user_id, slug, display_name, headline, bio, avatar_url, avatar_asset_id, banner_url, banner_asset_id,
+               status, version, follower_count, created_at, updated_at
+        FROM creator_profile
+        WHERE status = 'ACTIVE'
+        ORDER BY updated_at DESC, user_id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPublishedPage" resultType="cn.kokonexus.identity.domain.CreatorProfileEntity">
+        SELECT user_id, slug, display_name, headline, bio, avatar_url, avatar_asset_id, banner_url, banner_asset_id,
+               status, version, follower_count, created_at, updated_at
+        FROM creator_profile
+        WHERE status = 'ACTIVE'
+        ORDER BY updated_at DESC, user_id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countPublished" resultType="long">
+        SELECT COUNT(*) FROM creator_profile WHERE status = 'ACTIVE'
+    </select>
+
+    <select id="isPublishedAsset" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM creator_profile
+            WHERE status = 'ACTIVE'
+              AND (avatar_asset_id = #{assetId} OR banner_asset_id = #{assetId})
+            LIMIT 1
+        )
+    </select>
+    <!-- 两个 EXISTS 使用各自的资产 ID 前缀索引；停用资料的恢复引用也必须保留。 -->
+    <select id="hasAssetReference" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM creator_profile WHERE avatar_asset_id = #{assetId} LIMIT 1
+        ) OR EXISTS (
+            SELECT 1 FROM creator_profile WHERE banner_asset_id = #{assetId} LIMIT 1
+        )
+    </select>
+</mapper>

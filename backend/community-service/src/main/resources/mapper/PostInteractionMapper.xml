@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.community.infrastructure.persistence.PostInteractionMapper">
+    <insert id="insertLike">
+        INSERT IGNORE INTO creator_post_like (post_id, user_id) VALUES (#{postId}, #{userId})
+    </insert>
+    <delete id="deleteLike">
+        DELETE FROM creator_post_like WHERE post_id = #{postId} AND user_id = #{userId}
+    </delete>
+    <select id="hasLike" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM creator_post_like WHERE post_id = #{postId} AND user_id = #{userId})
+    </select>
+    <update id="incrementLikeCount">
+        UPDATE creator_post SET like_count = like_count + 1 WHERE id = #{postId} AND status = 'PUBLISHED'
+    </update>
+    <update id="decrementLikeCount">
+        UPDATE creator_post SET like_count = GREATEST(like_count - 1, 0) WHERE id = #{postId}
+    </update>
+    <update id="incrementCommentCount">
+        UPDATE creator_post SET comment_count = comment_count + 1 WHERE id = #{postId} AND status = 'PUBLISHED'
+    </update>
+    <update id="decrementCommentCount">
+        UPDATE creator_post SET comment_count = GREATEST(comment_count - 1, 0) WHERE id = #{postId}
+    </update>
+</mapper>

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<project
+  xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"
+>
+    <modelVersion>4.0.0</modelVersion>
+    <parent><groupId>cn.kokonexus</groupId><artifactId>koko-nexus-platform</artifactId><version
+    >0.1.0-SNAPSHOT</version></parent>
+    <artifactId>gateway-service</artifactId>
+    <name>KOKO Nexus Gateway Service</name>
+    <dependencies>
+        <dependency><groupId>org.springdoc</groupId><artifactId
+      >springdoc-openapi-starter-webflux-api</artifactId><version>${springdoc.version}</version></dependency>
+        <dependency><groupId>cn.kokonexus</groupId><artifactId>service-api</artifactId><version
+      >${project.version}</version></dependency>
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId
+      >spring-cloud-starter-gateway-server-webflux</artifactId></dependency>
+        <!-- lb:// 和 lb:ws:// 路由依赖实际负载均衡器，Nacos discovery 不自动提供该实现。 -->
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId
+      >spring-cloud-starter-loadbalancer</artifactId></dependency>
+        <dependency><groupId>com.alibaba.cloud</groupId><artifactId
+      >spring-cloud-starter-alibaba-nacos-discovery</artifactId></dependency>
+        <dependency><groupId>cn.dev33</groupId><artifactId>sa-token-reactor-spring-boot3-starter</artifactId><version
+      >${sa-token.version}</version></dependency>
+        <dependency><groupId>cn.dev33</groupId><artifactId>sa-token-redis-template</artifactId><version
+      >${sa-token.version}</version></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId
+      >spring-boot-starter-data-redis-reactive</artifactId></dependency>
+        <dependency><groupId>org.apache.dubbo</groupId><artifactId>dubbo-spring-boot-starter</artifactId><version
+      >${dubbo.version}</version></dependency>
+        <dependency><groupId>org.apache.dubbo</groupId><artifactId>dubbo-nacos-spring-boot-starter</artifactId><version
+      >${dubbo.version}</version></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId
+      >spring-boot-starter-validation</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId
+      >spring-boot-starter-actuator</artifactId></dependency>
+        <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-registry-prometheus</artifactId><scope
+      >runtime</scope></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope
+      >test</scope></dependency>
+    </dependencies>
+    <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId
+        >spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+</project>

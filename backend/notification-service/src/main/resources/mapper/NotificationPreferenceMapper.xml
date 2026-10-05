@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.notification.infrastructure.persistence.NotificationPreferenceMapper">
+    <select id="enabled" resultType="boolean">
+        SELECT enabled FROM notification_preference
+        WHERE user_id = #{userId} AND event_type = #{eventType}
+    </select>
+    <insert id="save">
+        INSERT INTO notification_preference (user_id, event_type, enabled)
+        VALUES (#{userId}, #{eventType}, #{enabled})
+        ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)
+    </insert>
+</mapper>

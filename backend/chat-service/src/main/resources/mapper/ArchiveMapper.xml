@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.chat.persistence.ArchiveMapper">
+    <!-- 会话/序号唯一索引限制扫描范围，用户输入不作为 SQL 或 LIKE 通配符。 -->
+    <select id="search" resultType="cn.kokonexus.chat.domain.ChatMessage" timeout="2">
+        SELECT /*+ MAX_EXECUTION_TIME(1000) */ * FROM chat_message
+        WHERE conversation_id = #{conversationId} AND seq &gt; #{floor} AND seq &lt; #{before}
+          AND body LIKE CONCAT('%', #{pattern}, '%') ESCAPE '='
+        ORDER BY seq DESC LIMIT #{size}
+    </select>
+    <select id="bookmarked" resultType="cn.kokonexus.chat.domain.ChatMessage" timeout="2">
+        SELECT m.* FROM chat_bookmark b JOIN chat_message m
+          ON m.id = b.message_id AND m.conversation_id = b.conversation_id AND m.seq = b.message_seq
+        WHERE b.owner_id = #{userId} AND b.conversation_id = #{conversationId}
+          AND b.message_seq &gt; #{joinedSeq} AND b.message_seq &lt; #{before}
+        ORDER BY b.message_seq DESC LIMIT #{size}
+    </select>
+</mapper>

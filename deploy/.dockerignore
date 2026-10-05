@@ -1,0 +1,9 @@
+# 白名单构建上下文：密钥、数据库备份和发布暂存文件不能进入构建器。
+**
+!Dockerfile.java
+!Dockerfile.web
+!nginx-web.conf
+!artifacts/
+!artifacts/*-service.jar
+!artifacts/web/
+!artifacts/web/**

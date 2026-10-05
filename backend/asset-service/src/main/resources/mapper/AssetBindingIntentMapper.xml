@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.asset.infrastructure.persistence.AssetBindingIntentMapper">
+  <select id="lockCompletion" resultType="cn.kokonexus.asset.domain.AssetBindingIntent">
+    SELECT request_id, asset_id, owner_id, purpose FROM asset_binding_completion
+    WHERE request_id = #{requestId} FOR UPDATE
+  </select>
+  <insert id="insertCompletion">
+    INSERT INTO asset_binding_completion(request_id, asset_id, owner_id, purpose)
+    VALUES(#{requestId}, #{assetId}, #{ownerId}, #{purpose})
+  </insert>
+  <select id="lockAsset" resultType="cn.kokonexus.asset.domain.MediaAsset">
+    SELECT * FROM media_asset WHERE id = #{assetId} FOR UPDATE
+  </select>
+  <delete id="deleteMatching">
+    DELETE FROM asset_binding_intent
+    WHERE request_id = #{requestId} AND asset_id = #{assetId}
+      AND owner_id = #{ownerId} AND purpose = #{purpose}
+  </delete>
+</mapper>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.chat.persistence.SafetyLockMapper">
+    <insert id="lockActor">
+        INSERT INTO chat_safety_actor_lock (user_id) VALUES (#{userId})
+        ON DUPLICATE KEY UPDATE user_id = user_id
+    </insert>
+    <insert id="lockPair">
+        INSERT INTO chat_contact_lock (low_id, high_id) VALUES (#{lowId}, #{highId})
+        ON DUPLICATE KEY UPDATE low_id = low_id
+    </insert>
+    <select id="blockedPair" resultType="java.lang.Integer">
+        SELECT (low_blocks_high OR high_blocks_low) FROM chat_contact_lock
+        WHERE low_id = #{lowId} AND high_id = #{highId} FOR UPDATE
+    </select>
+    <update id="setBlocking">
+        UPDATE chat_contact_lock SET
+        <choose>
+            <when test="ownerId == lowId">low_blocks_high = #{blocked}</when>
+            <otherwise>high_blocks_low = #{blocked}</otherwise>
+        </choose>
+        WHERE low_id = #{lowId} AND high_id = #{highId}
+    </update>
+    <select id="lockReport" resultType="cn.kokonexus.chat.domain.ChatReport">
+        SELECT * FROM chat_report WHERE id = #{id} FOR UPDATE
+    </select>
+    <update id="review">
+        UPDATE chat_report SET status = #{decision}, review_note = #{note}, reviewed_at = #{reviewedAt}, version = version + 1
+        WHERE id = #{id} AND status = 'PENDING' AND version = #{version}
+    </update>
+</mapper>

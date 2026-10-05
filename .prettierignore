@@ -1,0 +1,12 @@
+**/node_modules/**
+**/target/**
+**/dist/**
+**/*.tsbuildinfo
+**/package-lock.json
+.runtime/**
+deploy/**
+cn/**
+docs/**
+**/db/migration/**
+**/.env*
+**/*.sql

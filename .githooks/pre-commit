@@ -1,0 +1,3 @@
+#!/bin/sh
+# Git从仓库根调用；缺Node或扫描失败时拒绝提交，不输出秘密内容。
+exec node scripts/check-staged-secrets.mjs --staged

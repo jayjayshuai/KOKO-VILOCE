@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.notification.infrastructure.persistence.NotificationFanoutMapper">
+    <insert id="insertIdempotent">
+        INSERT IGNORE INTO notification_fanout_job
+        (event_id, actor_id, resource_id, summary)
+        VALUES (#{eventId}, #{actorId}, #{resourceId}, #{summary})
+    </insert>
+    <update id="claim">
+        UPDATE notification_fanout_job
+        SET status = 'IN_FLIGHT', claim_token = #{token},
+            lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND),
+            attempts = attempts + 1
+        WHERE ((status IN ('PENDING', 'RETRY') AND next_attempt_at &lt;= CURRENT_TIMESTAMP(6))
+               OR (status = 'IN_FLIGHT' AND lease_until &lt; CURRENT_TIMESTAMP(6)))
+        ORDER BY created_at, event_id LIMIT 1
+    </update>
+    <select id="selectClaimed" resultType="cn.kokonexus.notification.domain.FanoutJob">
+        SELECT event_id, actor_id, resource_id, summary, follower_cursor, attempts
+        FROM notification_fanout_job
+        WHERE status = 'IN_FLIGHT' AND claim_token = #{token}
+    </select>
+    <update id="advance">
+        UPDATE notification_fanout_job
+        SET follower_cursor = #{cursor}, attempts = 0,
+            status = CASE WHEN #{done} THEN 'DONE' ELSE 'PENDING' END,
+            completed_at = CASE WHEN #{done} THEN CURRENT_TIMESTAMP(6) ELSE NULL END,
+            claim_token = NULL, lease_until = NULL, last_error = NULL
+        WHERE event_id = #{eventId} AND status = 'IN_FLIGHT' AND claim_token = #{token}
+    </update>
+    <update id="fail">
+        UPDATE notification_fanout_job
+        SET status = CASE WHEN #{dead} THEN 'DEAD' ELSE 'RETRY' END,
+            next_attempt_at = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL #{backoffSeconds} SECOND),
+            claim_token = NULL, lease_until = NULL, last_error = #{error}
+        WHERE event_id = #{eventId} AND status = 'IN_FLIGHT' AND claim_token = #{token}
+    </update>
+    <select id="countOutstanding" resultType="long">
+        SELECT COUNT(*) FROM notification_fanout_job
+        WHERE status IN ('PENDING', 'RETRY', 'IN_FLIGHT')
+    </select>
+    <select id="countDead" resultType="long">
+        SELECT COUNT(*) FROM notification_fanout_job WHERE status = 'DEAD'
+    </select>
+    <select id="oldestOutstandingAgeSeconds" resultType="long">
+        SELECT COALESCE(TIMESTAMPDIFF(SECOND, MIN(created_at), CURRENT_TIMESTAMP(6)), 0)
+        FROM notification_fanout_job WHERE status IN ('PENDING', 'RETRY', 'IN_FLIGHT')
+    </select>
+</mapper>

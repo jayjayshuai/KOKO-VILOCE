@@ -1,0 +1,3 @@
+#!/bin/sh
+# Git的stdin给出实际推送对象；非HEAD分支、旧提交历史也不能绕过。
+exec node scripts/check-staged-secrets.mjs --push

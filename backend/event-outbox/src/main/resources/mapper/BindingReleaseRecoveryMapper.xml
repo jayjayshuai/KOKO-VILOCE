@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.outbox.persistence.BindingReleaseRecoveryMapper">
+ <sql
+    id="auditColumns"
+  >command_id,request_id,operator_id,expected_generation,accepted_generation,previous_attempts,previous_generation_attempts,previous_failure,reason,created_at</sql>
+ <select id="lockRelease" resultType="cn.kokonexus.outbox.binding.BindingRelease" useCache="false" flushCache="true">
+  SELECT request_id,status,attempts,replay_generation,generation_attempts,lease_token,lease_until,last_failure
+  FROM asset_binding_release WHERE request_id=#{requestId} FOR UPDATE
+ </select>
+ <select id="findAudit" resultType="cn.kokonexus.outbox.binding.BindingReleaseAudit" useCache="false" flushCache="true">
+  SELECT <include refid="auditColumns" /> FROM asset_binding_release_audit WHERE command_id=#{commandId}
+ </select>
+ <!-- 原累计 attempts 不清零；新代次只复位本代预算。旧随机租约不能越过无租约 DEAD 前置条件。 -->
+ <update id="requeue">
+  UPDATE asset_binding_release SET status='PENDING',replay_generation=replay_generation+1,generation_attempts=0,
+   next_attempt_at=CURRENT_TIMESTAMP(6),updated_at=CURRENT_TIMESTAMP(6)
+  WHERE request_id=#{requestId} AND status='DEAD' AND replay_generation=#{generation}
+   AND replay_generation &lt; 10 AND generation_attempts=10 AND lease_token IS NULL AND lease_until IS NULL
+ </update>
+ <insert id="insertAudit">
+  INSERT INTO asset_binding_release_audit(command_id,request_id,operator_id,expected_generation,accepted_generation,
+   previous_attempts,previous_generation_attempts,previous_failure,reason)
+  VALUES(#{commandId},#{requestId},#{operatorId},#{expectedGeneration},#{acceptedGeneration},
+   #{previousAttempts},#{previousGenerationAttempts},#{previousFailure},#{reason})
+ </insert>
+ <select id="audits" resultType="cn.kokonexus.outbox.binding.BindingReleaseAudit">
+  SELECT <include refid="auditColumns" /> FROM asset_binding_release_audit
+  WHERE request_id=#{requestId}
+  <if test="beforeGeneration != null">AND accepted_generation &lt; #{beforeGeneration}</if>
+  ORDER BY accepted_generation DESC LIMIT #{limit}
+ </select>
+</mapper>

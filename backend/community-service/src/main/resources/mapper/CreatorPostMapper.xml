@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.community.infrastructure.persistence.CreatorPostMapper">
+    <select id="selectPublished" resultType="cn.kokonexus.community.domain.CreatorPost">
+        SELECT id, owner_id, slug, title, excerpt, cover_url, cover_asset_id, kind, status, version, like_count, comment_count, favorite_count,
+               published_at, created_at, updated_at
+        FROM creator_post
+        WHERE status = 'PUBLISHED'
+        ORDER BY published_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPublishedPage" resultType="cn.kokonexus.community.domain.CreatorPost">
+        SELECT id, owner_id, slug, title, excerpt, cover_url, cover_asset_id, kind, status, version,
+               like_count, comment_count, favorite_count, published_at, created_at, updated_at
+        FROM creator_post
+        WHERE status = 'PUBLISHED'
+        ORDER BY published_at DESC, id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countPublished" resultType="long">
+        SELECT COUNT(*) FROM creator_post WHERE status = 'PUBLISHED'
+    </select>
+
+    <select id="selectPublishedBySlug" resultType="cn.kokonexus.community.domain.CreatorPost">
+        SELECT id, owner_id, slug, title, excerpt, body, cover_url, cover_asset_id, kind, status, version, like_count, comment_count, favorite_count,
+               published_at, created_at, updated_at
+        FROM creator_post
+        WHERE slug = #{slug} AND status = 'PUBLISHED'
+        LIMIT 1
+    </select>
+
+    <update id="updateOwned">
+        UPDATE creator_post
+        SET slug = #{slug}, title = #{title}, excerpt = #{excerpt}, body = #{body},
+            cover_url = #{coverUrl}, cover_asset_id = #{coverAssetId}, version = version + 1, updated_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id} AND owner_id = #{ownerId} AND status IN ('DRAFT', 'PUBLISHED')
+          AND version = #{expectedVersion}
+    </update>
+
+    <update id="publishOwned">
+        UPDATE creator_post
+        SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP(6),
+            version = version + 1, updated_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id} AND owner_id = #{ownerId} AND status = 'DRAFT'
+          AND version = #{expectedVersion}
+    </update>
+
+    <update id="archiveOwned">
+        UPDATE creator_post
+        SET status = 'ARCHIVED', version = version + 1, updated_at = CURRENT_TIMESTAMP(6)
+        WHERE id = #{id} AND owner_id = #{ownerId} AND status IN ('DRAFT', 'PUBLISHED')
+          AND version = #{expectedVersion}
+    </update>
+
+    <select id="isPublishedCover" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM creator_post
+            WHERE status = 'PUBLISHED' AND cover_asset_id = #{assetId}
+            LIMIT 1
+        )
+    </select>
+    <select id="hasCoverReference" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM creator_post WHERE cover_asset_id = #{assetId} LIMIT 1
+        )
+    </select>
+</mapper>

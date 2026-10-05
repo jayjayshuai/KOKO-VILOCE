@@ -1,0 +1,19 @@
+{
+  "name": "koko-nexus-development-tools",
+  "private": true,
+  "scripts": {
+    "check:secrets": "node scripts/check-staged-secrets.mjs --staged",
+    "check:secrets:history": "node scripts/check-staged-secrets.mjs --history",
+    "test:security": "node --test scripts/tests/staged-secrets.test.mjs",
+    "test:format": "node --test scripts/tests/*.test.mjs",
+    "format": "node scripts/verify-java-format.mjs --write && npm run format:other -- --write",
+    "format:check": "node scripts/verify-java-format.mjs --check && npm run format:other -- --check",
+    "format:debug": "node scripts/verify-java-format.mjs --debug && npm run format:other -- --debug-check",
+    "format:other": "prettier \"backend/**/pom.xml\" \"backend/**/src/**/*.xml\" \"backend/**/src/**/*.yml\" \"web/src/**/*.{vue,ts,css}\" \"web/tests/*.mjs\" \"web/*.{ts,json,html}\" \"scripts/**/*.mjs\" \"*.json\" \"*.mjs\""
+  },
+  "devDependencies": {
+    "@prettier/plugin-xml": "3.4.2",
+    "prettier": "3.9.9",
+    "prettier-plugin-java": "2.11.0"
+  }
+}

@@ -1,0 +1,286 @@
+name: koko-nexus
+
+x-java-service: &java-service
+  restart: unless-stopped
+  networks: [platform]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /home/koko:mode=1777
+  environment: &common-env
+    TZ: Asia/Shanghai
+    KOKO_PUBLIC_API_BASE: /koko-api
+    NACOS_SERVER_ADDR: nacos:8848
+    NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
+    NACOS_PASSWORD: ${NACOS_PASSWORD:?NACOS_PASSWORD is required}
+    NACOS_GROUP: KOKO_NEXUS_PROD
+    # HTTP 服务发现独立于 Dubbo；切换时必须同步所有 HTTP 提供方与 Gateway。
+    NACOS_HTTP_GROUP: KOKO_NEXUS_PROD_HTTP
+    DATABASE_USER: koko_nexus
+    DATABASE_PASSWORD: ${KOKO_DB_PASSWORD:?KOKO_DB_PASSWORD is required}
+    JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
+  deploy:
+    resources:
+      limits:
+        memory: 320M
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.7
+    container_name: koko-nexus-livekit
+    command: --config /etc/livekit.yaml
+    restart: unless-stopped
+    networks: [platform]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880/tcp"
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+      - "3478:3478/udp"
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  identity:
+    <<: *java-service
+    container_name: koko-nexus-identity
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/identity-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_identity?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      OUTBOX_ENABLED: "true"
+      ROCKETMQ_NAMESERVER: rocketmq-namesrv:9876
+      ASSET_PUBLIC_BASE: /koko-api/assets/images
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8081/actuator/health]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  community:
+    <<: *java-service
+    container_name: koko-nexus-community
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/community-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_community?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      OUTBOX_ENABLED: "true"
+      ROCKETMQ_NAMESERVER: rocketmq-namesrv:9876
+      ASSET_PUBLIC_BASE: /koko-api/assets/images
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8082/actuator/health]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  live:
+    <<: *java-service
+    container_name: koko-nexus-live
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/live-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_live?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      OUTBOX_ENABLED: "true"
+      ROCKETMQ_NAMESERVER: rocketmq-namesrv:9876
+    depends_on:
+      identity: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8083/actuator/health]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  voice:
+    <<: *java-service
+    container_name: koko-nexus-voice
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/voice-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_voice?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      LIVEKIT_API_URL: http://koko-nexus-livekit:7880
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:?LIVEKIT_PUBLIC_URL is required}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+      KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
+      JAVA_TOOL_OPTIONS: -Xms48m -Xmx144m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
+    depends_on:
+      identity: { condition: service_healthy }
+      livekit: { condition: service_started }
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8084/actuator/health]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  notification:
+    <<: *java-service
+    container_name: koko-nexus-notification
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/notification-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_notification?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      NOTIFICATION_CONSUMER_ENABLED: "true"
+      ROCKETMQ_NAMESERVER: rocketmq-namesrv:9876
+      JAVA_TOOL_OPTIONS: -Xms48m -Xmx144m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8085/actuator/health]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  asset:
+    <<: *java-service
+    container_name: koko-nexus-asset
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/asset-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_asset?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      ASSET_MINIO_ENDPOINT: http://minio:9000
+      ASSET_MINIO_BUCKET: koko-nexus-media
+      ASSET_MINIO_ACCESS_KEY: ${ASSET_MINIO_ACCESS_KEY:?ASSET_MINIO_ACCESS_KEY is required}
+      ASSET_MINIO_SECRET_KEY: ${ASSET_MINIO_SECRET_KEY:?ASSET_MINIO_SECRET_KEY is required}
+      ASSET_OWNER_QUOTA_BYTES: ${ASSET_OWNER_QUOTA_BYTES:-104857600}
+      ASSET_OWNER_QUOTA_IMAGES: ${ASSET_OWNER_QUOTA_IMAGES:-100}
+      ASSET_TOTAL_QUOTA_BYTES: ${ASSET_TOTAL_QUOTA_BYTES:-1073741824}
+      ASSET_TOTAL_QUOTA_IMAGES: ${ASSET_TOTAL_QUOTA_IMAGES:-10000}
+      KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
+      JAVA_TOOL_OPTIONS: -Xms48m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8086/actuator/health/readiness]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  chat:
+    <<: *java-service
+    container_name: koko-nexus-chat
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/chat-service.jar }
+    environment:
+      <<: *common-env
+      DATABASE_URL: jdbc:mysql://mysql:3306/koko_chat?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      REDIS_HOST: redis
+      KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
+      CHAT_ALLOWED_ORIGINS: ${KOKO_CHAT_ALLOWED_ORIGINS:?KOKO_CHAT_ALLOWED_ORIGINS is required}
+      # 默认没有审核员，必须由项目负责人明确指定已有账号 ID。
+      CHAT_MODERATOR_USER_IDS: ${CHAT_MODERATOR_USER_IDS:-}
+      KOKO_PUBLIC_API_BASE: /koko-api
+      JAVA_TOOL_OPTIONS: -Xms48m -Xmx160m -XX:MaxMetaspaceSize=128m -XX:MaxDirectMemorySize=32m -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError
+    deploy:
+      resources:
+        limits:
+          memory: 448M
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8087/actuator/health/readiness]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+  gateway:
+    <<: *java-service
+    container_name: koko-nexus-gateway
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+      args: { JAR_FILE: artifacts/gateway-service.jar }
+    environment:
+      <<: *common-env
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Single-node production uses Docker DNS for deterministic routing. All services still register in Nacos,
+      # and Dubbo uses Nacos as its registry; switch these two URIs back to lb:// when adding gateway replicas.
+      COMMUNITY_SERVICE_URI: http://koko-nexus-community:8082
+      LIVE_SERVICE_URI: http://koko-nexus-live:8083
+      VOICE_SERVICE_URI: http://koko-nexus-voice:8084
+      NOTIFICATION_SERVICE_URI: http://koko-nexus-notification:8085
+      ASSET_SERVICE_URI: http://koko-nexus-asset:8086
+      CHAT_SERVICE_URI: http://koko-nexus-chat:8087
+      CHAT_WS_SERVICE_URI: ws://koko-nexus-chat:8097
+      KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
+    depends_on:
+      identity: { condition: service_healthy }
+      community: { condition: service_healthy }
+      live: { condition: service_healthy }
+      voice: { condition: service_healthy }
+      asset: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:8080/actuator/health]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+  web:
+    container_name: koko-nexus-web
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    networks: [platform]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run]
+    depends_on:
+      gateway: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+networks:
+  platform:
+    external: true
+    name: infra_default

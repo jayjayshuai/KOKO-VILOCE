@@ -1,0 +1,21 @@
+CREATE TABLE outbox_event (
+    id CHAR(36) NOT NULL,
+    event_type VARCHAR(32) NOT NULL,
+    recipient_id BIGINT NOT NULL,
+    actor_id BIGINT NOT NULL,
+    resource_id VARCHAR(80) NOT NULL,
+    summary VARCHAR(500) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    attempts INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    lease_until DATETIME(6) NULL,
+    claim_token CHAR(36) NULL,
+    last_error VARCHAR(500) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    sent_at DATETIME(6) NULL,
+    PRIMARY KEY (id),
+    KEY idx_outbox_ready (status, next_attempt_at, created_at),
+    KEY idx_outbox_lease (status, lease_until),
+    KEY idx_outbox_claim (claim_token),
+    CONSTRAINT chk_outbox_attempts CHECK (attempts >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

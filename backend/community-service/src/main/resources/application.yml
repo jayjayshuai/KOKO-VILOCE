@@ -1,0 +1,52 @@
+server.port: 8082
+koko.operations.enabled: ${OPERATIONS_ENABLED:false}
+
+spring:
+  application.name: koko-nexus-community
+  datasource:
+    url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_community?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${DATABASE_USER:koko}
+    password: ${DATABASE_PASSWORD:koko_local_only}
+  flyway.table: community_flyway_schema_history
+  cloud.nacos.discovery:
+    server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    namespace: ${NACOS_NAMESPACE:}
+    # HTTP 实例不得与同名 Dubbo 应用实例混入同一发现列表。
+    group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration.map-underscore-to-camel-case: true
+koko.asset.public-base: ${ASSET_PUBLIC_BASE:/api/assets/images}
+koko.asset-binding.release-enabled: ${ASSET_BINDING_RELEASE_ENABLED:false}
+koko.asset-binding.attempt-reconcile-enabled: ${ASSET_BINDING_ATTEMPT_RECONCILE_ENABLED:false}
+koko.asset-binding.operations-enabled: ${ASSET_BINDING_OPERATIONS_ENABLED:false}
+koko.asset-binding.replay-enabled: ${ASSET_BINDING_REPLAY_ENABLED:false}
+koko.asset-binding.metrics-enabled: ${ASSET_BINDING_METRICS_ENABLED:false}
+dubbo:
+  application:
+    name: koko-nexus-community
+    qos-enable: false
+  protocol:
+    name: tri
+    port: 20882
+  registry:
+    address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
+    parameters:
+      namespace: ${NACOS_NAMESPACE:}
+  consumer:
+    check: false
+    timeout: 5000
+    retries: 0
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.show-details: never
+  endpoint.health.probes.enabled: true
+koko.outbox:
+  enabled: ${OUTBOX_ENABLED:false}
+  nameserver: ${ROCKETMQ_NAMESERVER:localhost:9876}
+  topic: ${ROCKETMQ_NOTIFICATION_TOPIC:koko_nexus_notifications}

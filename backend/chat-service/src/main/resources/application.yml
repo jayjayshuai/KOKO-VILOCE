@@ -1,0 +1,63 @@
+server:
+  port: 8087
+  tomcat.threads.max: 16
+spring:
+  application.name: koko-nexus-chat
+  datasource:
+    url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_chat?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${DATABASE_USER:koko}
+    password: ${DATABASE_PASSWORD:koko_local_only}
+    hikari.maximum-pool-size: 4
+  flyway.table: chat_flyway_schema_history
+  data.redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    timeout: 2s
+  cloud.nacos.discovery:
+    server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    # HTTP 实例不得与同名 Dubbo 应用实例混入同一发现列表。
+    group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
+    namespace: ${NACOS_NAMESPACE:}
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration.map-underscore-to-camel-case: true
+dubbo:
+  application:
+    name: koko-nexus-chat
+    qos-enable: false
+  protocol:
+    name: tri
+    port: 20887
+  registry:
+    address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
+    username: ${NACOS_USERNAME:nacos}
+    password: ${NACOS_PASSWORD:nacos}
+    group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
+    parameters.namespace: ${NACOS_NAMESPACE:}
+  consumer:
+    check: false
+    timeout: 5000
+    retries: 0
+sa-token:
+  token-name: koko-nexus-token
+  timeout: 604800
+  active-timeout: 1800
+  is-read-body: false
+  is-read-cookie: true
+  is-read-header: true
+koko.chat:
+  gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
+  websocket-port: ${CHAT_WS_PORT:8097}
+  allowed-origins: ${CHAT_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  moderator-user-ids: ${CHAT_MODERATOR_USER_IDS:}
+koko.public-api-base: ${KOKO_PUBLIC_API_BASE:/api}
+springdoc:
+  api-docs.path: /api/chat/docs/v3/api-docs
+  swagger-ui:
+    enabled: false
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.show-details: never
+  endpoint.health.probes.enabled: true

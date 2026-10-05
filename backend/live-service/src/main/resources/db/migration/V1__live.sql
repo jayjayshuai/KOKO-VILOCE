@@ -1,0 +1,21 @@
+CREATE TABLE live_stream (
+    id BIGINT NOT NULL,
+    creator_id BIGINT NOT NULL,
+    creator_name VARCHAR(80) NOT NULL,
+    slug VARCHAR(80) NOT NULL,
+    title VARCHAR(120) NOT NULL,
+    category VARCHAR(60) NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'SCHEDULED',
+    provider VARCHAR(32) NOT NULL,
+    provider_input_id VARCHAR(160),
+    interactive BOOLEAN NOT NULL DEFAULT FALSE,
+    viewer_count BIGINT NOT NULL DEFAULT 0,
+    version INT NOT NULL DEFAULT 0,
+    started_at DATETIME(6),
+    ended_at DATETIME(6),
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_live_slug (slug),
+    KEY idx_live_discovery (status, started_at DESC),
+    KEY idx_live_creator (creator_id, created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
