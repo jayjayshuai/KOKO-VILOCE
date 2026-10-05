@@ -1,6 +1,7 @@
 package cn.kokonexus.voice.application;
 
 import cn.kokonexus.api.identity.IdentityRpcService;
+import cn.kokonexus.common.api.ResourceNotFoundException;
 import cn.kokonexus.voice.domain.VoiceRoom;
 import cn.kokonexus.voice.infrastructure.media.VoiceMediaGateway;
 import cn.kokonexus.voice.infrastructure.persistence.VoiceRoomMapper;
@@ -89,26 +90,68 @@ public class VoiceApplicationService {
         return new JoinCredential(mediaGateway.publicUrl(), token, room.getProviderRoomName());
     }
 
-    public void close(long ownerId, long roomId) {
-        VoiceRoom room = roomMapper.selectById(roomId);
-        if (
-            room == null ||
-            room.getOwnerId() == null ||
-            room.getOwnerId() != ownerId ||
-            !"OPEN".equals(room.getStatus())
-        ) {
-            throw new IllegalArgumentException("语音房不存在、无权操作或已经关闭");
+    /** 本人的全部状态房间；独占ID游标，不计总数、不读取供应商名称。 */
+    @Transactional(readOnly = true, timeout = 3)
+    public OwnedRoomPage ownedRooms(long ownerId, String before, int size) {
+        if (ownerId <= 0 || size < 1 || size > 50) throw new IllegalArgumentException("房主或分页大小无效");
+        Long beforeId = null;
+        if (before != null) {
+            if (!before.matches("[1-9][0-9]{0,18}")) throw new IllegalArgumentException("房间游标无效");
+            try {
+                beforeId = Long.valueOf(before);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException("房间游标超出范围");
+            }
         }
+        List<VoiceRoom> found = roomMapper.ownedRooms(ownerId, beforeId, size + 1);
+        boolean more = found.size() > size;
+        List<VoiceRoom> items = List.copyOf(found.subList(0, Math.min(found.size(), size)));
+        String nextBefore = more ? String.valueOf(items.getLast().getId()) : null;
+        return new OwnedRoomPage(items, nextBefore);
+    }
+
+    /** 先核对所有者；删除媒体失败不更新SQL。重试仅在可确认CLOSED事实时幂等成功。 */
+    public void close(long ownerId, long roomId) {
+        if (ownerId <= 0 || roomId <= 0) throw new IllegalArgumentException("房主或房间标识无效");
+        VoiceRoom room = roomMapper.selectById(roomId);
+        requireOwned(room, ownerId);
+        if ("CLOSED".equals(room.getStatus())) return;
+        if (!"OPEN".equals(room.getStatus())) throw new IllegalStateException("当前语音房状态不允许关闭");
         mediaGateway.delete(room.getProviderRoomName());
         if (roomMapper.markClosed(roomId, ownerId) != 1) {
-            throw new IllegalStateException("语音房关闭状态更新失败");
+            VoiceRoom confirmed = roomMapper.selectById(roomId);
+            requireOwned(confirmed, ownerId);
+            if (!"CLOSED".equals(confirmed.getStatus())) throw new IllegalStateException(
+                "语音房关闭未确认，请刷新后重试"
+            );
         }
     }
 
+    private static void requireOwned(VoiceRoom room, long ownerId) {
+        if (room == null || room.getOwnerId() == null || room.getOwnerId() != ownerId) {
+            throw new ResourceNotFoundException("语音房不存在或无权操作");
+        }
+    }
+
+    /** 内部查询投影，Controller另映射为无供应商字段的公开响应。 */
+    public record OwnedRoomPage(
+        /** 本页本人房间；不会暴露给其他账号。 */ List<VoiceRoom> items,
+        /** 下一页独占ID游标；null表示本轮末页。 */ String nextBefore
+    ) {}
+
     /** voice-service：JoinCredential 领域类型；字段单位、状态及可空性见各属性说明。 */
     public record JoinCredential(
+        /** 客户端媒体连接地址，不作为日志上下文。 */
         @io.swagger.v3.oas.annotations.media.Schema(description = "客户端连接地址") String url,
+        /** 短期JWT，仅HTTP响应中交给当前用户，禁止日志。 */
         @io.swagger.v3.oas.annotations.media.Schema(description = "短期连接凭据，禁止日志输出") String token,
+        /** 当前凭据限定的媒体房间名。 */
         @io.swagger.v3.oas.annotations.media.Schema(description = "媒体房间名称") String roomName
-    ) {}
+    ) {
+        /** 记录类默认toString会泄漏JWT，HTTP字段序列化不受此脱敏影响。 */
+        @Override
+        public String toString() {
+            return "JoinCredential[redacted]";
+        }
+    }
 }

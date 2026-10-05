@@ -64,6 +64,14 @@ export const workspacePages: WorkspacePage[] = [
     requiresAuth: true,
   },
   {
+    name: 'voice-owner',
+    path: '/studio/voice',
+    title: '我的语音房',
+    description: '查看本人房间状态并确认关闭，不把媒体请求受理当成成功。',
+    group: 'creator',
+    requiresAuth: true,
+  },
+  {
     name: 'messages',
     path: '/messages',
     title: '消息中心',

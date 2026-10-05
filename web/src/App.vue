@@ -92,6 +92,11 @@ const communities = ref<Community[]>([]);
 const ownedCommunities = ref<Community[]>([]);
 const liveRooms = ref<LiveRoom[]>([]);
 const voiceRooms = ref<VoiceRoom[]>([]);
+/** 本人建房确认后刷新房主工作台，不以提交按钮点击当作新房间。 */
+const voiceOwnerRefreshRevision = ref(0);
+/** 语音建房请求与共享表单分离轮次，换会话时旧结果不覆盖新页面。 */
+let voiceCreateRevision = 0,
+  voiceCreatePending = false;
 const creators = ref<CreatorProfile[]>([]);
 const posts = ref<CreatorPost[]>([]);
 const ownedPosts = ref<CreatorPost[]>([]);
@@ -846,17 +851,47 @@ async function createLive() {
 }
 
 async function createVoiceRoom() {
+  if (submitting.value || !auth.user) return;
+  const userId = auth.user.id,
+    sessionRevision = auth.sessionRevision,
+    formRevision = dialogReadRevision,
+    revision = ++voiceCreateRevision;
+  const current = () =>
+    !disposed &&
+    revision === voiceCreateRevision &&
+    auth.user?.id === userId &&
+    auth.sessionRevision === sessionRevision &&
+    dialogReadRevision === formRevision;
+  voiceCreatePending = true;
   submitting.value = true;
   formError.value = '';
   try {
-    voiceRooms.value.unshift(await api.createVoiceRoom(voice));
+    const created = await api.createVoiceRoom({ ...voice });
+    if (!current()) return;
+    voiceRooms.value.unshift(created);
+    voiceOwnerRefreshRevision.value++;
     dialog.value = null;
   } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '创建失败';
+    if (current()) formError.value = cause instanceof Error ? cause.message : '创建失败';
   } finally {
-    submitting.value = false;
+    if (revision === voiceCreateRevision) {
+      voiceCreatePending = false;
+      if (auth.user?.id === userId && auth.sessionRevision === sessionRevision) submitting.value = false;
+    }
   }
 }
+
+watch(
+  [() => auth.user?.id, () => auth.sessionRevision],
+  () => {
+    if (voiceCreatePending) {
+      voiceCreateRevision++;
+      voiceCreatePending = false;
+      submitting.value = false;
+    }
+  },
+  { flush: 'sync' },
+);
 
 async function joinVoiceRoom(target: VoiceRoom) {
   if (!auth.user) {
@@ -1003,6 +1038,17 @@ const viewBindings = computed(() => {
     };
   if (route.name === 'messages')
     return { userId: auth.user?.id, embedded: true, onClose: () => router.push('/explore') };
+  if (route.name === 'voice-owner')
+    return {
+      userId: auth.user?.id,
+      sessionRevision: auth.sessionRevision,
+      refreshRevision: voiceOwnerRefreshRevision.value,
+      onCreate: () => requireLogin('voice'),
+      onClosed: (roomId: string) => {
+        voiceRooms.value = voiceRooms.value.filter((room) => room.id !== roomId);
+        if (connectedVoice.value?.id === roomId || voiceJoining.value === roomId) void leaveVoiceRoom();
+      },
+    };
   if (route.name === 'notifications') return { userId: auth.user?.id };
   if (route.name === 'account')
     return {

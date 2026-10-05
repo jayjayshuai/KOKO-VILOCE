@@ -73,3 +73,8 @@ P0仍进行中，媒体与身份边界见[基础验证](VOICE_ROOM_P0_VERIFICATI
 独立无头双Context/双Netty的七组真实页面检查通过，含失权/重入边界、390px与节点重启；
 辅助程序收尾失败保留，修改后完整退出复验受SSH中断尚未通过，资源已核验回收。
 不是正式公网TLS/手机/RTC，P0/P1门槛保持。见[浏览器验证](CHAT_BROWSER_VERIFICATION_20261005.md)。
+
+语音房主工作台续批补本人全状态游标、所有者关闭幂等/CAS确认、凭据toString脱敏及私有管理页面。
+374后端/164前端、独立MySQL五组与环回Tomcat、API夹具浏览器六组通过；失败轮次和回收保留。
+未部署，关闭不等于旧JWT即时撤销，不是麦位/在线成员/事件/RTC或完整P0/P1完成。
+见[工作台记录](VOICE_OWNER_WORKSPACE_VERIFICATION_20261005.md)和[阶段提交计划](STAGED_DELIVERY_PLAN.md)。

@@ -115,6 +115,7 @@ const icons = {
   live: Radio,
   studio: FileText,
   assets: Image,
+  'voice-owner': Headphones,
   messages: MessageCircle,
   notifications: Bell,
   account: Settings,

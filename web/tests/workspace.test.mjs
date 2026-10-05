@@ -569,12 +569,13 @@ test('离开通知页取消请求且忽略卸载后的迟到成功', async () =>
   assert.equal(h.state.items.value.length, 0)
 })
 
-test('十二个页面具有唯一 URL，七个私有领域不能标成公开发现页', async () => {
+test('十三个页面具有唯一 URL，房主工作台与其他私有领域不能标成公开发现页', async () => {
   const source = await readFile(new URL('../src/router/pages.ts', import.meta.url), 'utf8')
   const { workspacePages, unknownPage } = await execute(source)
-  assert.equal(workspacePages.length, 12)
-  assert.equal(new Set(workspacePages.map((page) => page.path)).size, 12)
-  assert.equal(new Set(workspacePages.map((page) => page.name)).size, 12)
+  assert.equal(workspacePages.length, 13)
+  assert.equal(new Set(workspacePages.map((page) => page.path)).size, 13)
+  assert.equal(new Set(workspacePages.map((page) => page.name)).size, 13)
+  assert.equal(workspacePages.find((page) => page.name === 'voice-owner').requiresAuth, true)
   assert.equal(workspacePages.find((page) => page.name === 'binding-operations').requiresAuth, true)
   assert.equal(workspacePages.find((page) => page.name === 'operations').requiresAuth, true)
   for (const page of workspacePages) assert.equal(page.requiresAuth, !page.section)
@@ -674,6 +675,49 @@ async function app(overrides = {}, authOverrides = {}) {
   })
   return { ...h, auth, route }
 }
+
+test('语音建房确认后刷新房主工作台，重复提交不发送第二个请求', async () => {
+  const wait = deferred()
+  const h = await app({ createVoiceRoom: () => wait.promise }, { user: identity('42') })
+  try {
+    h.state.dialog.value = 'voice'
+    await vue.nextTick()
+    const pending = h.state.createVoiceRoom()
+    await h.state.createVoiceRoom()
+    assert.equal(h.calls.filter((call) => call.name === 'createVoiceRoom').length, 1)
+    wait.resolve({ id: 'created', status: 'OPEN' })
+    await pending
+    assert.equal(h.state.voiceRooms.value[0].id, 'created')
+    assert.equal(h.state.voiceOwnerRefreshRevision.value, 1)
+    assert.equal(h.state.dialog.value, null)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('旧语音建房回复不能关闭新账号的表单或污染新账号房间', async () => {
+  const wait = deferred()
+  const h = await app({ createVoiceRoom: () => wait.promise }, { user: identity('42') })
+  try {
+    h.state.dialog.value = 'voice'
+    await vue.nextTick()
+    const pending = h.state.createVoiceRoom()
+    h.auth.sessionRevision++
+    h.auth.user = identity('43')
+    await vue.nextTick()
+    h.state.dialog.value = 'voice'
+    h.state.formError.value = '新表单错误'
+    await vue.nextTick()
+    wait.resolve({ id: 'stale', status: 'OPEN' })
+    await pending
+    assert.equal(h.state.voiceRooms.value.length, 0)
+    assert.equal(h.state.voiceOwnerRefreshRevision.value, 0)
+    assert.equal(h.state.dialog.value, 'voice')
+    assert.equal(h.state.formError.value, '新表单错误')
+  } finally {
+    h.dispose()
+  }
+})
 test('本人工作台在会话尚未恢复时不调用私有 API', async () => {
   const h = await app({}, { user: identity('42'), initialized: false })
   try {

@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 /** voice-service：HTTP 业务边界；身份校验与归属决策由网关及业务用例共同执行。 */
@@ -57,6 +58,24 @@ public class VoiceController {
         return applicationService.discover(limit).stream().map(VoiceRoomView::from).toList();
     }
 
+    @GetMapping("/mine")
+    @Operation(
+        summary = "本人语音房游标列表",
+        description = "所有状态、ID降序；不接受其他房主参数，不返回供应商名称或令牌。"
+    )
+    public OwnedRoomsView mine(
+        @io.swagger.v3.oas.annotations.Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long userId,
+        @io.swagger.v3.oas.annotations.Parameter(
+            description = "下一页独占正数ID，使用上一页nextBefore；首批不传"
+        ) @RequestParam(required = false) @Pattern(regexp = "[1-9][0-9]{0,18}") String before,
+        @io.swagger.v3.oas.annotations.Parameter(description = "每页1～50，默认20，无总数扫描") @RequestParam(
+            defaultValue = "20"
+        ) @Min(1) @Max(50) int size
+    ) {
+        var page = applicationService.ownedRooms(userId, before, size);
+        return new OwnedRoomsView(page.items().stream().map(VoiceRoomView::from).toList(), page.nextBefore());
+    }
+
     @PostMapping("/{roomId}/join")
     @Operation(summary = "签发十分钟有效的 LiveKit 入会凭证")
     public VoiceApplicationService.JoinCredential join(
@@ -67,10 +86,14 @@ public class VoiceController {
     }
 
     @DeleteMapping("/{roomId}")
-    @Operation(summary = "房主关闭语音房")
+    @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    @Operation(
+        summary = "房主关闭语音房",
+        description = "本人已关闭房间重试204；非所有者404；媒体或SQL失败不伪装成功。旧JWT撤销另需P1授权机制。"
+    )
     public void close(
         @io.swagger.v3.oas.annotations.Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long userId,
-        @PathVariable long roomId
+        @PathVariable @Min(1) long roomId
     ) {
         applicationService.close(userId, roomId);
     }
@@ -85,6 +108,16 @@ public class VoiceController {
         @Size(max = 300)
         String topic,
         @io.swagger.v3.oas.annotations.media.Schema(description = "房间人数上限") @Min(2) @Max(100) int maxParticipants
+    ) {}
+
+    /** 本人房间有界列表，不序列化领域实体中的供应商字段。 */
+    public record OwnedRoomsView(
+        /** 真实本人房间投影。 */
+        @io.swagger.v3.oas.annotations.media.Schema(description = "本页本人房间，最多50条，全部状态")
+        List<VoiceRoomView> items,
+        /** null表示本轮末页。 */
+        @io.swagger.v3.oas.annotations.media.Schema(description = "下一页独占ID游标；末页为null", nullable = true)
+        String nextBefore
     ) {}
 
     /** voice-service：VoiceRoomView 领域类型；字段单位、状态及可空性见各属性说明。 */

@@ -6,6 +6,7 @@ import DiscoveryView from '../views/DiscoveryView.vue'
 const views = {
   studio: () => import('../views/StudioView.vue'),
   assets: () => import('../views/AssetWorkspaceView.vue'),
+  'voice-owner': () => import('../views/VoiceOwnerView.vue'),
   messages: () => import('../components/ChatPanel.vue'),
   notifications: () => import('../views/NotificationCenterView.vue'),
   account: () => import('../views/AccountView.vue'),
