@@ -101,6 +101,7 @@ public class VoiceController {
     /** voice-service：请求契约；字段校验以公开接口约束为准。 */
     public record CreateVoiceRoomRequest(
         @io.swagger.v3.oas.annotations.media.Schema(description = "公开访问路径标识")
+        @jakarta.validation.constraints.NotNull
         @Pattern(regexp = "[a-z0-9-]{3,80}")
         String slug,
         @io.swagger.v3.oas.annotations.media.Schema(description = "业务标题") @NotBlank @Size(max = 120) String title,
@@ -129,6 +130,9 @@ public class VoiceController {
         @io.swagger.v3.oas.annotations.media.Schema(description = "主题或消息队列 Topic，具体见所属类型") String topic,
         @io.swagger.v3.oas.annotations.media.Schema(description = "资源所有者公开名称") String owner,
         @io.swagger.v3.oas.annotations.media.Schema(description = "房间人数上限") int maxParticipants,
+        /** 仅CONTROLLED新房间；其媒体接入当前禁止。 */
+        @io.swagger.v3.oas.annotations.media.Schema(description = "是否受控核心房间，true时不得调用原媒体入会接口")
+        boolean controlled,
         @io.swagger.v3.oas.annotations.media.Schema(description = "业务状态，允许值以所属领域状态机为准") String status
     ) {
         static VoiceRoomView from(VoiceRoom room) {
@@ -139,6 +143,7 @@ public class VoiceController {
                 room.getTopic(),
                 room.getOwnerName(),
                 room.getMaxParticipants(),
+                "CONTROLLED".equals(room.getControlMode()),
                 room.getStatus()
             );
         }

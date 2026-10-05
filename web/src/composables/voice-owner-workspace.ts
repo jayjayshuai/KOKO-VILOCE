@@ -77,7 +77,7 @@ export function useVoiceOwnerWorkspace(
   /** 必须是本页真实OPEN房间；服务端仍重新核对所有者及当前状态。 */
   function prepareClose(room: VoiceRoom) {
     if (disposed || !session.userId || loading.value || closing.value) return
-    const found = rooms.value.find((item) => item.id === room.id && item.status === 'OPEN')
+    const found = rooms.value.find((item) => item.id === room.id && ['OPEN', 'CLOSING'].includes(item.status))
     if (!found) return
     confirmation.value = { id: found.id, title: found.title }
     writeError.value = ''

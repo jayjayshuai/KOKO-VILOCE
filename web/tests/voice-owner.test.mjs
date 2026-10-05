@@ -105,6 +105,21 @@ test('本人列表游标保持字符串，下一页去重，不读取其他房�
   }
 })
 
+test('CLOSING为持久意图，允许按原房间重试，不伪造已关闭', async () => {
+  const h = await harness({ list: () => Promise.resolve({ items: [room('closing', 'CLOSING')], nextBefore: null }) })
+  try {
+    await until(() => !h.state.loading.value)
+    h.state.prepareClose(room('closing', 'CLOSING'))
+    assert.ok(h.state.confirmation.value)
+    assert.equal(h.state.rooms.value[0].status, 'CLOSING')
+    await h.state.confirmClose()
+    assert.equal(h.calls.find((call) => call.name === 'close').id, 'closing')
+    assert.equal(h.state.rooms.value[0].status, 'CLOSED')
+  } finally {
+    h.dispose()
+  }
+})
+
 test('列表失败是可重试故障，不伪装空态成功，也不清掉关闭未知错误', async () => {
   let fail = true
   const h = await harness({

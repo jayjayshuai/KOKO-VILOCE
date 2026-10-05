@@ -51,6 +51,8 @@ export type LiveRoom = {
   status: string
 }
 export type VoiceRoom = {
+  /** 受控核心房间不得走原媒体入会；旧响应未提供时视为原通话房间。 */
+  controlled?: boolean
   /** 业务标识字符串；雪花 ID 禁止转成 number。 */
   id: string
   /** 公开访问路径标识。 */
@@ -244,7 +246,8 @@ type PostWriteRequest = Required<Pick<CreatorPost, 'slug' | 'title' | 'excerpt' 
   Pick<CreatorPost, 'coverAssetId'>
 type PostUpdateRequest = PostWriteRequest & Required<Pick<CreatorPost, 'version'>>
 type LiveCreateRequest = Pick<LiveRoom, 'slug' | 'title' | 'category' | 'interactive'>
-type VoiceCreateRequest = Required<Pick<VoiceRoom, 'slug' | 'title' | 'topic' | 'maxParticipants'>>
+type VoiceCreateRequest = Required<Pick<VoiceRoom, 'slug' | 'title' | 'topic' | 'maxParticipants'>> &
+  Pick<VoiceRoom, 'controlled'>
 
 export const managedImageUrl = (id: string) => `${apiBaseUrl}/assets/images/${encodeURIComponent(id)}/content`
 
@@ -342,7 +345,10 @@ export const api = {
   createLive: (payload: LiveCreateRequest) =>
     request<LiveRoom>('/live', { method: 'POST', body: JSON.stringify(payload) }),
   createVoiceRoom: (payload: VoiceCreateRequest) =>
-    request<VoiceRoom>('/voice/rooms', { method: 'POST', body: JSON.stringify(payload) }),
+    request<VoiceRoom>(payload.controlled ? '/voice/rooms/controlled' : '/voice/rooms', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   joinVoiceRoom: (roomId: string, signal?: AbortSignal) =>
     request<VoiceJoinCredential>(`/voice/rooms/${roomId}/join`, { method: 'POST', signal, cache: 'no-store' }),
   closeVoiceRoom: (roomId: string) => request<void>(`/voice/rooms/${roomId}`, { method: 'DELETE' }),

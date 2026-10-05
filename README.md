@@ -19,7 +19,7 @@
 - `identity-service`：账号、密码哈希、UP 主资料与身份查询（仅 Dubbo）
 - `community-service`：社区、成员关系与创作者文章内容域
 - `live-service`：直播排期和所有权约束状态机
-- `voice-service`：语音房生命周期、LiveKit 房间编排和短期入会凭证；新增本人房间游标/安全关闭与前端房主工作台候选，未部署，不含麦位/旧JWT即时撤销，见[工作台记录](docs/VOICE_OWNER_WORKSPACE_VERIFICATION_20261005.md)
+- `voice-service`：语音房生命周期、LiveKit 编排、本人房间工作台；新增受控成员/8麦位/角色/幂等审计与持久关闭意图候选，默认关闭、未部署，媒体权限/撤销/房间事件未完成，见[互动记录](docs/VOICE_INTERACTION_CORE_VERIFICATION_20261006.md)
 - `notification-service`：Outbox 事件消费、通知收件箱、用户偏好与直播粉丝扇出
 - `asset-service`：JPEG/PNG 校验、MinIO 存储、本人图片库、用途/所有权绑定、公开读取授权、全状态引用核验、事务配额、上传处理并发限制及未完成上传清理；全状态核验本批仅源码，预签名 URL 与 READY 孤儿清理尚未完成
 - `chat-service`：Netty 私信/群聊、事务消息序号、幂等 ACK、游标历史/已读、会话内字面搜索、个人消息收藏、群管理、拉黑、真实消息举报与权限隔离的人工结案；新增用户级持久版本跨节点查库提示，线上仍单节点，尚须网关 WS 分流/共享会话/容量验收再扩容，见 [同步计划](docs/CHAT_CLUSTER_SYNC_PLAN.md)

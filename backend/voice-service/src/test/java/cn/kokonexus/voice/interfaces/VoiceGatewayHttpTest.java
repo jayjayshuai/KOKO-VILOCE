@@ -6,6 +6,8 @@ import static org.mockito.Mockito.*;
 import cn.kokonexus.common.api.GlobalExceptionHandler;
 import cn.kokonexus.common.api.ResourceNotFoundException;
 import cn.kokonexus.voice.application.VoiceApplicationService;
+import cn.kokonexus.voice.application.VoiceInteractionDirectory;
+import cn.kokonexus.voice.application.VoiceInteractionService;
 import cn.kokonexus.voice.domain.VoiceRoom;
 import java.net.InetAddress;
 import java.net.URI;
@@ -32,6 +34,62 @@ class VoiceGatewayHttpTest {
 
     /** 固定非生产密钥，测试不调用服务器。 */
     private static final String KEY = "isolated-voice-http-gateway-key-20261005";
+
+    @Test
+    void interactionEndpointsKeepDisabledSemanticsAndValidateBeforeDirectory() throws Exception {
+        try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
+            context.register(HttpConfiguration.class);
+            context.refresh();
+            var core = context.getBean(VoiceInteractionService.class);
+            var directory = context.getBean(VoiceInteractionDirectory.class);
+            when(core.features()).thenReturn(new VoiceInteractionViews.Capabilities(false, false, null, false));
+            doThrow(new cn.kokonexus.common.api.ExternalDependencyUnavailableException("互动尚未开放", null))
+                .when(core)
+                .requireEnabled();
+            String base = "http://127.0.0.1:" + context.getWebServer().getPort();
+            try (var client = HttpClient.newHttpClient()) {
+                var cap = client.send(
+                    HttpRequest.newBuilder(URI.create(base + "/api/voice/rooms/interaction-capabilities"))
+                        .header("X-Koko-Gateway-Key", KEY)
+                        .header("X-Koko-User-Id", "42")
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(200, cap.statusCode());
+                assertTrue(cap.body().contains("\"enabled\":false"));
+                assertTrue(cap.body().contains("\"mediaReady\":false"));
+                var invalid = client.send(
+                    HttpRequest.newBuilder(URI.create(base + "/api/voice/rooms/1/interaction/join"))
+                        .header("X-Koko-Gateway-Key", KEY)
+                        .header("X-Koko-User-Id", "42")
+                        .header("Content-Type", "application/json")
+                        .POST(
+                            HttpRequest.BodyPublishers.ofString("{\"requestId\":\"invalid\",\"expectedVersion\":\"0\"}")
+                        )
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(400, invalid.statusCode());
+                var valid = client.send(
+                    HttpRequest.newBuilder(URI.create(base + "/api/voice/rooms/1/interaction/join"))
+                        .header("X-Koko-Gateway-Key", KEY)
+                        .header("X-Koko-User-Id", "42")
+                        .header("Content-Type", "application/json")
+                        .POST(
+                            HttpRequest.BodyPublishers.ofString(
+                                "{\"requestId\":\"00000000-0000-0000-0000-000000000042\",\"expectedVersion\":\"0\",\"displayName\":\"伪造名称\"}"
+                            )
+                        )
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(503, valid.statusCode());
+                assertEquals("no-store", valid.headers().firstValue("Cache-Control").orElseThrow());
+                verifyNoInteractions(directory);
+            }
+        }
+    }
 
     @Test
     void ownerListingIsPrivateAndDoesNotSerializeProviderOrAcceptOwnerOverride() throws Exception {
@@ -179,12 +237,22 @@ class VoiceGatewayHttpTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({ VoiceController.class, GlobalExceptionHandler.class })
+    @Import({ VoiceController.class, VoiceInteractionController.class, GlobalExceptionHandler.class })
     static class HttpConfiguration {
 
         @Bean
         VoiceApplicationService voiceService() {
             return mock(VoiceApplicationService.class);
+        }
+
+        @Bean
+        VoiceInteractionService interaction() {
+            return mock(VoiceInteractionService.class);
+        }
+
+        @Bean
+        VoiceInteractionDirectory directory() {
+            return mock(VoiceInteractionDirectory.class);
         }
 
         @Bean

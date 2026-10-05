@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.voice.infrastructure.persistence.VoiceInteractionMapper">
+    <select id="actions" resultType="cn.kokonexus.voice.domain.VoiceInteraction$Action" timeout="2">
+        SELECT result_version,actor_id,command_type,target_user_id,seat_no,seat_request_id,desired_value,created_at
+        FROM voice_room_action WHERE room_id=#{room}
+        <if test="before != null">AND result_version&lt;#{before}</if>
+        ORDER BY result_version DESC LIMIT #{limit} FOR UPDATE
+    </select>
+    <!-- 所有观察使用当前读，不能因外层RR快照复活旧成员权限。 -->
+    <select
+    id="lockRoom"
+    resultType="cn.kokonexus.voice.domain.VoiceRoom"
+    timeout="2"
+  >SELECT * FROM voice_room WHERE id=#{room} FOR UPDATE</select>
+    <select id="databaseNow" resultType="java.time.LocalDateTime">SELECT CURRENT_TIMESTAMP(3)</select>
+    <select
+    id="member"
+    resultType="cn.kokonexus.voice.domain.VoiceInteraction$Member"
+    timeout="2"
+  >SELECT * FROM voice_room_member WHERE room_id=#{room} AND user_id=#{user} FOR UPDATE</select>
+    <select
+    id="activeMembers"
+    resultType="cn.kokonexus.voice.domain.VoiceInteraction$Member"
+    timeout="2"
+  >SELECT * FROM voice_room_member WHERE room_id=#{room} AND member_state='ACTIVE' ORDER BY user_id LIMIT 101 FOR UPDATE</select>
+    <select
+    id="administrators"
+    resultType="cn.kokonexus.voice.domain.VoiceInteraction$Member"
+    timeout="2"
+  >SELECT * FROM voice_room_member WHERE room_id=#{room} AND room_role='ADMIN' ORDER BY user_id LIMIT 9 FOR UPDATE</select>
+    <select
+    id="seats"
+    resultType="cn.kokonexus.voice.domain.VoiceInteraction$Seat"
+    timeout="2"
+  >SELECT * FROM voice_seat WHERE room_id=#{room} ORDER BY seat_no LIMIT 9 FOR UPDATE</select>
+    <select
+    id="pendingRequests"
+    resultType="cn.kokonexus.voice.domain.VoiceInteraction$SeatRequest"
+    timeout="2"
+  >SELECT * FROM voice_seat_request WHERE room_id=#{room} AND request_state='PENDING' ORDER BY id LIMIT 9 FOR UPDATE</select>
+    <select
+    id="receipt"
+    resultType="cn.kokonexus.voice.domain.VoiceInteraction$Receipt"
+    timeout="2"
+  >SELECT fingerprint,command_type,result_version,result_session_id FROM voice_command_receipt WHERE room_id=#{room} AND user_id=#{user} AND request_id=#{id} FOR UPDATE</select>
+    <select
+    id="recentReceipts"
+    resultType="java.lang.String"
+    timeout="2"
+  >SELECT request_id FROM voice_command_receipt WHERE room_id=#{room} AND user_id=#{user} AND created_at&gt;=#{since} LIMIT 11 FOR UPDATE</select>
+    <select
+    id="receiptBudget"
+    resultType="java.lang.String"
+    timeout="2"
+  >SELECT request_id FROM voice_command_receipt WHERE room_id=#{room} AND user_id=#{user} LIMIT 1001 FOR UPDATE</select>
+    <insert id="insertSeat">INSERT INTO voice_seat(room_id,seat_no) VALUES(#{room},#{no})</insert>
+    <insert
+    id="saveMember"
+  >INSERT INTO voice_room_member(room_id,user_id,display_name,room_role,member_state,session_id,lease_until,joined_at) VALUES(#{member.roomId},#{member.userId},#{member.displayName},#{member.roomRole},'ACTIVE',#{member.sessionId},#{member.leaseUntil},#{joined}) ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),room_role=VALUES(room_role),member_state='ACTIVE',session_id=VALUES(session_id),lease_until=VALUES(lease_until),joined_at=VALUES(joined_at)</insert>
+    <update
+    id="saveSeat"
+  >UPDATE voice_seat SET seat_state=#{seat.seatState},user_id=#{seat.userId},session_id=#{seat.sessionId},request_id=#{seat.requestId},muted=#{seat.muted} WHERE room_id=#{seat.roomId} AND seat_no=#{seat.seatNo}</update>
+    <insert
+    id="insertRequest"
+  >INSERT INTO voice_seat_request(id,room_id,seat_no,user_id,session_id,request_type,request_state,expires_at,created_at) VALUES(#{request.id},#{request.roomId},#{request.seatNo},#{request.userId},#{request.sessionId},#{request.requestType},'PENDING',#{request.expiresAt},#{now})</insert>
+    <update
+    id="finishRequest"
+  >UPDATE voice_seat_request SET request_state=#{state} WHERE id=#{id} AND request_state='PENDING'</update>
+    <update
+    id="touchMember"
+  >UPDATE voice_room_member SET lease_until=#{until} WHERE room_id=#{room} AND user_id=#{user} AND session_id=#{session} AND member_state='ACTIVE' AND lease_until&gt;#{now}</update>
+    <update
+    id="setMemberState"
+  >UPDATE voice_room_member SET member_state=#{state} WHERE room_id=#{room} AND user_id=#{user} AND member_state='ACTIVE'</update>
+    <update
+    id="setRole"
+  >UPDATE voice_room_member SET room_role=#{role} WHERE room_id=#{room} AND user_id=#{user}</update>
+    <update
+    id="transfer"
+  >UPDATE voice_room SET owner_id=#{target.userId},owner_name=#{target.displayName} WHERE id=#{room} AND owner_id=#{owner} AND status='OPEN'</update>
+    <update
+    id="bumpVersion"
+  >UPDATE voice_room SET interaction_version=interaction_version+1 WHERE id=#{room} AND interaction_version&lt;9223372036854775807</update>
+    <insert
+    id="insertReceipt"
+  >INSERT INTO voice_command_receipt(room_id,user_id,request_id,fingerprint,command_type,result_version,result_session_id,created_at) VALUES(#{room},#{user},#{id},#{receipt.fingerprint},#{receipt.commandType},#{receipt.resultVersion},#{receipt.resultSessionId},#{now})</insert>
+    <insert
+    id="audit"
+  >INSERT INTO voice_room_action(id,room_id,actor_id,command_type,result_version,created_at,target_user_id,seat_no,seat_request_id,desired_value) VALUES(#{id},#{room},#{actor},#{type},#{version},#{now},#{target},#{seat},#{request},#{value})</insert>
+</mapper>

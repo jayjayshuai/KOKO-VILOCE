@@ -46,7 +46,7 @@ public final class VoiceOwnerMysqlCheck {
             .table("voice_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 2, "Fresh V1/V2 migration required");
+        check(flyway.migrate().migrationsExecuted == 3, "Fresh V1/V2/V3 migration required");
         flyway.validate();
         var bean = new MybatisSqlSessionFactoryBean();
         bean.setDataSource(source);
@@ -59,7 +59,20 @@ public final class VoiceOwnerMysqlCheck {
         var sessions = new SqlSessionTemplate(bean.getObject());
         var mapper = sessions.getMapper(VoiceRoomMapper.class);
         var media = mock(VoiceMediaGateway.class);
-        var target = new VoiceApplicationService(mapper, media);
+        var closureProxy = new ProxyFactory(
+            new VoiceClosureState(
+                mapper,
+                mock(cn.kokonexus.voice.infrastructure.persistence.VoiceInteractionMapper.class)
+            )
+        );
+        closureProxy.setProxyTargetClass(true);
+        closureProxy.addAdvice(
+            new TransactionInterceptor(
+                new DataSourceTransactionManager(source),
+                new AnnotationTransactionAttributeSource()
+            )
+        );
+        var target = new VoiceApplicationService(mapper, media, (VoiceClosureState) closureProxy.getProxy());
         var proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
         proxy.addAdvice(
@@ -208,10 +221,10 @@ public final class VoiceOwnerMysqlCheck {
             /* 状态不伪装关闭。 */
         }
         check(
-            "OPEN".equals(jdbc.queryForObject("SELECT status FROM voice_room WHERE id=?", String.class, failedId)),
-            "Media failure changed SQL"
+            "CLOSING".equals(jdbc.queryForObject("SELECT status FROM voice_room WHERE id=?", String.class, failedId)),
+            "Media failure lost durable closing intent"
         );
-        System.out.println("PASS SQL_4 media failure fixture preserves real OPEN SQL fact");
+        System.out.println("PASS SQL_4 media failure fixture preserves real CLOSING intent without claiming CLOSED");
 
         long unknownId = FIRST_ID + 10002;
         jdbc.update(
@@ -240,7 +253,9 @@ public final class VoiceOwnerMysqlCheck {
         }
         check(
             unknownCalls.get() == 1 &&
-                "OPEN".equals(jdbc.queryForObject("SELECT status FROM voice_room WHERE id=?", String.class, unknownId)),
+                "CLOSING".equals(
+                    jdbc.queryForObject("SELECT status FROM voice_room WHERE id=?", String.class, unknownId)
+                ),
             "SQL failure became confirmed closure"
         );
         service.close(OWNER, unknownId);

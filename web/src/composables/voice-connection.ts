@@ -74,6 +74,10 @@ export function useVoiceConnection(
   /** 令牌/SDK/媒体连接各边界重新检查本人轮次，绝不自动开麦。 */
   async function joinVoiceRoom(target: VoiceRoom) {
     if (disposed || !session.user) return
+    if (target.controlled) {
+      voiceError.value = '受控房间媒体授权尚未开放，请使用房间互动面板；不会签发原发布凭据。'
+      return
+    }
     const expectedUser = session.user.id,
       expectedSession = session.sessionRevision
     const leaving = leaveVoiceRoom(),

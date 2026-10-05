@@ -23,7 +23,9 @@ class VoiceApplicationServiceTest {
     /** 身份夹具，不访问生产账号。 */
     private final IdentityRpcService identityRpcService = mock(IdentityRpcService.class);
     /** 生产用例，读取事务代理另在MySQL验证。 */
-    private final VoiceApplicationService service = new VoiceApplicationService(roomMapper, mediaGateway);
+    /** 短事务关闭代理的边界桩，真实SQL另验。 */
+    private final VoiceClosureState closure = mock(VoiceClosureState.class);
+    private final VoiceApplicationService service = new VoiceApplicationService(roomMapper, mediaGateway, closure);
 
     private VoiceRoom room(long id, long owner, String status) {
         var room = new VoiceRoom();
@@ -32,6 +34,18 @@ class VoiceApplicationServiceTest {
         room.setStatus(status);
         room.setProviderRoomName("synthetic-voice-" + id);
         return room;
+    }
+
+    @Test
+    void controlledRoomCannotBypassCoreWithLegacyPublishingCredential() {
+        var room = room(9001, 7, "OPEN");
+        room.setControlMode("CONTROLLED");
+        when(roomMapper.selectById(9001L)).thenReturn(room);
+        clearInvocations(identityRpcService);
+        assertThatThrownBy(() -> service.join(7, 9001)).isInstanceOf(
+            cn.kokonexus.common.api.ExternalDependencyUnavailableException.class
+        );
+        verifyNoInteractions(identityRpcService, mediaGateway);
     }
 
     @BeforeEach
@@ -100,7 +114,8 @@ class VoiceApplicationServiceTest {
 
     @Test
     void closedOwnerRetryIsIdempotentButOtherOwnerCannotProbeOrDelete() {
-        when(roomMapper.selectById(9001L)).thenReturn(room(9001, 7, "CLOSED"));
+        when(closure.begin(7, 9001)).thenReturn(room(9001, 7, "CLOSED"));
+        doThrow(new cn.kokonexus.common.api.ResourceNotFoundException("无权操作")).when(closure).begin(8, 9001);
         service.close(7, 9001);
         assertThatThrownBy(() -> service.close(8, 9001)).isInstanceOf(
             cn.kokonexus.common.api.ResourceNotFoundException.class
@@ -114,11 +129,12 @@ class VoiceApplicationServiceTest {
 
     @Test
     void compareAndSetRaceSucceedsOnlyWithConfirmedClosedOwnerFact() {
-        when(roomMapper.selectById(9001L)).thenReturn(room(9001, 7, "OPEN"), room(9001, 7, "CLOSED"));
+        when(closure.begin(7, 9001)).thenReturn(room(9001, 7, "CLOSING"));
         service.close(7, 9001);
         verify(mediaGateway).delete("synthetic-voice-9001");
-        verify(roomMapper).markClosed(9001, 7);
-        when(roomMapper.selectById(9002L)).thenReturn(room(9002, 7, "OPEN"));
+        verify(closure).finish(7, 9001);
+        when(closure.begin(7, 9002)).thenReturn(room(9002, 7, "CLOSING"));
+        doThrow(new IllegalStateException("关闭未确认")).when(closure).finish(7, 9002);
         assertThatThrownBy(() -> service.close(7, 9002))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("未确认");
@@ -126,7 +142,7 @@ class VoiceApplicationServiceTest {
 
     @Test
     void failedMediaDeletionNeverMarksSqlClosed() {
-        when(roomMapper.selectById(9001L)).thenReturn(room(9001, 7, "OPEN"));
+        when(closure.begin(7, 9001)).thenReturn(room(9001, 7, "CLOSING"));
         doThrow(new IllegalStateException("synthetic-media-failure")).when(mediaGateway).delete("synthetic-voice-9001");
         assertThatThrownBy(() -> service.close(7, 9001)).isInstanceOf(IllegalStateException.class);
         verify(roomMapper, never()).markClosed(
@@ -139,7 +155,7 @@ class VoiceApplicationServiceTest {
     void invalidOrFailedStateCannotDeleteMediaAndCredentialDoesNotLeakToString() {
         assertThatThrownBy(() -> service.close(0, 9001)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.close(7, 0)).isInstanceOf(IllegalArgumentException.class);
-        when(roomMapper.selectById(9001L)).thenReturn(room(9001, 7, "FAILED"));
+        doThrow(new IllegalStateException("当前状态不能关闭")).when(closure).begin(7, 9001);
         assertThatThrownBy(() -> service.close(7, 9001)).isInstanceOf(IllegalStateException.class);
         verifyNoInteractions(mediaGateway);
         var credential = new VoiceApplicationService.JoinCredential(

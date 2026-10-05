@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { Headphones, Plus, RefreshCw } from 'lucide-vue-next';
-import { watch } from 'vue';
+import { watch, ref, onBeforeUnmount } from 'vue';
+import type { VoiceRoom } from '../api';
+import VoiceInteractionPanel from '../components/VoiceInteractionPanel.vue';
+import VoiceAuditHistory from '../components/VoiceAuditHistory.vue';
+import { voiceInteractionApi, type InteractionCapabilities } from '../services/voice-interaction';
 import { useVoiceOwnerWorkspace } from '../composables/voice-owner-workspace';
 const props = defineProps<{
   /** 当前可信用户；后端不从请求正文读取此ID。 */
@@ -10,9 +14,45 @@ const props = defineProps<{
   /** 同会话建房成功后触发事实重取，不含创建请求或凭据。 */
   refreshRevision?: number;
 }>();
+/** 只选服务器返回的受控房间，不把原通话房间升级为新控制。 */
+const interactionRoom = ref<VoiceRoom | null>(null);
+/** 关闭/关闭处理中房间只读历史，不恢复互动会话。 */
+const historyRoom = ref<string | null>(null);
+/** 能力故障不伪装已启用；读取服务器默认关闭的候选开关。 */
+const features = ref<InteractionCapabilities | null>(null),
+  featureError = ref(''),
+  interactionBusy = ref(false);
+let featureRequest = new AbortController(),
+  featureRevision = 0;
+const stopFeatures = watch(
+  () => [props.userId, props.sessionRevision],
+  async () => {
+    featureRequest.abort();
+    featureRequest = new AbortController();
+    const revision = ++featureRevision;
+    features.value = null;
+    featureError.value = '';
+    interactionRoom.value = null;
+    historyRoom.value = null;
+    if (!props.userId) return;
+    try {
+      const result = await voiceInteractionApi.features(featureRequest.signal);
+      if (revision === featureRevision) features.value = result;
+    } catch (cause) {
+      if (revision === featureRevision)
+        featureError.value = cause instanceof Error ? cause.message : '互动能力读取失败';
+    }
+  },
+  { immediate: true, flush: 'sync' },
+);
+onBeforeUnmount(() => {
+  featureRevision++;
+  stopFeatures();
+  featureRequest.abort();
+});
 const emit = defineEmits<{
   /** 打开既有真实建房表单，不模拟创建成功。 */
-  create: [];
+  create: [controlled?: boolean];
   /** 已被服务端确认关闭，用于移除公开快照和本机SDK连接。 */
   closed: [roomId: string];
 }>();
@@ -31,7 +71,13 @@ const {
   confirmClose,
 } = useVoiceOwnerWorkspace(props, (id) => emit('closed', id));
 /** 只翻译服务器状态，不从列表条数推算在线数。 */
-const statuses: Record<string, string> = { PROVISIONING: '准备中', OPEN: '开放', CLOSED: '已关闭', FAILED: '创建失败' };
+const statuses: Record<string, string> = {
+  PROVISIONING: '准备中',
+  OPEN: '开放',
+  CLOSING: '关闭处理中',
+  CLOSED: '已关闭',
+  FAILED: '创建失败',
+};
 watch(
   () => props.refreshRevision,
   () => {
@@ -55,7 +101,37 @@ watch(
     </div>
   </div>
   <p v-if="writeError" class="form-error" role="alert">{{ writeError }}</p>
+  <p v-if="featureError" class="form-error" role="alert">互动能力读取失败：{{ featureError }}，不开放受控创建。</p>
+  <button
+    v-if="features?.enabled"
+    type="button"
+    class="secondary"
+    :disabled="!!closing || interactionBusy"
+    @click="emit('create', true)"
+    >创建受控房间（媒体待接入）</button
+  >
   <p v-if="success" role="status">{{ success }}</p>
+  <VoiceAuditHistory
+    v-if="historyRoom && userId"
+    :key="`${historyRoom}:${userId}:${sessionRevision}`"
+    :room-id="historyRoom"
+    :user-id="userId"
+    :session-revision="sessionRevision"
+    @close="historyRoom = null"
+  />
+  <VoiceInteractionPanel
+    v-if="interactionRoom && userId"
+    :key="`${interactionRoom.id}:${userId}:${sessionRevision}`"
+    :room-id="interactionRoom.id"
+    :room-title="interactionRoom.title"
+    :user-id="userId"
+    :session-revision="sessionRevision"
+    @busy="interactionBusy = $event"
+    @close="
+      interactionRoom = null;
+      void load();
+    "
+  />
   <section
     v-if="confirmation"
     class="workspace-card voice-close-confirmation"
@@ -92,13 +168,28 @@ watch(
         >
         <span class="status-tag">{{ statuses[room.status] || '未知状态' }}</span>
         <button
-          v-if="room.status === 'OPEN'"
+          v-if="room.controlled && ['CLOSING', 'CLOSED'].includes(room.status)"
           type="button"
           class="secondary"
-          :disabled="loading || !!closing || !!confirmation"
+          @click="historyRoom = room.id"
+          >读取关闭审计</button
+        >
+        <button
+          v-if="room.controlled && room.status === 'OPEN'"
+          type="button"
+          class="secondary"
+          :disabled="loading || !!closing"
+          @click="interactionRoom = room"
+          >互动管理</button
+        >
+        <button
+          v-if="['OPEN', 'CLOSING'].includes(room.status)"
+          type="button"
+          class="secondary"
+          :disabled="loading || !!closing || !!confirmation || !!interactionRoom"
           :aria-label="`关闭房间 ${room.title}`"
           @click="prepareClose(room)"
-          >关闭房间</button
+          >{{ room.status === 'CLOSING' ? '重试确认关闭' : '关闭房间' }}</button
         >
       </li>
     </ul>

@@ -49,6 +49,7 @@ import { unknownPage, workspacePages } from './router/pages';
 import type { DiscoverySnapshot, WorkspaceAction } from './types/workspace';
 import { useDialogAccessibility } from './composables/dialog-accessibility';
 import { useVoiceConnection } from './composables/voice-connection';
+import VoiceInteractionPanel from './components/VoiceInteractionPanel.vue';
 
 const auth = useAuthStore();
 const route = useRoute(),
@@ -94,6 +95,9 @@ const liveRooms = ref<LiveRoom[]>([]);
 const voiceRooms = ref<VoiceRoom[]>([]);
 /** 本人建房确认后刷新房主工作台，不以提交按钮点击当作新房间。 */
 const voiceOwnerRefreshRevision = ref(0);
+/** 受控房间仅打开SQL互动，禁止复用原媒体凭据。 */
+const selectedInteractionRoom = ref<VoiceRoom | null>(null),
+  voiceInteractionBusy = ref(false);
 /** 语音建房请求与共享表单分离轮次，换会话时旧结果不覆盖新页面。 */
 let voiceCreateRevision = 0,
   voiceCreatePending = false;
@@ -130,6 +134,7 @@ const dialog = ref<
   | 'community'
   | 'live'
   | 'voice'
+  | 'voice-interaction'
   | 'manage'
   | 'creator'
   | 'postManage'
@@ -162,7 +167,7 @@ const communityEdit = reactive<{
   version: 0,
 });
 const live = reactive({ slug: '', title: '', category: '', interactive: true });
-const voice = reactive({ slug: '', title: '', topic: '', maxParticipants: 30 });
+const voice = reactive({ slug: '', title: '', topic: '', maxParticipants: 30, controlled: false });
 const creatorProfile = reactive<CreatorProfile>({
   userId: '',
   slug: '',
@@ -431,6 +436,7 @@ function editCommunity(item: Community) {
 }
 
 function requireLogin(next: 'community' | 'live' | 'voice') {
+  if (next === 'voice') voice.controlled = false;
   dialog.value = auth.user ? next : 'auth';
   formError.value = auth.user ? '' : '请先登录，再使用创作者功能。';
 }
@@ -899,6 +905,11 @@ async function joinVoiceRoom(target: VoiceRoom) {
     formError.value = '请先登录，再加入语音房。';
     return;
   }
+  if (target.controlled) {
+    selectedInteractionRoom.value = target;
+    dialog.value = 'voice-interaction';
+    return;
+  }
   await voiceState.joinVoiceRoom(target);
 }
 
@@ -990,7 +1001,8 @@ async function retrySession() {
   if (auth.initialized && !loggingOut.value && !submitting.value) await auth.restore();
 }
 function closeDialog() {
-  if (!submitting.value && !imageUploading.value && !interactionSubmitting.value) dialog.value = null;
+  if (!submitting.value && !imageUploading.value && !interactionSubmitting.value && !voiceInteractionBusy.value)
+    dialog.value = null;
 }
 const anyDialogOpen = computed(() => !!dialog.value || communityHubOpen.value);
 useDialogAccessibility(
@@ -999,7 +1011,7 @@ useDialogAccessibility(
     if (communityHubOpen.value) communityHubOpen.value = false;
     else closeDialog();
   },
-  () => submitting.value || imageUploading.value || interactionSubmitting.value,
+  () => submitting.value || imageUploading.value || interactionSubmitting.value || voiceInteractionBusy.value,
 );
 
 const viewBindings = computed(() => {
@@ -1043,7 +1055,10 @@ const viewBindings = computed(() => {
       userId: auth.user?.id,
       sessionRevision: auth.sessionRevision,
       refreshRevision: voiceOwnerRefreshRevision.value,
-      onCreate: () => requireLogin('voice'),
+      onCreate: (controlled = false) => {
+        requireLogin('voice');
+        voice.controlled = controlled;
+      },
       onClosed: (roomId: string) => {
         voiceRooms.value = voiceRooms.value.filter((room) => room.id !== roomId);
         if (connectedVoice.value?.id === roomId || voiceJoining.value === roomId) void leaveVoiceRoom();
@@ -1199,6 +1214,17 @@ onBeforeUnmount(() => {
         >{{ authMode === 'login' ? '没有账号？立即注册' : '已有账号？返回登录' }}</button
       ></form
     >
+    <VoiceInteractionPanel
+      class="modal"
+      v-else-if="dialog === 'voice-interaction' && selectedInteractionRoom && auth.user"
+      :key="`${selectedInteractionRoom.id}:${auth.user.id}:${auth.sessionRevision}`"
+      :room-id="selectedInteractionRoom.id"
+      :room-title="selectedInteractionRoom.title"
+      :user-id="auth.user.id"
+      :session-revision="auth.sessionRevision"
+      @busy="voiceInteractionBusy = $event"
+      @close="closeDialog"
+    />
     <form v-else-if="dialog === 'community'" class="modal" @submit.prevent="createCommunity"
       ><button
         type="button"
@@ -1246,7 +1272,7 @@ onBeforeUnmount(() => {
         :disabled="submitting || imageUploading || interactionSubmitting"
         @click="closeDialog"
         >×</button
-      ><p class="eyebrow">LIVEKIT VOICE</p><h2>创建语音房</h2
+      ><p class="eyebrow">LIVEKIT VOICE</p><h2>{{ voice.controlled ? '创建受控房间（媒体待接入）' : '创建语音房' }}</h2
       ><label>房间标题<input v-model.trim="voice.title" maxlength="120" required /></label
       ><label
         >房间地址<input
@@ -1256,7 +1282,8 @@ onBeforeUnmount(() => {
           required /></label
       ><label>话题<textarea v-model.trim="voice.topic" maxlength="300"></textarea></label
       ><label>人数上限<input v-model.number="voice.maxParticipants" type="number" min="2" max="100" required /></label
-      ><p class="hint">创建操作会实时调用自建 LiveKit；媒体服务不可用时不会返回假成功。</p
+      ><p class="hint">创建操作会实时调用自建 LiveKit；媒体服务不可用时不会返回假成功。</p>
+      <p v-if="voice.controlled" class="hint">受控房间仅开放成员/麦位持久状态，媒体授权尚未接入，不签发旧发布凭据。</p
       ><p v-if="formError" class="form-error">{{ formError }}</p
       ><button class="primary wide" :disabled="submitting">创建语音房</button></form
     >

@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="cn.kokonexus.voice.infrastructure.persistence.VoiceRoomMapper">
+    <select
+    id="lockRoom"
+    resultType="cn.kokonexus.voice.domain.VoiceRoom"
+    timeout="2"
+  >SELECT * FROM voice_room WHERE id=#{id} FOR UPDATE</select>
+    <update
+    id="markClosing"
+  >UPDATE voice_room SET status='CLOSING' WHERE id=#{id} AND owner_id=#{ownerId} AND status='OPEN'</update>
     <select id="ownedRooms" resultType="cn.kokonexus.voice.domain.VoiceRoom" timeout="2">
-        SELECT id, owner_id, owner_name, slug, title, topic, status, max_participants, created_at, closed_at
+        SELECT id, owner_id, owner_name, slug, title, topic, status, max_participants, control_mode, interaction_version, created_at, closed_at
         FROM voice_room
         WHERE owner_id = #{ownerId}
         <if test="beforeId != null">AND id &lt; #{beforeId}</if>
@@ -20,6 +28,6 @@
     </update>
     <update id="markClosed">
         UPDATE voice_room SET status = 'CLOSED', closed_at = CURRENT_TIMESTAMP(3)
-        WHERE id = #{id} AND owner_id = #{ownerId} AND status = 'OPEN'
+        WHERE id = #{id} AND owner_id = #{ownerId} AND status = 'CLOSING'
     </update>
 </mapper>

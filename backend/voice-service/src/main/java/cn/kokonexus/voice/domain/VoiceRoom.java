@@ -31,6 +31,10 @@ public class VoiceRoom {
     private String providerRoomName;
     /** 房间人数上限。 */
     private Integer maxParticipants;
+    /** LEGACY原通话/CONTROLLED受控核心，已有房间不自动转换。 */
+    private String controlMode = "LEGACY";
+    /** 房间互动单调版本，命令携带期望值，禁止溢出或重置。 */
+    private Long interactionVersion = 0L;
     /** 服务端创建时间，数据库时区 Asia/Shanghai。 */
     private LocalDateTime createdAt;
     /** 关闭时间；未关闭为空，Asia/Shanghai。 */

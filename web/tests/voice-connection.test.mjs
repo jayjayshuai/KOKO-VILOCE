@@ -340,3 +340,14 @@ test('公网HTTP不索取凭据，HTTPS拒绝明文媒体地址， malformed凭�
     await s.dispose()
   }
 })
+
+test('受控房间不能复用原发布JWT或实例化媒体SDK', async () => {
+  const s = await setup(() => {
+    throw new Error('禁止签发')
+  })
+  await s.state.joinVoiceRoom({ ...target(), controlled: true })
+  assert.equal(s.calls.length, 0)
+  assert.equal(s.rooms.length, 0)
+  assert.match(s.state.voiceError.value, /媒体授权尚未开放/)
+  await s.dispose()
+})

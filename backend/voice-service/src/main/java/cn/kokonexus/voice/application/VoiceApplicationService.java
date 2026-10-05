@@ -1,7 +1,6 @@
 package cn.kokonexus.voice.application;
 
 import cn.kokonexus.api.identity.IdentityRpcService;
-import cn.kokonexus.common.api.ResourceNotFoundException;
 import cn.kokonexus.voice.domain.VoiceRoom;
 import cn.kokonexus.voice.infrastructure.media.VoiceMediaGateway;
 import cn.kokonexus.voice.infrastructure.persistence.VoiceRoomMapper;
@@ -22,20 +21,37 @@ public class VoiceApplicationService {
     private final VoiceRoomMapper roomMapper;
     /** VoiceMediaGateway 外部或领域适配器，失败不伪装为业务成功。 */
     private final VoiceMediaGateway mediaGateway;
+    /** 意图/确认短事务，不在SQL锁内调用媒体。 */
+    private final VoiceClosureState closure;
 
     /** IdentityRpcService 跨服务契约代理，不直接读取其他服务数据库。 */
     @DubboReference(version = "1.0.0", check = false, timeout = 10000, retries = 0)
     private IdentityRpcService identityRpcService;
 
-    public VoiceApplicationService(VoiceRoomMapper roomMapper, VoiceMediaGateway mediaGateway) {
+    public VoiceApplicationService(
+        VoiceRoomMapper roomMapper,
+        VoiceMediaGateway mediaGateway,
+        VoiceClosureState closure
+    ) {
         this.roomMapper = roomMapper;
         this.mediaGateway = mediaGateway;
+        this.closure = closure;
     }
 
     public VoiceRoom create(long ownerId, String slug, String title, String topic, int maxParticipants) {
+        return create(ownerId, slug, title, topic, maxParticipants, "LEGACY");
+    }
+
+    /** 仅新房间受控，不转换可能持有旧发布JWT的房间；Controller先检查候选开关。 */
+    public VoiceRoom createControlled(long ownerId, String slug, String title, String topic, int maxParticipants) {
+        return create(ownerId, slug, title, topic, maxParticipants, "CONTROLLED");
+    }
+
+    private VoiceRoom create(long ownerId, String slug, String title, String topic, int maxParticipants, String mode) {
         var owner = identityRpcService.findActiveUser(String.valueOf(ownerId));
         VoiceRoom room = new VoiceRoom();
         room.setOwnerId(ownerId);
+        room.setControlMode(mode);
         room.setOwnerName(owner.displayName());
         room.setSlug(slug.toLowerCase(Locale.ROOT));
         room.setTitle(title.trim());
@@ -85,6 +101,12 @@ public class VoiceApplicationService {
         if (room == null || !"OPEN".equals(room.getStatus())) {
             throw new IllegalArgumentException("语音房不存在或已关闭");
         }
+        if ("CONTROLLED".equals(room.getControlMode())) {
+            throw new cn.kokonexus.common.api.ExternalDependencyUnavailableException(
+                "受控房间媒体授权尚未开放，不签发原发布凭据",
+                null
+            );
+        }
         var identity = identityRpcService.findActiveUser(String.valueOf(userId));
         String token = mediaGateway.issueJoinToken(room.getProviderRoomName(), userId, identity.displayName());
         return new JoinCredential(mediaGateway.publicUrl(), token, room.getProviderRoomName());
@@ -110,27 +132,14 @@ public class VoiceApplicationService {
         return new OwnedRoomPage(items, nextBefore);
     }
 
-    /** 先核对所有者；删除媒体失败不更新SQL。重试仅在可确认CLOSED事实时幂等成功。 */
+    /** 关闭意图先提交冻结归属；媒体失败保留CLOSING，原房间重试，外部I/O不持SQL锁。 */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public void close(long ownerId, long roomId) {
         if (ownerId <= 0 || roomId <= 0) throw new IllegalArgumentException("房主或房间标识无效");
-        VoiceRoom room = roomMapper.selectById(roomId);
-        requireOwned(room, ownerId);
+        VoiceRoom room = closure.begin(ownerId, roomId);
         if ("CLOSED".equals(room.getStatus())) return;
-        if (!"OPEN".equals(room.getStatus())) throw new IllegalStateException("当前语音房状态不允许关闭");
         mediaGateway.delete(room.getProviderRoomName());
-        if (roomMapper.markClosed(roomId, ownerId) != 1) {
-            VoiceRoom confirmed = roomMapper.selectById(roomId);
-            requireOwned(confirmed, ownerId);
-            if (!"CLOSED".equals(confirmed.getStatus())) throw new IllegalStateException(
-                "语音房关闭未确认，请刷新后重试"
-            );
-        }
-    }
-
-    private static void requireOwned(VoiceRoom room, long ownerId) {
-        if (room == null || room.getOwnerId() == null || room.getOwnerId() != ownerId) {
-            throw new ResourceNotFoundException("语音房不存在或无权操作");
-        }
+        closure.finish(ownerId, roomId);
     }
 
     /** 内部查询投影，Controller另映射为无供应商字段的公开响应。 */

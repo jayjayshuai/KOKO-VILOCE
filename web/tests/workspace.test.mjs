@@ -671,6 +671,7 @@ async function app(overrides = {}, authOverrides = {}) {
       './components/ManagedImagePicker.vue': { default: {} },
       './components/WorkspaceShell.vue': { default: {} },
       './components/CommunityMembershipPanel.vue': { default: {} },
+      './components/VoiceInteractionPanel.vue': { default: {} },
     }
   })
   return { ...h, auth, route }

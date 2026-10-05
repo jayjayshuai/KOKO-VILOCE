@@ -8,6 +8,10 @@ import org.apache.ibatis.annotations.Param;
 /** voice-service：持久化映射；值参数绑定，复杂查询在 XML。 */
 @Mapper
 public interface VoiceRoomMapper extends BaseMapper<VoiceRoom> {
+    /** 当前归属/状态，关闭意图与转让共用房间行锁。 */
+    VoiceRoom lockRoom(@Param("id") long id);
+    /** 持久意图，媒体未知时不再开放新入会。 */
+    int markClosing(@Param("id") long id, @Param("ownerId") long ownerId);
     /** 仅本人ID降序游标；最多sizePlusOne条，无总数扫描，不接受客户端房主参数。 */
     java.util.List<VoiceRoom> ownedRooms(
         @Param("ownerId") long ownerId,

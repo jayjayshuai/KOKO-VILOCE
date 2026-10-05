@@ -1,5 +1,10 @@
 server:
   port: 8084
+  # 资源保护配置，不是容量验收结果；身份RPC/媒体调用不占无限Servlet线程。
+  tomcat.threads.max: 16
+  tomcat.threads.min-spare: 2
+  tomcat.accept-count: 32
+  tomcat.max-connections: 512
 
 spring:
   application:
@@ -8,6 +13,8 @@ spring:
     url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_voice?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${DATABASE_USER:koko_nexus}
     password: ${DATABASE_PASSWORD:}
+    hikari.maximum-pool-size: 4
+    hikari.connection-timeout: 3000
   cloud.nacos.discovery:
     server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
     username: ${NACOS_USERNAME:nacos}
@@ -47,6 +54,8 @@ livekit:
   api-secret: ${LIVEKIT_API_SECRET:}
 
 koko.voice.gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
+# 只启用候选SQL互动核心，不启用媒体发布；正式P1验收前保持false。
+koko.voice.interaction-core-enabled: ${VOICE_INTERACTION_CORE_ENABLED:false}
 
 management:
   endpoints.web.exposure.include: health,info,prometheus
