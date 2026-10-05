@@ -51,6 +51,8 @@ public class ChatSafetyService {
     private final MemberMapper members;
     /** 真实消息与证据来源。 */
     private final MessageMapper messages;
+    /** 本人拉黑设置在其他设备/节点重新读取，不向对方公开拉黑状态。 */
+    private final ChatSyncWriter syncWriter;
 
     /** 与私信发送处于同一事务，锁一直保持到消息提交；RR 下必须当前读。 */
     @Transactional(propagation = Propagation.MANDATORY)
@@ -77,6 +79,7 @@ public class ChatSafetyService {
         );
         if (existing != null) {
             requireOne(locks.setBlocking(Math.min(ownerId, targetId), Math.max(ownerId, targetId), ownerId, true));
+            syncWriter.changed(List.of(ownerId));
             return existing;
         }
         if (blocks.selectCount(Wrappers.<ChatBlock>lambdaQuery().eq(ChatBlock::getOwnerId, ownerId)) >= BLOCK_LIMIT) {
@@ -91,6 +94,7 @@ public class ChatSafetyService {
         block.setCreatedAt(LocalDateTime.now());
         requireOne(blocks.insert(block));
         requireOne(locks.setBlocking(Math.min(ownerId, targetId), Math.max(ownerId, targetId), ownerId, true));
+        syncWriter.changed(List.of(ownerId));
         return block;
     }
 
@@ -109,6 +113,7 @@ public class ChatSafetyService {
         lockPair(ownerId, targetId);
         requireOne(blocks.deleteById(existing.getId()));
         requireOne(locks.setBlocking(Math.min(ownerId, targetId), Math.max(ownerId, targetId), ownerId, false));
+        syncWriter.changed(List.of(ownerId));
     }
 
     /** 分页只返回本人的主动设置，不透露对方是否拉黑自己。 */

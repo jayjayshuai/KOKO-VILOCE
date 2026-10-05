@@ -51,12 +51,19 @@ function request<T>(path: string, method = 'GET', body?: unknown, signal?: Abort
   return httpRequest<T>(`/chat${path}`, { method, signal, body: body === undefined ? undefined : JSON.stringify(body) })
 }
 export const chatApi = {
-  list: (after?: string) =>
-    request<Conversation[]>(`/conversations?size=100${after ? `&after=${encodeURIComponent(after)}` : ''}`),
+  list: (after?: string, signal?: AbortSignal) =>
+    request<Conversation[]>(
+      `/conversations?size=100${after ? `&after=${encodeURIComponent(after)}` : ''}`,
+      'GET',
+      undefined,
+      signal,
+    ),
   direct: (handle: string) => request<Conversation>('/direct', 'POST', { handle }),
   group: (title: string, handles: string[]) => request<Conversation>('/groups', 'POST', { title, handles }),
-  history: (id: string, query = '') => request<ChatMessage[]>(`/conversations/${id}/messages?size=100${query}`),
-  read: (id: string, seq: number) => request<void>(`/conversations/${id}/read`, 'POST', { seq }),
+  history: (id: string, query = '', signal?: AbortSignal) =>
+    request<ChatMessage[]>(`/conversations/${id}/messages?size=100${query}`, 'GET', undefined, signal),
+  read: (id: string, seq: number, signal?: AbortSignal) =>
+    request<void>(`/conversations/${id}/read`, 'POST', { seq }, signal),
   add: (id: string, handle: string) => request<void>(`/conversations/${id}/members`, 'POST', { handle }),
   remove: (id: string, userId: string) => request<void>(`/conversations/${id}/members/${userId}`, 'DELETE'),
   rename: (id: string, title: string) => request<void>(`/conversations/${id}`, 'PATCH', { title }),

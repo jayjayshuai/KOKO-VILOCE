@@ -23,6 +23,7 @@ function deferred() {
 async function execute(source, mocks = {}, globals = {}) {
   const context = vm.createContext({
     AbortController,
+    AbortSignal,
     Headers,
     FormData,
     Response,
@@ -85,6 +86,7 @@ async function setup(relative, network, props = {}, globals = {}, additionalModu
       socketUrl: () => 'ws://not-used.invalid',
     },
     '../services/chat-safety': { chatSafetyApi: api },
+    '../services/http': { captureUnauthorizedSession: () => () => {} },
     './ChatSafetyPanel.vue': { default: {} },
     './ChatHistoryTools.vue': { default: {} },
   }
@@ -92,7 +94,11 @@ async function setup(relative, network, props = {}, globals = {}, additionalModu
   const namespace = await execute(
     source,
     { ...modules, ...additions },
-    { document: { visibilityState: 'visible' }, ...globals },
+    {
+      document: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} },
+      window: { addEventListener() {}, removeEventListener() {} },
+      ...globals,
+    },
   )
   const state = namespace.default.setup(props, { expose() {}, emit: (...event) => events.push(event) })
   return { state, calls, mounted, events, dispose: () => hooks.forEach((callback) => callback()) }
@@ -378,6 +384,58 @@ test('解除观察器后不再发送会话失效通知', async () => {
   dispose()
   await assert.rejects(module.request('/chat/conversations'), (cause) => cause.status === 401)
   assert.equal(called, 0)
+})
+
+test('WS 失效通知使用连接建立时快照，解除/替换观察器使旧连接通知失效', async () => {
+  const module = await http(async () => new Response('{}'))
+  let epoch = 'old'
+  const notifications = []
+  const dispose = module.observeSession({ capture: () => epoch, unauthorized: (value) => notifications.push(value) })
+  const expired = module.captureUnauthorizedSession()
+  epoch = 'new'
+  expired()
+  assert.deepEqual(notifications, ['old'])
+  dispose()
+  expired()
+  assert.deepEqual(notifications, ['old'])
+  module.observeSession({
+    capture: () => 'replacement',
+    unauthorized: () => {
+      throw new Error('Old subscriber crossed applications')
+    },
+  })
+  expired()
+  assert.deepEqual(notifications, ['old'])
+})
+
+test('同账号再次登录后旧WS失效不能注销新身份，当前WS失效必须清除身份', async () => {
+  const store = await authStore({ login: async () => ({ user: identity('7') }) })
+  const module = await http(async () => new Response('{}'))
+  module.observeSession({
+    capture: () => ({ userId: store.user?.id, revision: store.sessionRevision }),
+    unauthorized: (scope) => store.expireSession(scope.userId, scope.revision),
+  })
+  await store.login('synthetic@example.invalid', 'synthetic-password')
+  const oldConnection = module.captureUnauthorizedSession()
+  await store.login('synthetic@example.invalid', 'synthetic-password')
+  oldConnection()
+  assert.equal(store.user.id, '7')
+  assert.equal(store.sessionExpired, false)
+  module.captureUnauthorizedSession()()
+  assert.equal(store.user, null)
+  assert.equal(store.sessionExpired, true)
+})
+
+test('HTTP 请求开始后解除观察器，迟到业务401不触发已卸载应用', async () => {
+  const wait = deferred()
+  const module = await http(() => wait.promise)
+  let notified = 0
+  const dispose = module.observeSession({ capture: () => 'scope', unauthorized: () => notified++ })
+  const pending = module.request('/chat/conversations')
+  dispose()
+  wait.resolve(new Response('{}', { status: 401 }))
+  await assert.rejects(pending, (cause) => cause.status === 401)
+  assert.equal(notified, 0)
 })
 
 const notification = (id, readAt = null) => ({

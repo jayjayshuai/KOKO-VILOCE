@@ -3,6 +3,7 @@ package cn.kokonexus.chat.application;
 import cn.kokonexus.api.identity.ChatIdentity;
 import cn.kokonexus.chat.persistence.ArchiveMapper;
 import cn.kokonexus.chat.persistence.BlockMapper;
+import cn.kokonexus.chat.persistence.ChatSyncMapper;
 import cn.kokonexus.chat.persistence.ConversationMapper;
 import cn.kokonexus.chat.persistence.MemberMapper;
 import cn.kokonexus.chat.persistence.MessageMapper;
@@ -34,7 +35,10 @@ public final class ChatMysqlCheck {
     public static void main(String[] args) throws Exception {
         String url = System.getenv("CHAT_CHECK_JDBC");
         if (
-            url == null || !url.matches("jdbc:mysql://mysql:3306/koko_chat_check_[0-9]+\\?.+")
+            url == null ||
+            !url.matches(
+                "jdbc:mysql://(?:mysql:3306/koko_chat_check_[0-9]+|127\\.0\\.0\\.1:33067/koko_chat_check_20261005)\\?.+"
+            )
         ) throw new IllegalArgumentException("必须使用隔离数据库");
         var source = new DriverManagerDataSource(
             url,
@@ -42,7 +46,12 @@ public final class ChatMysqlCheck {
             System.getenv("CHAT_CHECK_PASSWORD")
         );
         var jdbc = new JdbcTemplate(source);
-        for (String migration : List.of("V1__chat.sql", "V2__chat_safety.sql", "V3__chat_bookmarks.sql")) {
+        for (String migration : List.of(
+            "V1__chat.sql",
+            "V2__chat_safety.sql",
+            "V3__chat_bookmarks.sql",
+            "V4__chat_sync_revision.sql"
+        )) {
             try (var stream = ChatMysqlCheck.class.getResourceAsStream("/db/migration/" + migration)) {
                 for (String sql : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split(";"))
                     if (!sql.isBlank()) jdbc.execute(sql);
@@ -60,6 +69,15 @@ public final class ChatMysqlCheck {
         for (var mapper : List.of(MessageMapper.class, BlockMapper.class, ReportMapper.class, ReviewMapper.class))
             factory.getConfiguration().addMapper(mapper);
         var sessions = new SqlSessionTemplate(factory);
+        var writerProxy = new ProxyFactory(new ChatSyncWriter(sessions.getMapper(ChatSyncMapper.class)));
+        writerProxy.setProxyTargetClass(true);
+        writerProxy.addAdvice(
+            new TransactionInterceptor(
+                new DataSourceTransactionManager(source),
+                new AnnotationTransactionAttributeSource()
+            )
+        );
+        var syncWriter = (ChatSyncWriter) writerProxy.getProxy();
         var safetyTarget = new ChatSafetyService(
             sessions.getMapper(SafetyLockMapper.class),
             sessions.getMapper(BlockMapper.class),
@@ -67,7 +85,8 @@ public final class ChatMysqlCheck {
             sessions.getMapper(ReviewMapper.class),
             sessions.getMapper(ConversationMapper.class),
             sessions.getMapper(MemberMapper.class),
-            sessions.getMapper(MessageMapper.class)
+            sessions.getMapper(MessageMapper.class),
+            syncWriter
         );
         var safetyProxy = new ProxyFactory(safetyTarget);
         safetyProxy.setProxyTargetClass(true);
@@ -82,7 +101,8 @@ public final class ChatMysqlCheck {
             sessions.getMapper(ConversationMapper.class),
             sessions.getMapper(MemberMapper.class),
             sessions.getMapper(MessageMapper.class),
-            safety
+            safety,
+            syncWriter
         );
         var proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
@@ -393,6 +413,19 @@ public final class ChatMysqlCheck {
         );
     }
 
+    /** 为既有并发验收创建真实 MANDATORY 版本写入代理。 */
+    private static ChatSyncWriter syncWriter(SqlSessionTemplate sessions, DriverManagerDataSource source) {
+        var proxy = new ProxyFactory(new ChatSyncWriter(sessions.getMapper(ChatSyncMapper.class)));
+        proxy.setProxyTargetClass(true);
+        proxy.addAdvice(
+            new TransactionInterceptor(
+                new DataSourceTransactionManager(source),
+                new AnnotationTransactionAttributeSource()
+            )
+        );
+        return (ChatSyncWriter) proxy.getProxy();
+    }
+
     /** 先建立发送事务的 RR 快照，再提交拉黑；验证授权读取不复用旧快照。 */
     private static void staleSnapshotBlockCheck(
         ChatService normal,
@@ -426,7 +459,8 @@ public final class ChatMysqlCheck {
             sessions.getMapper(ConversationMapper.class),
             sessions.getMapper(MemberMapper.class),
             sessions.getMapper(MessageMapper.class),
-            (ChatSafetyService) policyProxy.getProxy()
+            (ChatSafetyService) policyProxy.getProxy(),
+            syncWriter(sessions, source)
         );
         var senderProxy = new ProxyFactory(raceTarget);
         senderProxy.setProxyTargetClass(true);

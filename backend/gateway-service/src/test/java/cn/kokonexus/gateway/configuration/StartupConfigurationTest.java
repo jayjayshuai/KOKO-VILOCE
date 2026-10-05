@@ -79,6 +79,61 @@ class StartupConfigurationTest {
     }
 
     @Test
+    void gatewayCookieSettingsBindToActualSaTokenConfig() throws Exception {
+        var properties = new YamlPropertySourceLoader()
+            .load("gateway", new ClassPathResource("application.yml"))
+            .getFirst();
+        var environment = new org.springframework.core.env.StandardEnvironment();
+        environment.getPropertySources().remove("systemEnvironment");
+        environment.getPropertySources().remove("systemProperties");
+        environment.getPropertySources().addLast(properties);
+        var config = org.springframework.boot.context.properties.bind.Binder.get(environment)
+            .bind("sa-token", cn.dev33.satoken.config.SaTokenConfig.class)
+            .get();
+        assertTrue(config.getCookie().getHttpOnly());
+        assertEquals("Lax", config.getCookie().getSameSite());
+        assertFalse(config.getCookie().getSecure());
+        environment
+            .getPropertySources()
+            .addFirst(
+                new org.springframework.core.env.MapPropertySource(
+                    "formal-tls",
+                    java.util.Map.of("KOKO_COOKIE_SECURE", "true")
+                )
+            );
+        assertTrue(
+            org.springframework.boot.context.properties.bind.Binder.get(environment)
+                .bind("sa-token", cn.dev33.satoken.config.SaTokenConfig.class)
+                .get()
+                .getCookie()
+                .getSecure()
+        );
+    }
+
+    @Test
+    void chatWebsocketMetadataUsesEachNodesConfiguredPort() throws Exception {
+        var properties = new YamlPropertySourceLoader()
+            .load("chat", new FileSystemResource(Path.of("..", "chat-service", "src/main/resources/application.yml")))
+            .getFirst();
+        var environment = new org.springframework.core.env.StandardEnvironment();
+        environment.getPropertySources().remove("systemEnvironment");
+        environment.getPropertySources().remove("systemProperties");
+        environment.getPropertySources().addLast(properties);
+        String key = "spring.cloud.nacos.discovery.metadata.koko-chat-websocket-port";
+        assertEquals("8097", environment.getProperty(key));
+        environment
+            .getPropertySources()
+            .addFirst(
+                new org.springframework.core.env.MapPropertySource(
+                    "node-two",
+                    java.util.Map.of("CHAT_WS_PORT", "42998")
+                )
+            );
+        assertEquals("42998", environment.getProperty(key));
+        assertEquals("42998", environment.getProperty("koko.chat.websocket-port"));
+    }
+
+    @Test
     void websocketRoutePrecedesRestAndDocumentationIsGetOnly() throws Exception {
         var properties = new YamlPropertySourceLoader()
             .load("gateway", new ClassPathResource("application.yml"))

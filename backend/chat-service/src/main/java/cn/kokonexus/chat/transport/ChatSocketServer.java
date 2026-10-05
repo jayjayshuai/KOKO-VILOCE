@@ -2,8 +2,11 @@ package cn.kokonexus.chat.transport;
 
 import cn.kokonexus.chat.application.ChatService;
 import cn.kokonexus.chat.interfaces.ChatViews.MessageView;
+import cn.kokonexus.common.diagnostics.SafeFailureDetails;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.group.DefaultChannelGroup;
@@ -18,18 +21,22 @@ import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
-/** 单实例 Netty 连接网关；所有外部 I/O 在有界业务线程执行，消息事实在 MySQL。 */
+/** Netty 连接节点；外部 I/O 在有界业务线程执行，跨节点由持久同步版本驱动查库。 */
 @Component
 public class ChatSocketServer implements SmartLifecycle {
 
@@ -39,7 +46,7 @@ public class ChatSocketServer implements SmartLifecycle {
     private static final AttributeKey<Session> SESSION = AttributeKey.valueOf("chat.session");
     /** 生命周期资源，包含尚未握手连接，停机时全部释放。 */
     private final DefaultChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
-    /** 每个用户最多三个设备连接；仅本机，用于单实例阶段容量保护。 */
+    /** 每节点三连接快速保护；全局有效租约由共享Redis另外原子控制。 */
     private final Map<Long, AtomicInteger> counts = new ConcurrentHashMap<>();
     /** 持久化事务代理。 */
     private final ChatService service;
@@ -47,8 +54,14 @@ public class ChatSocketServer implements SmartLifecycle {
     private final ObjectMapper json;
     /** 内部密钥、Origin、共享 Sa-Token 校验。 */
     private final ChatSecurity security;
+    /** 所有节点共享的租约事实，不回退为本机准入。 */
+    private final ChatConnectionQuota quota;
+    /** 释放队列饱和/停机拒绝计数，不包含账号或连接标签。 */
+    private final Counter releaseRejected;
     /** 内网监听端口，不直接映射公网。 */
     private final int port;
+    /** 内网绑定地址；隔离验收使用环回，不因随机端口监听所有网卡。 */
+    private final String bindAddress;
     /** 双线程、有界队列；拒绝时关闭/返回 BUSY，避免无界堆积。 */
     private ThreadPoolExecutor business;
     /** Netty 接入线程组。 */
@@ -59,22 +72,33 @@ public class ChatSocketServer implements SmartLifecycle {
     private Channel listener;
     /** 生命周期运行状态。 */
     private volatile boolean running;
+    /** 每次启停改变轮次，旧认证/帧任务不得附着或扣减新轮次连接。 */
+    private volatile long lifecycleRevision;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ChatSocketServer(
         ChatService service,
         ObjectMapper json,
         ChatSecurity security,
-        @Value("${koko.chat.websocket-port}") int port
+        ChatConnectionQuota quota,
+        MeterRegistry meters,
+        @Value("${koko.chat.websocket-port}") int port,
+        @Value("${koko.chat.websocket-bind-address:0.0.0.0}") String bindAddress
     ) {
         this.service = service;
         this.json = json;
         this.security = security;
+        this.quota = quota;
+        this.releaseRejected = meters.counter("koko.chat.quota.release.rejected");
         this.port = port;
+        if (bindAddress == null || bindAddress.isBlank()) throw new IllegalStateException("Netty 监听地址不可为空");
+        this.bindAddress = bindAddress;
     }
 
     @Override
     public synchronized void start() {
         if (running) return;
+        lifecycleRevision++;
         business = new ThreadPoolExecutor(
             2,
             2,
@@ -131,7 +155,7 @@ public class ChatSocketServer implements SmartLifecycle {
                         }
                     }
                 )
-                .bind(port)
+                .bind(bindAddress, port)
                 .sync()
                 .channel();
             running = true;
@@ -146,11 +170,29 @@ public class ChatSocketServer implements SmartLifecycle {
         }
     }
 
-    /** 仅推送无正文同步提示；成员移除与推送竞争也不会泄露消息。 */
-    public void syncAll() {
-        if (!running) return;
-        for (Channel channel : channels)
-            if (channel.attr(SESSION).get() != null) write(channel, Map.of("type", "SYNC"));
+    /** 只返回本机已完成身份校验且仍在线的用户；不包含令牌或连接对象。 */
+    public Set<Long> connectedUsers() {
+        var users = new java.util.HashSet<Long>();
+        if (running) for (Channel channel : channels) {
+            Session session = channel.attr(SESSION).get();
+            if (channel.isActive() && session != null) users.add(session.userId);
+        }
+        return Set.copyOf(users);
+    }
+
+    /** 定向无正文失效提示；版本合并合法，不能作为成员权限或客户端已收确认。 */
+    public void syncUsers(Set<Long> userIds) {
+        if (!running || userIds.isEmpty()) return;
+        for (Channel channel : channels) {
+            Session session = channel.attr(SESSION).get();
+            if (session != null && userIds.contains(session.userId)) write(channel, Map.of("type", "SYNC"));
+        }
+    }
+
+    /** 先接入连接，后启动版本观察；停机按相反顺序释放。 */
+    @Override
+    public int getPhase() {
+        return 0;
     }
 
     /** 慢客户端断开后查库恢复；不无限缓存待发送帧。 */
@@ -173,6 +215,7 @@ public class ChatSocketServer implements SmartLifecycle {
     @Override
     public synchronized void stop() {
         running = false;
+        lifecycleRevision++;
         if (listener != null) listener.close().awaitUninterruptibly();
         channels.close().awaitUninterruptibly();
         if (business != null) {
@@ -211,6 +254,10 @@ public class ChatSocketServer implements SmartLifecycle {
                 pending ||
                 !"/api/chat/ws".equals(request.uri()) ||
                 request.method() != HttpMethod.GET ||
+                request.headers().getAll("X-Koko-Gateway-Key").size() != 1 ||
+                request.headers().getAll("X-Koko-User-Id").size() != 1 ||
+                request.headers().getAll(HttpHeaderNames.ORIGIN).size() != 1 ||
+                request.headers().getAll(HttpHeaderNames.COOKIE).size() != 1 ||
                 !security.trusted(request.headers().get("X-Koko-Gateway-Key")) ||
                 !security.allowedOrigin(request.headers().get(HttpHeaderNames.ORIGIN))
             ) {
@@ -218,61 +265,111 @@ public class ChatSocketServer implements SmartLifecycle {
                 return;
             }
             pending = true;
+            long revision = lifecycleRevision;
+            AtomicBoolean retained = new AtomicBoolean(true);
             request.retain();
             try {
                 business.execute(() -> {
                     Session session = null;
                     try {
-                        long userId = Long.parseLong(request.headers().get("X-Koko-User-Id"));
-                        String token = ServerCookieDecoder.STRICT.decode(
-                            request.headers().get(HttpHeaderNames.COOKIE, "")
-                        )
+                        String identity = request.headers().get("X-Koko-User-Id");
+                        if (identity == null || !identity.matches("[1-9][0-9]{0,18}")) {
+                            throw new IllegalArgumentException("连接身份不是规范正数 ID");
+                        }
+                        long userId = Long.parseLong(identity);
+                        String cookieHeader = request.headers().get(HttpHeaderNames.COOKIE);
+                        // Cookie decoder 会合并同名 Cookie；先拒绝歧义身份，不能任意选取其中一个令牌。
+                        if (
+                            java.util.Arrays.stream(cookieHeader.split(";", -1))
+                                .map(String::trim)
+                                .filter(part -> part.startsWith("koko-nexus-token="))
+                                .count() != 1
+                        ) {
+                            throw new IllegalArgumentException("连接会话 Cookie 缺失或重复");
+                        }
+                        String token = ServerCookieDecoder.STRICT.decode(cookieHeader)
                             .stream()
                             .filter(cookie -> "koko-nexus-token".equals(cookie.name()))
                             .map(io.netty.handler.codec.http.cookie.Cookie::value)
                             .findFirst()
                             .orElse(null);
                         if (!security.active(userId, token)) {
-                            request.release();
-                            ctx.executor().execute(() -> reject(ctx));
+                            releaseRequest(request, retained);
+                            respond(ctx, HttpResponseStatus.FORBIDDEN);
                             return;
                         }
+                        session = new Session(userId, token, UUID.randomUUID().toString(), revision);
                         synchronized (counts) {
+                            if (!running || revision != lifecycleRevision || !ctx.channel().isActive()) {
+                                releaseRequest(request, retained);
+                                ctx.close();
+                                return;
+                            }
                             AtomicInteger count = counts.computeIfAbsent(userId, ignored -> new AtomicInteger());
                             if (count.get() >= 3) {
-                                request.release();
-                                ctx.executor().execute(() -> reject(ctx));
+                                releaseRequest(request, retained);
+                                respond(ctx, HttpResponseStatus.TOO_MANY_REQUESTS);
                                 return;
                             }
                             count.incrementAndGet();
+                            session.localHeld.set(true);
                         }
-                        session = new Session(userId, token);
+                        session.leaseAttempted.set(true);
+                        if (!quota.acquire(userId, session.connectionId)) {
+                            releaseSession(session);
+                            releaseRequest(request, retained);
+                            respond(ctx, HttpResponseStatus.TOO_MANY_REQUESTS);
+                            return;
+                        }
                         Session validated = session;
                         ctx.executor().execute(() -> {
-                            if (!ctx.channel().isActive()) {
+                            if (!running || revision != lifecycleRevision || !ctx.channel().isActive()) {
                                 releaseSession(validated);
-                                request.release();
+                                releaseRequest(request, retained);
                                 return;
                             }
                             ctx.channel().attr(SESSION).set(validated);
+                            retained.set(false);
                             ctx.fireChannelRead(request); // 将保留的所有权移交给 WebSocket 握手处理器。
                         });
+                    } catch (IllegalArgumentException failure) {
+                        if (session != null) releaseSession(session);
+                        releaseRequest(request, retained);
+                        respond(ctx, HttpResponseStatus.FORBIDDEN);
                     } catch (Exception failure) {
                         if (session != null) releaseSession(session);
-                        request.release();
-                        ctx.executor().execute(() -> reject(ctx));
+                        releaseRequest(request, retained);
+                        LOG.warn("Chat admission unavailable: {}", SafeFailureDetails.describe(failure));
+                        respond(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE);
                     }
                 });
             } catch (java.util.concurrent.RejectedExecutionException busy) {
-                request.release();
+                releaseRequest(request, retained);
                 reject(ctx);
             }
         }
 
         private void reject(ChannelHandlerContext ctx) {
-            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.FORBIDDEN);
+            reject(ctx, HttpResponseStatus.FORBIDDEN);
+        }
+
+        private void reject(ChannelHandlerContext ctx, HttpResponseStatus status) {
+            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status);
             response.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
+            response.headers().set(HttpHeaderNames.CACHE_CONTROL, "no-store");
+            if (
+                status.equals(HttpResponseStatus.TOO_MANY_REQUESTS) ||
+                status.equals(HttpResponseStatus.SERVICE_UNAVAILABLE)
+            ) response.headers().set(HttpHeaderNames.RETRY_AFTER, "1");
             ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        }
+
+        private void respond(ChannelHandlerContext ctx, HttpResponseStatus status) {
+            try {
+                ctx.executor().execute(() -> reject(ctx, status));
+            } catch (java.util.concurrent.RejectedExecutionException stopped) {
+                ctx.close();
+            }
         }
 
         @Override
@@ -295,9 +392,32 @@ public class ChatSocketServer implements SmartLifecycle {
     }
 
     private void releaseSession(Session session) {
-        synchronized (counts) {
-            counts.computeIfPresent(session.userId, (id, count) -> count.decrementAndGet() <= 0 ? null : count);
+        if (!session.released.compareAndSet(false, true)) return;
+        if (session.localHeld.getAndSet(false)) synchronized (counts) {
+            if (session.revision == lifecycleRevision) counts.computeIfPresent(session.userId, (id, count) ->
+                count.decrementAndGet() <= 0 ? null : count
+            );
         }
+        if (!session.leaseAttempted.get()) return;
+        try {
+            business.execute(() -> {
+                try {
+                    quota.release(session.userId, session.connectionId);
+                } catch (RuntimeException failure) {
+                    LOG.warn(
+                        "Chat quota release unavailable; bounded TTL recovery: {}",
+                        SafeFailureDetails.describe(failure)
+                    );
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException stopped) {
+            releaseRejected.increment(); // 不无限重试或另起线程；未知占用最长为原租约TTL。
+        }
+    }
+
+    /** 仅管理握手异步保留的那一份引用，不重复释放已经移交协议处理器的所有权。 */
+    private static void releaseRequest(FullHttpRequest request, AtomicBoolean retained) {
+        if (retained.compareAndSet(true, false)) request.release();
     }
 
     /** 每条连接仅允许一项业务任务；限速及 pending 在 EventLoop 中维护。 */
@@ -349,6 +469,12 @@ public class ChatSocketServer implements SmartLifecycle {
                 business.execute(() -> {
                     String clientId = "";
                     try {
+                        if (
+                            !running ||
+                            session.revision != lifecycleRevision ||
+                            session.released.get() ||
+                            !ctx.channel().isActive()
+                        ) return;
                         if (!security.active(session.userId, session.token)) {
                             write(
                                 ctx.channel(),
@@ -357,6 +483,27 @@ public class ChatSocketServer implements SmartLifecycle {
                             ctx.close();
                             return;
                         }
+                        if (!quota.renew(session.userId, session.connectionId)) {
+                            write(
+                                ctx.channel(),
+                                Map.of(
+                                    "type",
+                                    "ERROR",
+                                    "code",
+                                    "CONNECTION_EXPIRED",
+                                    "message",
+                                    "连接租约已失效，请等待重新连接"
+                                )
+                            );
+                            ctx.close();
+                            return;
+                        }
+                        if (
+                            !running ||
+                            session.revision != lifecycleRevision ||
+                            session.released.get() ||
+                            !ctx.channel().isActive()
+                        ) return;
                         JsonNode command = json.readTree(wire);
                         if (!command.isObject()) throw new IllegalArgumentException("帧必须为 JSON 对象");
                         String type = command.path("type").asText();
@@ -378,7 +525,7 @@ public class ChatSocketServer implements SmartLifecycle {
                             command.path("body").asText()
                         );
                         write(ctx.channel(), Map.of("type", "ACK", "message", MessageView.from(message)));
-                        syncAll(); // 事务代理返回即已提交；SYNC 失败不回滚消息。
+                        syncUsers(Set.of(session.userId)); // 发送者即时提示；其他用户由持久版本观察触发。
                     } catch (cn.kokonexus.common.api.ForbiddenOperationException failure) {
                         write(
                             ctx.channel(),
@@ -412,7 +559,7 @@ public class ChatSocketServer implements SmartLifecycle {
                             )
                         );
                     } catch (Exception failure) {
-                        LOG.error("Messaging operation failed for user {}", session.userId, failure);
+                        LOG.warn("Messaging operation unavailable: {}", SafeFailureDetails.describe(failure));
                         write(
                             ctx.channel(),
                             Map.of(
@@ -426,6 +573,7 @@ public class ChatSocketServer implements SmartLifecycle {
                                 "聊天服务暂不可用，请使用原消息 UUID 重试"
                             )
                         );
+                        ctx.close();
                     } finally {
                         ctx.executor().execute(() -> pending = false);
                     }
@@ -442,12 +590,17 @@ public class ChatSocketServer implements SmartLifecycle {
         }
     }
 
-    /** 服务端连接会话；令牌不序列化、不用于日志。 */
-    private record Session(
-        @io.swagger.v3.oas.annotations.media.Schema(description = "操作用户 ID") long userId,
-        @io.swagger.v3.oas.annotations.media.Schema(
-            description = "共享 Sa-Token 会话令牌，逐帧验证，禁止序列化或日志输出"
-        )
-        String token
-    ) {}
+    /** 内部敏感会话不生成toString/序列化访问器，关闭只释放一次。 */
+    @RequiredArgsConstructor
+    private static final class Session {
+
+        /** 已确认的账号。 */ private final long userId;
+        /** 共享登录令牌，禁止日志。 */ private final String token;
+        /** 服务端独立连接UUID，不是登录令牌。 */ private final String connectionId;
+        /** 所属生命周期轮次。 */ private final long revision;
+        /** 本机名额是否已登记。 */ private final AtomicBoolean localHeld = new AtomicBoolean();
+        /** 包括未知Redis写回复，须幂等尝试释放自己的UUID。 */ private final AtomicBoolean leaseAttempted =
+            new AtomicBoolean();
+        /** 关闭/迟到认证结果的一次性释放围栏。 */ private final AtomicBoolean released = new AtomicBoolean();
+    }
 }

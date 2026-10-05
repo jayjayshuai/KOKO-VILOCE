@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.chat.persistence.ChatSyncMapper">
+    <insert id="advance">
+        INSERT INTO chat_sync_revision (user_id, revision) VALUES (#{userId}, 1)
+        ON DUPLICATE KEY UPDATE revision = revision + 1, updated_at = CURRENT_TIMESTAMP(3)
+    </insert>
+    <select id="revisions" resultType="cn.kokonexus.chat.domain.ChatSyncRevision" timeout="2">
+        SELECT user_id, revision FROM chat_sync_revision
+        WHERE user_id IN
+        <foreach collection="userIds" item="userId" open="(" separator="," close=")">#{userId}</foreach>
+        ORDER BY user_id
+    </select>
+</mapper>

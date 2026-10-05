@@ -29,6 +29,7 @@ spring:
         webflux:
           routes:
             - id: chat-websocket-service
+              # 默认定址保持发布兼容；所有节点具备 WS 元数据并验收后才显式配置 lb:ws://koko-nexus-chat。
               uri: ${CHAT_WS_SERVICE_URI:ws://localhost:8097}
               predicates: [Path=/api/chat/ws]
             - id: chat-service
@@ -95,6 +96,12 @@ dubbo:
     retries: 0
 
 sa-token:
+  # 浏览器令牌不允许脚本读取；Lax 不代替完整 CSRF/Origin 验收。
+  cookie:
+    http-only: true
+    same-site: Lax
+    # 阶段环回 HTTP 保持兼容；正式 TLS 发布必须设置为 true 并验实际浏览器。
+    secure: ${KOKO_COOKIE_SECURE:false}
   token-name: koko-nexus-token
   is-read-header: true
   is-read-cookie: true

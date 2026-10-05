@@ -12,6 +12,7 @@ spring:
   data.redis:
     host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
     timeout: 2s
   cloud.nacos.discovery:
     server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
@@ -20,6 +21,8 @@ spring:
     # HTTP 实例不得与同名 Dubbo 应用实例混入同一发现列表。
     group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
     namespace: ${NACOS_NAMESPACE:}
+    # 同一个 HTTP 实例的 Netty 监听端口，供 Gateway lb:ws 路由映射，不用于 HTTP/Dubbo 转发。
+    metadata.koko-chat-websocket-port: ${CHAT_WS_PORT:8097}
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml
   configuration.map-underscore-to-camel-case: true
@@ -50,8 +53,11 @@ sa-token:
 koko.chat:
   gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
   websocket-port: ${CHAT_WS_PORT:8097}
+  websocket-bind-address: ${CHAT_WS_BIND_ADDRESS:0.0.0.0}
   allowed-origins: ${CHAT_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
   moderator-user-ids: ${CHAT_MODERATOR_USER_IDS:}
+  # 持久用户版本驱动跨节点同步，独立单线程；每批最多 100 个本机认证用户。
+  sync-poll-interval-ms: ${CHAT_SYNC_POLL_INTERVAL_MS:1000}
 koko.public-api-base: ${KOKO_PUBLIC_API_BASE:/api}
 springdoc:
   api-docs.path: /api/chat/docs/v3/api-docs

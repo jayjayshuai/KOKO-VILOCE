@@ -215,6 +215,9 @@ services:
       CHAT_ALLOWED_ORIGINS: ${KOKO_CHAT_ALLOWED_ORIGINS:?KOKO_CHAT_ALLOWED_ORIGINS is required}
       # 默认没有审核员，必须由项目负责人明确指定已有账号 ID。
       CHAT_MODERATOR_USER_IDS: ${CHAT_MODERATOR_USER_IDS:-}
+      # WS 地址仅为容器内网监听；无公网 ports 映射。跨节点仍须另外配置 WS 入口分流。
+      CHAT_WS_BIND_ADDRESS: ${CHAT_WS_BIND_ADDRESS:-0.0.0.0}
+      CHAT_SYNC_POLL_INTERVAL_MS: ${CHAT_SYNC_POLL_INTERVAL_MS:-1000}
       KOKO_PUBLIC_API_BASE: /koko-api
       JAVA_TOOL_OPTIONS: -Xms48m -Xmx160m -XX:MaxMetaspaceSize=128m -XX:MaxDirectMemorySize=32m -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError
     deploy:
@@ -246,9 +249,12 @@ services:
       VOICE_SERVICE_URI: http://koko-nexus-voice:8084
       NOTIFICATION_SERVICE_URI: http://koko-nexus-notification:8085
       ASSET_SERVICE_URI: http://koko-nexus-asset:8086
-      CHAT_SERVICE_URI: http://koko-nexus-chat:8087
-      CHAT_WS_SERVICE_URI: ws://koko-nexus-chat:8097
+      # 仍默认定址，WS 发现须所有节点元数据和真实共享会话验收后显式启用。
+      CHAT_SERVICE_URI: ${CHAT_SERVICE_URI:-http://koko-nexus-chat:8087}
+      CHAT_WS_SERVICE_URI: ${CHAT_WS_SERVICE_URI:-ws://koko-nexus-chat:8097}
       KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
+      # 正式TLS验收后必须true；默认false仅保留既有阶段HTTP兼容，不代表正式上线。
+      KOKO_COOKIE_SECURE: ${KOKO_COOKIE_SECURE:-false}
     depends_on:
       identity: { condition: service_healthy }
       community: { condition: service_healthy }

@@ -48,3 +48,28 @@ P0仍进行中，媒体与身份边界见[基础验证](VOICE_ROOM_P0_VERIFICATI
 本轮还修正失败确认丢租约时误报“已安排重试”的日志。备份校验并回收全部本轮隔离资源。
 当前打包客户端5.3.1与模块声明5.3.2有差异，按实际产物验证，没有临时换依赖或发布。
 详见[投递网络验证](VOICE_ROOM_OUTBOX_VERIFICATION_20261005.md)；完整P0门槛未勾除。
+
+2026-10-05聊天续批：新增用户级同事务同步版本、各Netty节点定向查库提示，
+前端历史读取期间保留同步、取消旧请求、焦点恢复与独立故障反馈。
+限权环回MySQL与两个独立Netty JVM验证版本并发/回滚、跨节点发送、观察查询失败/恢复、
+改名和移除权限；共享会话为限定身份夹具，非完整Gateway/Nacos/Redis/UI/公网验收。
+当前WS入口仍默认固定节点；未发布或实际扩容。不是语音房逐事件总线，P0第3项仍有门槛。
+旧 RR 快照下的当前成员授权/同步收件人问题已真实复现并修复；增加节点优雅退出后
+离线提交/新 JVM 重启及重新入群历史边界检查。
+见[聊天同步计划](CHAT_CLUSTER_SYNC_PLAN.md)和[验证记录](CHAT_CLUSTER_SYNC_VERIFICATION_20261005.md)。
+
+用户确认暂无域名。无域名不能简单推定TLS不可行：可评估短期IP证书，
+但必须验证地址控制、CA账户/条款、自动续期、证书部署与到期告警，再验实际RTC双端。
+本轮不创建CA账户、不替换服务器入口，也不放开公网HTTP凭据。
+依据 [Let's Encrypt 2026-01-15 IP证书说明](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)。
+
+聊天Gateway续批已通过四个完整Boot、独立Nacos/需密码Redis、本机两套限权MySQL的
+八组实际HTTP/WS：真实Cookie/身份Triple、双Netty分流、成员权限、Redis暂停失败关闭、
+两节点注销、优雅摘流与新JVM重启。修复Nacos HTTP scheme覆盖WS路由意图的问题。
+源码默认定址兼容；未发布、未修改生产，完整语音房事件/麦位、正向双端UI、TLS与容量仍缺。
+见[完整网络记录](CHAT_GATEWAY_NETWORK_VERIFICATION_20261005.md)。
+
+浏览器续批补Cookie HttpOnly/Lax、WS会话失效到应用门禁、旧轮次隔离及连接错误独立恢复。
+独立无头双Context/双Netty的七组真实页面检查通过，含失权/重入边界、390px与节点重启；
+辅助程序收尾失败保留，修改后完整退出复验受SSH中断尚未通过，资源已核验回收。
+不是正式公网TLS/手机/RTC，P0/P1门槛保持。见[浏览器验证](CHAT_BROWSER_VERIFICATION_20261005.md)。

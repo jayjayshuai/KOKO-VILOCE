@@ -22,7 +22,7 @@
 - `voice-service`：语音房生命周期、LiveKit 房间编排和短期入会凭证
 - `notification-service`：Outbox 事件消费、通知收件箱、用户偏好与直播粉丝扇出
 - `asset-service`：JPEG/PNG 校验、MinIO 存储、本人图片库、用途/所有权绑定、公开读取授权、全状态引用核验、事务配额、上传处理并发限制及未完成上传清理；全状态核验本批仅源码，预签名 URL 与 READY 孤儿清理尚未完成
-- `chat-service`：Netty 私信/群聊、事务消息序号、幂等 ACK、游标历史/已读、会话内字面搜索、个人消息收藏、群管理、拉黑、真实消息举报与权限隔离的人工结案；当前仅单实例，扩容前必须补跨节点分发
+- `chat-service`：Netty 私信/群聊、事务消息序号、幂等 ACK、游标历史/已读、会话内字面搜索、个人消息收藏、群管理、拉黑、真实消息举报与权限隔离的人工结案；新增用户级持久版本跨节点查库提示，线上仍单节点，尚须网关 WS 分流/共享会话/容量验收再扩容，见 [同步计划](docs/CHAT_CLUSTER_SYNC_PLAN.md)
 - `service-api`：跨服务 RPC 契约
 - `platform-common`：统一错误响应
 - `event-outbox`：业务事务内事件登记与可靠投递

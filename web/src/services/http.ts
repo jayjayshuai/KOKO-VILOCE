@@ -30,6 +30,15 @@ export function observeSession(observer: SessionObserver): () => void {
   }
 }
 
+/** WS 连接建立时捕获身份轮次；通知只归属当时且仍挂载的观察器，不读取或持久化令牌。 */
+export function captureUnauthorizedSession(): () => void {
+  const observer = sessionObserver
+  const snapshot = observer?.capture()
+  return () => {
+    if (observer && sessionObserver === observer) observer.unauthorized(snapshot)
+  }
+}
+
 /** 请求基础能力：Cookie、取消、等待上限、空响应与 JSON 契约分别处理。 */
 export async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const { timeoutMs = 20000, signal, ...init } = options
@@ -55,7 +64,7 @@ export async function request<T>(path: string, options: ApiRequestOptions = {}):
       signal: controller.signal,
     })
     if (!response.ok) {
-      if (response.status === 401) observer?.unauthorized(sessionSnapshot)
+      if (response.status === 401 && observer === sessionObserver) observer?.unauthorized(sessionSnapshot)
       const body = await response.json().catch(() => undefined)
       throw new ApiRequestError(body?.message || `请求失败（${response.status}）`, response.status)
     }

@@ -32,6 +32,8 @@ public class ChatService {
     private final MessageMapper messages;
     /** 同库反骚扰授权，用户对锁持有至本次消息或邀请提交。 */
     private final ChatSafetyService safety;
+    /** 与业务事实同事务登记的用户级同步版本，不靠本机 Channel 广播提供跨节点保证。 */
+    private final ChatSyncWriter syncWriter;
 
     /** 私信用户对唯一；竞争插入失败由调用层重新读取已提交会话。 */
     @Transactional
@@ -73,6 +75,7 @@ public class ChatService {
         requireOne(conversations.insert(conversation));
         insertMember(conversation, owner);
         for (var peer : peers) insertMember(conversation, peer);
+        changed(conversation.getId());
         return conversation;
     }
 
@@ -97,9 +100,7 @@ public class ChatService {
     public List<Member> memberList(long userId, String conversationId) {
         Conversation conversation = activeLocked(conversationId);
         requireMember(conversation.getId(), userId);
-        return members.selectList(
-            Wrappers.<Member>lambdaQuery().eq(Member::getConversationId, conversationId).orderByAsc(Member::getUserId)
-        );
+        return members.currentMembers(conversationId);
     }
 
     @Transactional
@@ -145,9 +146,7 @@ public class ChatService {
             return existing;
         }
         if ("DIRECT".equals(conversation.getKind())) {
-            var directMembers = members.selectList(
-                Wrappers.<Member>lambdaQuery().eq(Member::getConversationId, conversationId)
-            );
+            var directMembers = members.currentMembers(conversationId);
             if (directMembers.size() != 2) throw new IllegalStateException("私信成员状态异常");
             long peerId = directMembers
                 .stream()
@@ -170,35 +169,35 @@ public class ChatService {
         conversation.setLastSeq(message.getSeq());
         conversation.setUpdatedAt(message.getCreatedAt());
         requireOne(conversations.updateById(conversation));
-        members.markRead(conversationId, userId, message.getSeq());
+        requireOne(members.markRead(conversationId, userId, message.getSeq()));
+        changed(conversationId);
         return message;
     }
 
     @Transactional
     public void read(long userId, String id, long seq) {
         Conversation conversation = activeLocked(id);
-        requireMember(id, userId);
+        Member member = requireMember(id, userId);
         if (seq < 0 || seq > conversation.getLastSeq()) throw new IllegalArgumentException("已读序号超出范围");
-        members.markRead(id, userId, seq);
+        if (seq > member.getReadSeq()) {
+            requireOne(members.markRead(id, userId, seq));
+            syncWriter.changed(List.of(userId));
+        }
     }
 
     @Transactional
     public void add(long userId, String id, ChatIdentity target) {
         Conversation conversation = ownerLocked(userId, id);
         safety.requireContactAllowed(userId, Long.parseLong(target.id()));
-        if (members.selectCount(Wrappers.<Member>lambdaQuery().eq(Member::getConversationId, id)) >= 50) {
+        var currentMembers = members.currentMembers(id);
+        if (currentMembers.size() >= 50) {
             throw new IllegalStateException("群聊人数已达 50 人上限");
         }
-        if (
-            members.selectCount(
-                Wrappers.<Member>lambdaQuery()
-                    .eq(Member::getConversationId, id)
-                    .eq(Member::getUserId, Long.parseLong(target.id()))
-            ) > 0
-        ) {
+        if (currentMembers.stream().anyMatch(member -> member.getUserId() == Long.parseLong(target.id()))) {
             throw new IllegalStateException("用户已在群中");
         }
         insertMember(conversation, target);
+        changed(id);
     }
 
     @Transactional
@@ -214,6 +213,9 @@ public class ChatService {
             Wrappers.<Member>lambdaQuery().eq(Member::getConversationId, id).eq(Member::getUserId, targetId)
         );
         if (count != 1) throw new ResourceNotFoundException("成员不存在");
+        var recipients = memberIds(id);
+        recipients.add(targetId);
+        syncWriter.changed(recipients);
     }
 
     @Transactional
@@ -225,6 +227,7 @@ public class ChatService {
         conversation.setTitle(title.trim());
         conversation.setUpdatedAt(LocalDateTime.now());
         requireOne(conversations.updateById(conversation));
+        changed(id);
     }
 
     @Transactional
@@ -233,6 +236,16 @@ public class ChatService {
         conversation.setStatus("CLOSED");
         conversation.setUpdatedAt(LocalDateTime.now());
         requireOne(conversations.updateById(conversation));
+        changed(id);
+    }
+
+    /** 在持有会话锁的写事务末尾读取收件人；成员移除另外补入被移除人。 */
+    private void changed(String conversationId) {
+        syncWriter.changed(memberIds(conversationId));
+    }
+
+    private ArrayList<Long> memberIds(String conversationId) {
+        return new ArrayList<>(members.currentMembers(conversationId).stream().map(Member::getUserId).toList());
     }
 
     private Conversation ownerLocked(long userId, String id) {
@@ -254,9 +267,7 @@ public class ChatService {
     }
 
     private Member requireMember(String id, long userId) {
-        Member member = members.selectOne(
-            Wrappers.<Member>lambdaQuery().eq(Member::getConversationId, id).eq(Member::getUserId, userId)
-        );
+        Member member = members.currentMember(id, userId);
         if (member == null) throw new ResourceNotFoundException("会话不存在或无访问权限");
         return member;
     }

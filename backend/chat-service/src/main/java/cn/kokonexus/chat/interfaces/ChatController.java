@@ -4,7 +4,6 @@ import cn.kokonexus.chat.application.ChatDirectory;
 import cn.kokonexus.chat.application.ChatService;
 import cn.kokonexus.chat.interfaces.ChatViews.ConversationView;
 import cn.kokonexus.chat.interfaces.ChatViews.MessageView;
-import cn.kokonexus.chat.transport.ChatSocketServer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -29,8 +28,6 @@ public class ChatController {
     private final ChatService service;
     /** RPC 身份目录。 */
     private final ChatDirectory directory;
-    /** 提交后仅提示客户端同步，失败由数据库补拉恢复。 */
-    private final ChatSocketServer sockets;
 
     @PostMapping("/direct")
     @Operation(summary = "建立或读取私信", description = "按用户名精确查找；用户对唯一，重复请求返回同一会话。")
@@ -47,7 +44,6 @@ public class ChatController {
             c = service.findDirect(ChatService.directKey(userId, Long.parseLong(peer.id())));
             if (c == null) throw conflict;
         }
-        sockets.syncAll();
         return ConversationView.from(c, service.memberList(userId, c.getId()), userId);
     }
 
@@ -60,7 +56,6 @@ public class ChatController {
     ) {
         var peers = request.handles().stream().map(directory::byHandle).toList();
         var c = service.create(directory.byId(userId), peers, request.title(), true);
-        sockets.syncAll();
         return ConversationView.from(c, service.memberList(userId, c.getId()), userId);
     }
 
@@ -118,7 +113,6 @@ public class ChatController {
         @Valid @RequestBody HandleRequest request
     ) {
         service.add(userId, id, directory.byHandle(request.handle()));
-        sockets.syncAll();
     }
 
     @DeleteMapping("/conversations/{id}/members/{targetId}")
@@ -133,7 +127,6 @@ public class ChatController {
         @PathVariable long targetId
     ) {
         service.remove(userId, id, targetId);
-        sockets.syncAll();
     }
 
     @PatchMapping("/conversations/{id}")
@@ -145,7 +138,6 @@ public class ChatController {
         @Valid @RequestBody TitleRequest request
     ) {
         service.rename(userId, id, request.title());
-        sockets.syncAll();
     }
 
     @DeleteMapping("/conversations/{id}")
@@ -153,7 +145,6 @@ public class ChatController {
     @Operation(summary = "群主解散群聊", description = "软关闭会话，停止所有成员的消息读写；记录保留用于审计。")
     public void close(@Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long userId, @PathVariable String id) {
         service.close(userId, id);
-        sockets.syncAll();
     }
 
     /** chat-service：请求契约；字段校验以公开接口约束为准。 */

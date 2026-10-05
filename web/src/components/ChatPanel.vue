@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { chatApi, messageUuid, socketUrl, type ChatMessage, type Conversation } from '../services/chat';
 import { chatSafetyApi } from '../services/chat-safety';
+import { captureUnauthorizedSession } from '../services/http';
 import ChatSafetyPanel from './ChatSafetyPanel.vue';
 import ChatHistoryTools from './ChatHistoryTools.vue';
 const props = defineProps<{
@@ -34,6 +35,18 @@ const historyToolsOpen = ref(false),
 const bookmarkWrites = new AbortController();
 const blockedTargets = ref<string[]>([]);
 const safetyReads = new AbortController();
+/** 生命周期取消所有会话读取；切换会话另有独立历史请求围栏。 */
+const reads = new AbortController();
+let historyRequest = new AbortController(),
+  listRequest = new AbortController();
+let listRevision = 0,
+  blockedRevision = 0;
+/** 明确显示事实补拉状态，不把 WebSocket READY 当全部历史已同步。 */
+const recovering = ref(false);
+/** 同步故障独立于发送/管理错误；恢复成功仅清除此类错误。 */
+const syncError = ref('');
+/** 连接故障由 READY 独立清除，不吞掉发送/管理或事实读取的错误。 */
+const connectionError = ref('');
 const directPeer = computed(() =>
   active.value?.kind === 'DIRECT' ? active.value.members.find((member) => member.userId !== props.userId) : undefined,
 );
@@ -41,6 +54,7 @@ const blockedDirect = computed(() => !!directPeer.value && blockedTargets.value.
 
 /** 主动设置仅用于客户端反馈，服务端每次发送仍会重新判断双方设置。 */
 async function loadBlocked() {
+  const revision = ++blockedRevision;
   const targets: string[] = [];
   let cursor: string | undefined;
   do {
@@ -48,7 +62,7 @@ async function loadBlocked() {
     targets.push(...page.map((item) => item.targetId));
     cursor = page.length === 100 ? page.at(-1)?.id : undefined;
   } while (cursor && !disposed);
-  if (!disposed) blockedTargets.value = targets;
+  if (!disposed && revision === blockedRevision) blockedTargets.value = targets;
 }
 function openReport(message: ChatMessage) {
   reportMessage.value = message;
@@ -82,26 +96,38 @@ const unread = (c: Conversation) =>
   Math.max(0, c.lastSeq - (c.members.find((m) => m.userId === props.userId)?.readSeq || 0));
 
 async function loadConversations() {
+  const revision = ++listRevision;
+  listRequest.abort();
+  listRequest = new AbortController();
+  const signal = AbortSignal.any([reads.signal, listRequest.signal]);
   conversationsLoading.value = true;
   try {
     const items: Conversation[] = [];
     let cursor: string | undefined;
     do {
-      const page = await chatApi.list(cursor);
+      const page = await chatApi.list(cursor, signal);
+      if (disposed || revision !== listRevision) return false;
       items.push(...page);
       cursor = page.length === 100 ? page[page.length - 1]!.id : undefined;
     } while (cursor && !disposed);
-    if (disposed) return;
+    if (disposed || revision !== listRevision) return false;
     conversations.value = items;
     if (activeId.value && !items.some((c) => c.id === activeId.value)) {
       activeId.value = '';
       messages.value = [];
       historyToolsOpen.value = false;
       selection++;
+      historyRequest.abort();
+      historyRequest = new AbortController();
+      loading.value = false;
       error.value = '会话已关闭或你已被移出群聊。';
     }
+    return true;
+  } catch (cause) {
+    if (disposed || revision !== listRevision) return false;
+    throw cause;
   } finally {
-    if (!disposed) conversationsLoading.value = false;
+    if (!disposed && revision === listRevision) conversationsLoading.value = false;
   }
 }
 function clearPending(id: string) {
@@ -123,7 +149,8 @@ async function markRead(id: string, seq: number) {
     (conversations.value.find((c) => c.id === id)?.members.find((m) => m.userId === props.userId)?.readSeq || 0) >= seq
   )
     return;
-  await chatApi.read(id, seq);
+  await chatApi.read(id, seq, reads.signal);
+  if (disposed) return;
   const member = conversations.value.find((c) => c.id === id)?.members.find((m) => m.userId === props.userId);
   if (member) member.readSeq = Math.max(member.readSeq, seq);
 }
@@ -132,6 +159,9 @@ async function scrollBottom() {
   if (transcript.value) transcript.value.scrollTop = transcript.value.scrollHeight;
 }
 async function select(c: Conversation) {
+  historyRequest.abort();
+  historyRequest = new AbortController();
+  const signal = AbortSignal.any([reads.signal, historyRequest.signal]);
   if (activeId.value !== c.id) body.value = '';
   activeId.value = c.id;
   messages.value = [];
@@ -143,7 +173,7 @@ async function select(c: Conversation) {
   loading.value = true;
   error.value = '';
   try {
-    const items = await chatApi.history(c.id);
+    const items = await chatApi.history(c.id, '', signal);
     if (disposed || generation !== selection) return;
     merge(items);
     hasOlder.value = items.length === 100;
@@ -152,7 +182,10 @@ async function select(c: Conversation) {
   } catch (e) {
     if (!disposed && generation === selection) error.value = failure(e);
   } finally {
-    if (generation === selection) loading.value = false;
+    if (!disposed && generation === selection) {
+      loading.value = false;
+      if (needsSync) void sync();
+    }
   }
 }
 async function older() {
@@ -162,14 +195,17 @@ async function older() {
   if (!id || !first || loading.value) return;
   loading.value = true;
   try {
-    const items = await chatApi.history(id, `&before=${first}`);
+    const items = await chatApi.history(id, `&before=${first}`, AbortSignal.any([reads.signal, historyRequest.signal]));
     if (disposed || generation !== selection) return;
     merge(items);
     hasOlder.value = items.length === 100;
   } catch (e) {
-    if (generation === selection) error.value = failure(e);
+    if (!disposed && generation === selection) error.value = failure(e);
   } finally {
-    if (generation === selection) loading.value = false;
+    if (!disposed && generation === selection) {
+      loading.value = false;
+      if (needsSync) void sync();
+    }
   }
 }
 /** 推送仅提示查库；循环补拉到尾部，以服务端 UUID 去重。 */
@@ -180,29 +216,49 @@ async function sync() {
     return;
   }
   syncing = true;
+  needsSync = false;
+  recovering.value = true;
+  const startedSelection = selection;
   try {
-    await loadConversations();
+    if (!(await loadConversations())) {
+      needsSync = !disposed;
+      return;
+    }
     await loadBlocked();
     const id = activeId.value,
       generation = selection;
-    if (!id || loading.value) return;
+    if (!id) {
+      syncError.value = '';
+      return;
+    }
+    if (loading.value) {
+      needsSync = true;
+      return; // 由历史读取 finally 接续，不能立即重试形成查询忙循环。
+    }
+    const signal = AbortSignal.any([reads.signal, historyRequest.signal]);
     let cursor =
       messages.value[messages.value.length - 1]?.seq ??
       active.value?.members.find((m) => m.userId === props.userId)?.joinedSeq ??
       0;
     let page: ChatMessage[];
     do {
-      page = await chatApi.history(id, `&after=${cursor}`);
-      if (disposed || generation !== selection) return;
+      page = await chatApi.history(id, `&after=${cursor}`, signal);
+      if (disposed || generation !== selection) {
+        needsSync = !disposed;
+        return;
+      }
       merge(page);
       cursor = page[page.length - 1]?.seq ?? cursor;
     } while (page.length === 100);
     await markRead(id, cursor);
+    if (!disposed && generation === selection) syncError.value = '';
   } catch (e) {
-    if (!disposed) error.value = failure(e);
+    if (!disposed && startedSelection === selection) syncError.value = failure(e);
+    if (!disposed && startedSelection !== selection) needsSync = true;
   } finally {
     syncing = false;
-    if (needsSync && !disposed) {
+    if (!disposed) recovering.value = false;
+    if (needsSync && !disposed && !loading.value) {
       needsSync = false;
       void sync();
     }
@@ -212,12 +268,14 @@ function connect() {
   if (disposed) return;
   socket = new WebSocket(socketUrl());
   const current = socket;
+  const notifyExpiredSession = captureUnauthorizedSession();
   current.onmessage = (event) => {
     if (current !== socket || disposed) return;
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'READY') {
         connected.value = true;
+        connectionError.value = '';
         attempts = 0;
         void sync();
       }
@@ -236,7 +294,9 @@ function connect() {
         void sync();
       }
       if (data.type === 'ERROR') {
-        error.value = data.message || '消息发送失败';
+        if (data.code === 'CONNECTION_EXPIRED')
+          connectionError.value = data.message || '连接租约已失效，正在重新连接。';
+        else error.value = data.message || '消息发送失败';
         const item = pending.value.find((p) => p.clientMessageId === data.clientMessageId);
         if (item) {
           if (item.timer) clearTimeout(item.timer);
@@ -244,7 +304,14 @@ function connect() {
         }
         if (data.code === 'AUTH_REQUIRED') {
           disposed = true;
+          reads.abort();
+          historyRequest.abort();
+          listRequest.abort();
+          safetyReads.abort();
+          bookmarkWrites.abort();
           cleanupSocket();
+          // 不能仅停止补拉：确定失效须让应用边界卸载私有页面；旧连接的通知带原轮次。
+          notifyExpiredSession();
         }
       }
     } catch {
@@ -252,10 +319,11 @@ function connect() {
     }
   };
   current.onerror = () => {
-    error.value = '实时连接暂不可用，历史消息仍可查询。';
+    if (current !== socket || disposed) return;
+    connectionError.value = '实时连接暂不可用，历史消息仍可查询。';
   };
   current.onclose = () => {
-    if (current !== socket) return;
+    if (current !== socket || disposed) return;
     connected.value = false;
     pending.value.forEach((p) => {
       if (p.timer) clearTimeout(p.timer);
@@ -317,7 +385,7 @@ function send() {
   error.value = '';
   transmit(pending.value[pending.value.length - 1]!);
 }
-async function action(operation: () => Promise<void>) {
+async function action(operation: () => Promise<unknown>) {
   if (busy.value) return;
   busy.value = true;
   error.value = '';
@@ -395,11 +463,17 @@ function cleanupSocket() {
 /** 移动端返回列表结束当前历史读取轮次，避免把草稿发到下一位联系人。 */
 function backToConversations() {
   ++selection;
+  historyRequest.abort();
+  historyRequest = new AbortController();
   activeId.value = '';
   messages.value = [];
   body.value = '';
   loading.value = false;
   historyToolsOpen.value = false;
+}
+/** 浏览器挂起期间提示可能未处理；返回可见页面立即补拉，不等下一次推送。 */
+function resumeSync() {
+  if (!disposed && document.visibilityState === 'visible') void sync();
 }
 onMounted(async () => {
   try {
@@ -409,6 +483,8 @@ onMounted(async () => {
     error.value = failure(e);
   }
   if (disposed) return;
+  document.addEventListener('visibilitychange', resumeSync);
+  window.addEventListener('focus', resumeSync);
   connect();
   heartbeat = setInterval(() => {
     if (connected.value && !pending.value.some((p) => p.state === 'sending'))
@@ -428,7 +504,12 @@ onUnmounted(() => {
   disposed = true;
   selection++;
   safetyReads.abort();
+  reads.abort();
+  listRequest.abort();
+  historyRequest.abort();
   bookmarkWrites.abort();
+  document.removeEventListener('visibilitychange', resumeSync);
+  window.removeEventListener('focus', resumeSync);
   cleanupSocket();
 });
 </script>
@@ -437,7 +518,14 @@ onUnmounted(() => {
   <section class="chat-panel" :class="{ embedded }" aria-label="私信与群聊">
     <header class="chat-heading"
       ><div
-        ><h2>消息中心</h2><small>{{ connected ? '实时连接已建立' : '连接恢复中 · 可查询已保存消息' }}</small></div
+        ><h2>消息中心</h2
+        ><small aria-live="polite">{{
+          recovering
+            ? '正在同步已保存消息…'
+            : connected
+              ? '实时连接已建立 · 跨节点同步'
+              : '连接恢复中 · 可查询已保存消息'
+        }}</small></div
       ><button
         v-if="!safetyOpen"
         type="button"
@@ -450,6 +538,8 @@ onUnmounted(() => {
       ><button type="button" class="secondary" @click="emit('close')">关闭</button></header
     >
     <p v-if="error" class="form-error" role="alert">{{ error }}</p
+    ><p v-if="connectionError" class="form-error" role="alert">{{ connectionError }}</p
+    ><p v-if="syncError" class="form-error" role="alert">同步暂未完成：{{ syncError }}。连接恢复后会重新读取。</p
     ><p v-if="bookmarkSuccess" role="status">{{ bookmarkSuccess }}</p>
     <ChatSafetyPanel
       v-if="safetyOpen"
@@ -510,7 +600,7 @@ onUnmounted(() => {
         <p v-if="conversationsLoading" role="status">正在读取会话…</p>
         <p v-else-if="!conversations.length && !error" class="empty compact">还没有会话，输入用户名开始交流。</p>
       </aside>
-      <main v-if="active" class="chat-thread">
+      <section v-if="active" class="chat-thread" :aria-label="`会话：${active.title}`">
         <div class="chat-thread-title"
           ><button class="secondary mobile-only" @click="backToConversations">返回会话</button
           ><h3>{{ active.title }}</h3
@@ -580,6 +670,7 @@ onUnmounted(() => {
         <form class="chat-composer" @submit.prevent="send">
           <textarea
             v-model="body"
+            aria-label="消息正文"
             maxlength="2000"
             placeholder="Enter 发送，Shift+Enter 换行"
             @keydown.enter.exact.prevent="send"
@@ -591,7 +682,7 @@ onUnmounted(() => {
             >发送</button
           ></form
         >
-      </main>
+      </section>
       <div v-else class="empty">选择会话，或创建私信与群聊。</div>
     </div>
   </section>
