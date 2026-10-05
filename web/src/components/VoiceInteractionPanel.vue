@@ -28,13 +28,19 @@ const {
   command,
   transmit,
   discard,
+  fresh,
+  lastVerifiedAt,
+  online,
+  checkReceipt,
 } = state;
 /** 目标只来自服务器名单，服务端仍当前读授权。 */ const target = ref('');
 /** 房主管理与在麦态不混用。 */ const manager = computed(
-  () => !!snapshot.value?.mySessionId && ['OWNER', 'ADMIN'].includes(snapshot.value.myRole || ''),
+  () => fresh.value && !!snapshot.value?.mySessionId && ['OWNER', 'ADMIN'].includes(snapshot.value.myRole || ''),
 );
-const owner = computed(() => !!snapshot.value?.mySessionId && snapshot.value.myRole === 'OWNER');
-/** 未确认原请求存在时不新建命令。 */ const disabled = computed(() => loading.value || busy.value || !!pending.value);
+const owner = computed(() => fresh.value && !!snapshot.value?.mySessionId && snapshot.value.myRole === 'OWNER');
+/** 未确认原请求或当前权限时不新建命令。 */ const disabled = computed(
+  () => !fresh.value || !online.value || loading.value || busy.value || !!pending.value,
+);
 /** 固定状态名称，不声称已经真实发声。 */ const labels = {
   EMPTY: '空麦',
   LOCKED: '已锁',
@@ -76,16 +82,29 @@ function canReview(request: SeatRequest) {
       凭据；成员数是有效租约数，不是媒体在线数。</p
     >
     <p v-if="readError" class="form-error" role="alert">{{ readError }}</p>
+    <p v-if="!online" class="form-error" role="status"
+      >网络已离线，停止同步与续约；恢复后先核验当前房间状态，不自动重试操作。</p
+    >
+    <p v-else-if="snapshot && !fresh" class="form-error" role="status"
+      >以下为旧快照，当前权限未确认，已暂停新操作；请刷新房间状态。</p
+    >
+    <p v-if="lastVerifiedAt" class="hint"
+      >最近核验：{{ new Date(lastVerifiedAt).toLocaleTimeString() }}（本机时间，非租约期限）</p
+    >
     <p v-if="writeError" class="form-error" role="alert">{{ writeError }}</p>
     <p v-if="success" role="status">{{ success }}</p>
     <div v-if="pending" class="workspace-error"
       ><p>原请求结果未确认。重试保持原 UUID、会话及版本，放弃只停止本地等待，不取消后台操作。</p
       ><div class="page-actions"
-        ><button type="button" class="secondary" :disabled="busy" @click="transmit">使用原请求重试</button
-        ><button type="button" class="secondary" :disabled="busy" @click="discard">放弃旧请求并重取</button></div
+        ><button type="button" class="secondary" :disabled="busy || !online" @click="checkReceipt"
+          >只查询原提交结果</button
+        ><button type="button" class="secondary" :disabled="busy || !online" @click="transmit">使用原请求重试</button
+        ><button type="button" class="secondary" :disabled="busy || !online" @click="discard"
+          >放弃旧请求并重取</button
+        ></div
       ></div
     >
-    <button type="button" class="secondary" :disabled="busy" @click="load">{{
+    <button type="button" class="secondary" :disabled="busy || !online" @click="load()">{{
       loading ? '读取中…' : '刷新房间状态'
     }}</button>
     <p v-if="capabilities && !capabilities.enabled" role="status">互动核心尚未开放，不能执行成员或麦位操作。</p>

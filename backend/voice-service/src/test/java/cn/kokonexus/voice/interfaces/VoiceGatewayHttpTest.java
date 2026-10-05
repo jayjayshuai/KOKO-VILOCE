@@ -36,6 +36,65 @@ class VoiceGatewayHttpTest {
     private static final String KEY = "isolated-voice-http-gateway-key-20261005";
 
     @Test
+    void syncAndReceiptHttpBindTrustedIdentityAndKeepPrivateRepliesUncached() throws Exception {
+        try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
+            context.register(HttpConfiguration.class);
+            context.refresh();
+            var core = context.getBean(VoiceInteractionService.class);
+            String version = "9007199254741001",
+                id = "00000000-0000-0000-0000-000000000042";
+            when(core.sync(42, 1, version)).thenReturn(
+                new VoiceInteractionViews.SyncView(version, java.time.LocalDateTime.of(2026, 10, 6, 3, 0), null)
+            );
+            when(core.receipt(42, 1, id)).thenReturn(new VoiceInteractionViews.ReceiptView(false, null));
+            String base = "http://127.0.0.1:" + context.getWebServer().getPort();
+            try (var client = HttpClient.newHttpClient()) {
+                var denied = client.send(
+                    HttpRequest.newBuilder(
+                        URI.create(base + "/api/voice/rooms/1/interaction/sync?knownVersion=" + version)
+                    )
+                        .header("X-Koko-User-Id", "42")
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(403, denied.statusCode());
+                verifyNoInteractions(core);
+                var sync = client.send(
+                    HttpRequest.newBuilder(
+                        URI.create(base + "/api/voice/rooms/1/interaction/sync?knownVersion=" + version + "&userId=7")
+                    )
+                        .header("X-Koko-Gateway-Key", KEY)
+                        .header("X-Koko-User-Id", "42")
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(200, sync.statusCode());
+                assertTrue(sync.body().contains("\"version\":\"" + version + "\""));
+                assertTrue(sync.body().contains("\"snapshot\":null"));
+                assertEquals("no-store", sync.headers().firstValue("Cache-Control").orElseThrow());
+                var receipt = client.send(
+                    HttpRequest.newBuilder(
+                        URI.create(base + "/api/voice/rooms/1/interaction/receipts/" + id + "?userId=7")
+                    )
+                        .header("X-Koko-Gateway-Key", KEY)
+                        .header("X-Koko-User-Id", "42")
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(200, receipt.statusCode());
+                assertTrue(receipt.body().contains("\"committed\":false"));
+                assertEquals("no-store", receipt.headers().firstValue("Cache-Control").orElseThrow());
+                verify(core).sync(42, 1, version);
+                verify(core).receipt(42, 1, id);
+                verifyNoMoreInteractions(core);
+            }
+        }
+    }
+
+    @Test
     void interactionEndpointsKeepDisabledSemanticsAndValidateBeforeDirectory() throws Exception {
         try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
             context.register(HttpConfiguration.class);

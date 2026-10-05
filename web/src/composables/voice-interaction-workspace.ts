@@ -28,6 +28,11 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
   /** 写入/心跳未确认，不自动重试管理命令。 */ const writeError = ref('')
   /** 原写入待重试，必须维持UUID和参数。 */ const pending = ref<Attempt | null>(null)
   /** SQL提交反馈，不当实际发声状态。 */ const success = ref('')
+  /** 当前授权核验成功；读取失败、离线或隐藏后不能发起新命令。 */ const fresh = ref(false)
+  /** 本机确认时刻仅供显示，不作为数据库租约时钟。 */ const lastVerifiedAt = ref<number | null>(null)
+  /** 浏览器离线不发请求，恢复后先重取事实。 */ const online = ref(
+    typeof navigator === 'undefined' || navigator.onLine !== false,
+  )
   /** 审计独立读取，失败不假装无记录。 */ const actions = ref<VoiceActionPage | null>(null),
     actionLoading = ref(false),
     actionError = ref('')
@@ -40,16 +45,25 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     actionLoading.value = false
     actionError.value = ''
   }
-  const canAudit = () => !!snapshot.value?.mySessionId && ['OWNER', 'ADMIN'].includes(snapshot.value.myRole || '')
+  const canAudit = () =>
+    fresh.value && !!snapshot.value?.mySessionId && ['OWNER', 'ADMIN'].includes(snapshot.value.myRole || '')
   const stopAudit = watch(
-    () => [snapshot.value?.mySessionId, snapshot.value?.myRole],
+    () => [fresh.value, snapshot.value?.mySessionId, snapshot.value?.myRole],
     () => {
       if (!canAudit()) clearActions()
     },
     { flush: 'sync' },
   )
   async function loadActions(more = false) {
-    if (disposed || actionLoading.value || !canAudit() || (more && !actions.value?.nextBefore)) return
+    if (
+      disposed ||
+      busy.value ||
+      loading.value ||
+      actionLoading.value ||
+      !canAudit() ||
+      (more && !actions.value?.nextBefore)
+    )
+      return
     actionRead.abort()
     actionRead = new AbortController()
     const saved = capture(),
@@ -65,7 +79,15 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
           nextBefore: page.nextBefore,
         }
     } catch (cause) {
-      if (current(saved) && revision === actionRevision) actionError.value = failure(cause)
+      if (current(saved) && revision === actionRevision) {
+        const status = (cause as { status?: number })?.status
+        if (status === 401 || status === 403 || status === 404) {
+          invalidate()
+          snapshot.value = null
+          capabilities.value = null
+        }
+        actionError.value = failure(cause)
+      }
     } finally {
       if (current(saved) && revision === actionRevision) actionLoading.value = false
     }
@@ -77,6 +99,9 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     disposed = false
   /** 定时器均在卸载或换身份时停止。 */ let poll: ReturnType<typeof setInterval> | undefined,
     heartbeat: ReturnType<typeof setInterval> | undefined
+  /** 失败读取5/10/20/40/60秒退避，手工刷新和恢复不受此限制。 */ let readFailures = 0,
+    nextReadAt = 0
+  const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
   const capture = () => ({
     epoch,
     roomId: context.roomId,
@@ -91,8 +116,13 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     saved.sessionRevision === context.sessionRevision
   const failure = (cause: unknown) => (cause instanceof Error ? cause.message : '房间互动暂不可用')
 
-  async function load() {
-    if (disposed || busy.value || !context.userId) return
+  function invalidate() {
+    fresh.value = false
+    clearActions()
+  }
+  async function load(force = true) {
+    if (disposed || busy.value || !context.userId || !online.value || !visible() || (!force && Date.now() < nextReadAt))
+      return
     read.abort()
     read = new AbortController()
     const saved = capture(),
@@ -100,23 +130,51 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     loading.value = true
     readError.value = ''
     try {
-      const cap = await network.capabilities(saved.roomId, read.signal)
-      if (!current(saved) || revision !== readRevision) return
-      capabilities.value = cap
-      if (!cap.enabled || !cap.canInspect) {
-        snapshot.value = null
-        return
+      if (!force && capabilities.value?.enabled && snapshot.value) {
+        const known = snapshot.value.version
+        const update = await network.sync(saved.roomId, known, read.signal)
+        if (!current(saved) || revision !== readRevision) return
+        if (update.snapshot) {
+          if (update.snapshot.roomId !== saved.roomId || update.snapshot.version !== update.version)
+            throw new Error('房间同步响应不一致，请重新读取')
+          snapshot.value = update.snapshot
+        } else if (update.version !== known) throw new Error('房间版本变化但缺少快照，请重新读取')
+        capabilities.value = { ...capabilities.value, version: update.version, canInspect: true }
+      } else {
+        const cap = await network.capabilities(saved.roomId, read.signal)
+        if (!current(saved) || revision !== readRevision) return
+        capabilities.value = cap
+        if (!cap.enabled || !cap.canInspect) {
+          snapshot.value = null
+        } else {
+          const data = await network.snapshot(saved.roomId, read.signal)
+          if (!current(saved) || revision !== readRevision) return
+          if (data.roomId !== saved.roomId) throw new Error('房间快照标识不一致')
+          snapshot.value = data
+        }
       }
-      const data = await network.snapshot(saved.roomId, read.signal)
-      if (current(saved) && revision === readRevision) snapshot.value = data
+      fresh.value = true
+      lastVerifiedAt.value = Date.now()
+      readFailures = 0
+      nextReadAt = 0
     } catch (cause) {
-      if (current(saved) && revision === readRevision) readError.value = failure(cause)
+      if (current(saved) && revision === readRevision) {
+        invalidate()
+        readError.value = failure(cause)
+        readFailures++
+        nextReadAt = Date.now() + Math.min(60000, 5000 * 2 ** Math.min(readFailures - 1, 4))
+        const status = (cause as { status?: number })?.status
+        if (status === 401 || status === 403 || status === 404) {
+          snapshot.value = null
+          capabilities.value = null
+        }
+      }
     } finally {
       if (current(saved) && revision === readRevision) loading.value = false
     }
   }
   async function transmit() {
-    if (disposed || busy.value || !pending.value) return
+    if (disposed || busy.value || !pending.value || !online.value || !visible()) return
     const saved = capture(),
       attempt = pending.value
     busy.value = true
@@ -148,6 +206,9 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       busy.value ||
       loading.value ||
       pending.value ||
+      !fresh.value ||
+      !online.value ||
+      !visible() ||
       !capabilities.value?.enabled ||
       !capabilities.value.version
     )
@@ -163,7 +224,17 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     args: Partial<Pick<VoiceCommand, 'seatNo' | 'targetUserId' | 'seatRequestId' | 'value'>> = {},
   ) {
     const data = snapshot.value
-    if (disposed || busy.value || loading.value || pending.value || !data?.mySessionId || !capabilities.value?.enabled)
+    if (
+      disposed ||
+      busy.value ||
+      loading.value ||
+      pending.value ||
+      !fresh.value ||
+      !online.value ||
+      !visible() ||
+      !data?.mySessionId ||
+      !capabilities.value?.enabled
+    )
       return
     pending.value = {
       kind: 'COMMAND',
@@ -177,6 +248,41 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     }
     return transmit()
   }
+  /** 仅核对原UUID；未找到仍保留未知请求，不自动换参数重试。 */
+  async function checkReceipt() {
+    if (disposed || busy.value || !pending.value || !online.value || !visible()) return
+    const saved = capture(),
+      attempt = pending.value
+    busy.value = true
+    read.abort()
+    ++readRevision
+    loading.value = false
+    try {
+      const result = await network.receipt(saved.roomId, attempt.input.requestId, write.signal)
+      if (!current(saved)) return
+      if (!result.committed) {
+        writeError.value = '尚未查到原请求提交收据；操作可能仍在途中，不能据此认定失败或自动创建新请求。'
+        return
+      }
+      const expectedType = attempt.kind === 'JOIN' ? 'JOIN' : attempt.input.type
+      if (
+        !result.ack ||
+        result.ack.type !== expectedType ||
+        BigInt(result.ack.version) !== BigInt(attempt.input.expectedVersion) + 1n
+      )
+        throw new Error('原请求收据与待核对操作不一致，请保留请求并人工核对')
+      pending.value = null
+      writeError.value = ''
+      success.value = `原 UUID 已有 ${result.ack.type} 提交收据；请核对当前状态，原会话不保证仍有效。`
+    } catch (cause) {
+      if (current(saved)) writeError.value = `收据核对未确认：${failure(cause)}`
+    } finally {
+      if (current(saved)) {
+        busy.value = false
+        await load()
+      }
+    }
+  }
   /** 明确放弃只是停止本地重试，不表示取消SQL；重新读取已提交事实。 */
   async function discard() {
     if (!busy.value) {
@@ -186,7 +292,17 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
   }
   async function pulse() {
     const sessionId = snapshot.value?.mySessionId
-    if (disposed || busy.value || pending.value || !sessionId || !capabilities.value?.enabled) return
+    if (
+      disposed ||
+      busy.value ||
+      pending.value ||
+      !fresh.value ||
+      !online.value ||
+      !visible() ||
+      !sessionId ||
+      !capabilities.value?.enabled
+    )
+      return
     const saved = capture()
     busy.value = true
     read.abort()
@@ -221,7 +337,41 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     readError.value = ''
     writeError.value = ''
     success.value = ''
+    fresh.value = false
+    lastVerifiedAt.value = null
+    readFailures = 0
+    nextReadAt = 0
   }
+  /** 恢复不自动加入或重试写入；取消旧读取，重新核验当前权限。 */
+  function suspend() {
+    invalidate()
+    read.abort()
+    ++readRevision
+    loading.value = false
+  }
+  function onOffline() {
+    online.value = false
+    suspend()
+  }
+  function onOnline() {
+    online.value = true
+    suspend()
+    void load()
+  }
+  function onFocus() {
+    suspend()
+    void load()
+  }
+  function onVisibility() {
+    if (visible()) onFocus()
+    else suspend()
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('offline', onOffline)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('focus', onFocus)
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
   const stop = watch(
     () => [context.roomId, context.userId, context.sessionRevision],
     () => {
@@ -229,7 +379,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       if (!context.userId) return
       void load()
       poll = setInterval(() => {
-        if (!loading.value && !busy.value) void load()
+        if (lastVerifiedAt.value !== null && Date.now() - lastVerifiedAt.value >= 15000) invalidate()
+        if (!loading.value && !busy.value) void load(false)
       }, 5000)
       heartbeat = setInterval(() => {
         void pulse()
@@ -241,6 +392,12 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     disposed = true
     stop()
     stopAudit()
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('offline', onOffline)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('focus', onFocus)
+    }
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
     reset()
   })
   return {
@@ -262,5 +419,9 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     transmit,
     discard,
     pulse,
+    fresh,
+    lastVerifiedAt,
+    online,
+    checkReceipt,
   }
 }

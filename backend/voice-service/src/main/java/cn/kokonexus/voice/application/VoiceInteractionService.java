@@ -165,6 +165,43 @@ public class VoiceInteractionService {
         LocalDateTime now = prepare(room);
         Member viewer = mapper.member(roomId, user);
         if (!active(viewer, now) && user != room.getOwnerId()) throw new ForbiddenOperationException("请先加入房间");
+        return projectSnapshot(room, viewer, user, now);
+    }
+
+    /** 同版本也先锁房间、回收租约、核对当前成员；不返回旧权限下的快照。 */
+    @Transactional(timeout = 3)
+    public SyncView sync(long user, long roomId, String knownVersion) {
+        requireEnabled();
+        identity(user, roomId);
+        Long known = knownVersion == null ? null : version(knownVersion);
+        VoiceRoom room = open(roomId);
+        LocalDateTime now = prepare(room);
+        Member viewer = mapper.member(roomId, user);
+        if (!active(viewer, now) && user != room.getOwnerId()) throw new ForbiddenOperationException("请先加入房间");
+        return new SyncView(
+            room.getInteractionVersion().toString(),
+            now,
+            Objects.equals(known, room.getInteractionVersion()) ? null : projectSnapshot(room, viewer, user, now)
+        );
+    }
+
+    /** 用原UUID核对本人提交；房间锁后当前读，允许离房/关闭后核对原事实，不登记或续约。 */
+    @Transactional(timeout = 3)
+    public ReceiptView receipt(long user, long roomId, String requestId) {
+        requireEnabled();
+        identity(user, roomId);
+        uuid(requestId);
+        VoiceRoom room = mapper.lockRoom(roomId);
+        if (room == null || !"CONTROLLED".equals(room.getControlMode())) throw new ResourceNotFoundException(
+            "受控房间不存在"
+        );
+        Receipt original = mapper.receipt(roomId, user, requestId);
+        return new ReceiptView(original != null, original == null ? null : ack(original));
+    }
+
+    /** 已在同一事务完成当前授权；成员/管理员/预约均使用当前读且有界。 */
+    private Snapshot projectSnapshot(VoiceRoom room, Member viewer, long user, LocalDateTime now) {
+        long roomId = room.getId();
         List<Member> members = mapper.activeMembers(roomId);
         List<Seat> seats = mapper.seats(roomId);
         boolean manager = user == room.getOwnerId() || (active(viewer, now) && management(viewer));

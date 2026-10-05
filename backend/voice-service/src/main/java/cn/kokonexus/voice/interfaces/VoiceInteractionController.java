@@ -80,6 +80,34 @@ public class VoiceInteractionController {
         return service.snapshot(user, id);
     }
 
+    @GetMapping("/{id}/interaction/sync")
+    @Operation(
+        summary = "按已知版本同步房间事实",
+        description = "每次当前授权与租约回收；同版本不发送私有名单，版本变化返回完整授权快照。不是RTC事件。"
+    )
+    public SyncView sync(
+        @Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long user,
+        @PathVariable long id,
+        @Parameter(description = "客户端最后已读取的版本字符串；首读不传") @RequestParam(
+            required = false
+        ) String knownVersion
+    ) {
+        return service.sync(user, id, knownVersion);
+    }
+
+    @GetMapping("/{id}/interaction/receipts/{requestId}")
+    @Operation(
+        summary = "核对本人原请求的持久提交收据",
+        description = "使用登录身份及原UUID，仅本人可读；未找到不证明在途命令失败。不会重试命令或恢复过期会话。"
+    )
+    public ReceiptView receipt(
+        @Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long user,
+        @PathVariable long id,
+        @Parameter(description = "原JOIN或COMMAND请求UUID，不是成员sessionId") @PathVariable String requestId
+    ) {
+        return service.receipt(user, id, requestId);
+    }
+
     @PostMapping("/{id}/interaction/join")
     @Operation(
         summary = "加入互动成员会话",

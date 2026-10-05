@@ -25,6 +25,29 @@ public final class VoiceInteractionViews {
 
     private VoiceInteractionViews() {}
 
+    /** 条件同步仍执行当前授权与租约回收；不是媒体事件或免授权缓存。 */
+    public record SyncView(
+        @Schema(description = "回收后的房间版本字符串，禁转JS number") String version,
+        @Schema(description = "本次数据库核验时间，Asia/Shanghai") LocalDateTime checkedAt,
+        @Schema(description = "版本相同为null；变化时返回完整当前授权快照", nullable = true) Snapshot snapshot
+    ) {
+        @Override
+        public String toString() {
+            return "VoiceSync[redacted]";
+        }
+    }
+
+    /** 只查询登录用户自己的原提交，不能把未找到解释为原操作已取消。 */
+    public record ReceiptView(
+        @Schema(description = "是否已查到本人同事务持久收据；false不证明在途命令失败") boolean committed,
+        @Schema(description = "原已提交事实，不代表当前房间或会话仍有效", nullable = true) Ack ack
+    ) {
+        @Override
+        public String toString() {
+            return "VoiceReceipt[redacted]";
+        }
+    }
+
     public record Capabilities(
         @Schema(description = "互动核心是否已配置启用；不等于正式运营") boolean enabled,
         @Schema(description = "媒体授权未接入，当前固定false") boolean mediaReady,

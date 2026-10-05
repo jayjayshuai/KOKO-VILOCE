@@ -68,6 +68,15 @@ export interface VoiceAck {
   /** 原提交版本，不是最新快照。 */ version: string
   /** 只有JOIN返回本人会话UUID。 */ sessionId: string | null
 }
+export interface VoiceSync {
+  /** 回收后的版本字符串，禁转JS number。 */ version: string
+  /** 本次数据库核验时间，不使用客户端时间判断数据库租约。 */ checkedAt: string
+  /** 同版本为null，不代表成员列表为空。 */ snapshot: InteractionSnapshot | null
+}
+export interface VoiceReceipt {
+  /** false不证明在途操作失败，不能自动换UUID。 */ committed: boolean
+  /** 原提交结果，不是当前权限或会话。 */ ack: VoiceAck | null
+}
 /** 审计投影不含成员会话或媒体凭据。 */
 export interface VoiceAction {
   /** 原房间版本字符串。 */ version: string
@@ -95,6 +104,16 @@ export const voiceInteractionApi = {
     request<InteractionCapabilities>(`/voice/rooms/${encodeURIComponent(room)}/interaction/capabilities`, { signal }),
   snapshot: (room: string, signal?: AbortSignal) =>
     request<InteractionSnapshot>(`/voice/rooms/${encodeURIComponent(room)}/interaction`, { signal }),
+  sync: (room: string, knownVersion: string | null, signal?: AbortSignal) => {
+    const query = new URLSearchParams()
+    if (knownVersion !== null) query.set('knownVersion', knownVersion)
+    return request<VoiceSync>(`/voice/rooms/${encodeURIComponent(room)}/interaction/sync?${query}`, { signal })
+  },
+  receipt: (room: string, requestId: string, signal?: AbortSignal) =>
+    request<VoiceReceipt>(
+      `/voice/rooms/${encodeURIComponent(room)}/interaction/receipts/${encodeURIComponent(requestId)}`,
+      { signal },
+    ),
   join: (room: string, input: { requestId: string; expectedVersion: string }, signal?: AbortSignal) =>
     request<VoiceAck>(`/voice/rooms/${encodeURIComponent(room)}/interaction/join`, {
       method: 'POST',
