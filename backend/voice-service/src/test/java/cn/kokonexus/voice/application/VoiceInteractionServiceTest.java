@@ -16,7 +16,7 @@ class VoiceInteractionServiceTest {
 
     @Test
     void disabledCoreNeverMutatesOrReturnsFakeEnabledCapability() {
-        var service = new VoiceInteractionService(mapper, false);
+        var service = new VoiceInteractionService(mapper, false, mock(VoiceMediaPlanRecorder.class));
         assertThat(service.capabilities(7, 1).enabled()).isFalse();
         assertThat(service.capabilities(7, 1).mediaReady()).isFalse();
         assertThatThrownBy(() -> service.snapshot(7, 1)).isInstanceOf(
@@ -30,7 +30,7 @@ class VoiceInteractionServiceTest {
 
     @Test
     void malformedIdsSessionsVersionsAndCommandFieldsNeverReachSql() {
-        var service = new VoiceInteractionService(mapper, true);
+        var service = new VoiceInteractionService(mapper, true, mock(VoiceMediaPlanRecorder.class));
         String uuid = UUID.randomUUID().toString();
         for (String version : new String[] { null, "-1", "01", "9223372036854775808" }) {
             assertThatThrownBy(() -> service.join(7, 1, uuid, version, "本人")).isInstanceOf(

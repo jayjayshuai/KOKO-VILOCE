@@ -13,7 +13,11 @@ class VoiceClosureStateTest {
 
     /** 当前读边界桩。 */ private final VoiceRoomMapper rooms = mock(VoiceRoomMapper.class);
     /** 受控审计边界桩。 */ private final VoiceInteractionMapper core = mock(VoiceInteractionMapper.class);
-    /** 实际短事务逻辑，非代理桩。 */ private final VoiceClosureState state = new VoiceClosureState(rooms, core);
+    /** 实际短事务逻辑，媒体计划为明确桩，非代理验证。 */ private final VoiceClosureState state = new VoiceClosureState(
+        rooms,
+        core,
+        mock(VoiceMediaPlanRecorder.class)
+    );
 
     private VoiceRoom room(String status) {
         var room = new VoiceRoom();

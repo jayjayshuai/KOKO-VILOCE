@@ -63,13 +63,16 @@ public class VoiceInteractionService {
     private final VoiceInteractionMapper mapper;
     /** 候选核心开关，默认关闭；媒体准备度始终另行判断。 */
     private final boolean enabled;
+    /** 同事务媒体轮次/退场记录器，不调用SFU。 */ private final VoiceMediaPlanRecorder media;
 
     public VoiceInteractionService(
         VoiceInteractionMapper mapper,
-        @Value("${koko.voice.interaction-core-enabled:false}") boolean enabled
+        @Value("${koko.voice.interaction-core-enabled:false}") boolean enabled,
+        VoiceMediaPlanRecorder media
     ) {
         this.mapper = mapper;
         this.enabled = enabled;
+        this.media = media;
     }
 
     public void requireEnabled() {
@@ -79,6 +82,24 @@ public class VoiceInteractionService {
     /** 只返回候选开关，媒体准备度不能由配置伪造为true。 */
     public Capabilities features() {
         return new Capabilities(enabled, false, null, false);
+    }
+
+    /** 与核心快照相同的当前授权，再返回本人计划与房间队列的诊断。 */
+    @Transactional(timeout = 3)
+    public MediaPlanView mediaPlan(long user, long roomId) {
+        requireEnabled();
+        identity(user, roomId);
+        VoiceRoom room = mapper.lockRoom(roomId);
+        if (
+            room == null ||
+            !"CONTROLLED".equals(room.getControlMode()) ||
+            !Set.of("OPEN", "CLOSING", "CLOSED").contains(room.getStatus())
+        ) throw new ResourceNotFoundException("受控媒体计划不存在");
+        LocalDateTime now = "OPEN".equals(room.getStatus()) ? prepare(room) : mapper.databaseNow();
+        if (
+            user != room.getOwnerId() && (!"OPEN".equals(room.getStatus()) || !active(mapper.member(roomId, user), now))
+        ) throw new ForbiddenOperationException("仅当前成员或房主可读媒体计划，关闭后仅房主");
+        return media.view(roomId, user);
     }
 
     /** 只给版本/能力，不向未加入者展示成员或申请。 */
@@ -500,6 +521,7 @@ public class VoiceInteractionService {
                 one(mapper.saveSeat(s));
                 changed = true;
             }
+        media.reconcile(room);
         if (changed) {
             bump(room);
             one(
@@ -592,6 +614,7 @@ public class VoiceInteractionService {
         String request,
         Boolean value
     ) {
+        media.reconcile(room);
         bump(room);
         Receipt r = new Receipt();
         r.setFingerprint(fingerprint);

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useVoiceInteractionWorkspace } from '../composables/voice-interaction-workspace';
+import VoiceMediaPlanPanel from './VoiceMediaPlanPanel.vue';
 import type { VoiceCommandType, VoiceCommand, SeatRequest } from '../services/voice-interaction';
 const props = defineProps<{
   /** 仅展示用名称快照，权限仍绑定roomId。 */ roomTitle?: string;
@@ -109,6 +110,12 @@ function canReview(request: SeatRequest) {
     }}</button>
     <p v-if="capabilities && !capabilities.enabled" role="status">互动核心尚未开放，不能执行成员或麦位操作。</p>
     <template v-if="capabilities?.enabled">
+      <VoiceMediaPlanPanel
+        :room-id="roomId"
+        :user-id="userId"
+        :session-revision="sessionRevision"
+        :allowed="fresh && !!snapshot"
+      />
       <div class="page-actions"
         ><button v-if="!snapshot?.mySessionId" type="button" class="primary" :disabled="disabled" @click="join"
           >加入互动会话</button

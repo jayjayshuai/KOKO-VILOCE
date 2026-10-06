@@ -27,6 +27,10 @@ public class LiveKitVoiceMediaGateway implements VoiceMediaGateway {
     private final String apiSecret;
     /** 客户端可访问的媒体服务地址。 */
     private final String publicUrl;
+    /** Twirp故障只读取有界严格JSON，不相信HTML404或重复code键。 */
+    private final com.fasterxml.jackson.databind.ObjectMapper errors = new com.fasterxml.jackson.databind.ObjectMapper()
+        .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+        .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     public LiveKitVoiceMediaGateway(
         @Value("${livekit.api-url}") String apiUrl,
@@ -37,7 +41,20 @@ public class LiveKitVoiceMediaGateway implements VoiceMediaGateway {
         if (apiKey.isBlank() || apiSecret.length() < 32 || publicUrl.isBlank()) {
             throw new IllegalStateException("LiveKit 生产配置不完整");
         }
-        this.roomClient = RoomServiceClient.createClient(apiUrl, apiKey, apiSecret);
+        this.roomClient = RoomServiceClient.createClient(
+            apiUrl,
+            apiKey,
+            apiSecret,
+            () ->
+                new okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(java.time.Duration.ofSeconds(3))
+                    .callTimeout(java.time.Duration.ofSeconds(5))
+                    .readTimeout(java.time.Duration.ofSeconds(5))
+                    .writeTimeout(java.time.Duration.ofSeconds(5))
+                    .retryOnConnectionFailure(false)
+                    .build(),
+            false
+        );
         this.apiKey = apiKey;
         this.apiSecret = apiSecret;
         this.publicUrl = publicUrl;
@@ -88,5 +105,44 @@ public class LiveKitVoiceMediaGateway implements VoiceMediaGateway {
     @Override
     public String publicUrl() {
         return publicUrl;
+    }
+
+    /** 只有可信Twirp not_found才当作原参与者已不在；HTML404/坏路径不伪装任务完成。 */
+    @Override
+    public void removeParticipant(String roomName, String mediaIdentity) {
+        if (
+            roomName == null ||
+            !roomName.matches("koko-voice-[1-9][0-9]{0,18}") ||
+            mediaIdentity == null ||
+            !java.util.UUID.fromString(mediaIdentity).toString().equals(mediaIdentity)
+        ) throw new IllegalArgumentException("媒体退场目标无效");
+        try {
+            if (Long.parseLong(roomName.substring("koko-voice-".length())) <= 0) throw new IllegalArgumentException(
+                "房间无效"
+            );
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("媒体退场房间超界");
+        }
+        try {
+            Response<Void> response = roomClient.removeParticipant(roomName, mediaIdentity).execute();
+            if (response.isSuccessful()) return;
+            if (response.code() == 404 && response.errorBody() != null) {
+                try (var stream = response.errorBody().byteStream()) {
+                    byte[] bytes = stream.readNBytes(1025);
+                    if (bytes.length <= 1024) {
+                        var error = errors.readTree(bytes);
+                        if (
+                            error != null &&
+                            error.isObject() &&
+                            error.path("code").isTextual() &&
+                            "not_found".equals(error.path("code").textValue())
+                        ) return;
+                    }
+                }
+            }
+            throw new IllegalStateException("LiveKit参与者退场未确认");
+        } catch (IOException failure) {
+            throw new IllegalStateException("LiveKit参与者退场暂不可用");
+        }
     }
 }

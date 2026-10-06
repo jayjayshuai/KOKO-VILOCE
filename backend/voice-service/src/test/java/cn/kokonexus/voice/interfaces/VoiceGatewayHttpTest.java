@@ -36,6 +36,45 @@ class VoiceGatewayHttpTest {
     private static final String KEY = "isolated-voice-http-gateway-key-20261005";
 
     @Test
+    void mediaPlanHttpIsPrivateAndUsesStringEpochWithoutInternalIdentityOrFakeReady() throws Exception {
+        try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
+            context.register(HttpConfiguration.class);
+            context.refresh();
+            var core = context.getBean(VoiceInteractionService.class);
+            when(core.mediaPlan(42, 1)).thenReturn(
+                new VoiceInteractionViews.MediaPlanView(true, "9007199254741001", true, false, 2, 1, false)
+            );
+            String base = "http://127.0.0.1:" + context.getWebServer().getPort();
+            try (var client = HttpClient.newHttpClient()) {
+                var denied = client.send(
+                    HttpRequest.newBuilder(URI.create(base + "/api/voice/rooms/1/interaction/media-plan"))
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(403, denied.statusCode());
+                verifyNoInteractions(core);
+                var result = client.send(
+                    HttpRequest.newBuilder(URI.create(base + "/api/voice/rooms/1/interaction/media-plan?userId=7"))
+                        .header("X-Koko-Gateway-Key", KEY)
+                        .header("X-Koko-User-Id", "42")
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(200, result.statusCode());
+                assertTrue(result.body().contains("\"generation\":\"9007199254741001\""));
+                assertTrue(result.body().contains("\"mediaReady\":false"));
+                assertFalse(result.body().contains("mediaIdentity"));
+                assertFalse(result.body().contains("sessionId"));
+                assertEquals("no-store", result.headers().firstValue("Cache-Control").orElseThrow());
+                verify(core).mediaPlan(42, 1);
+                verifyNoMoreInteractions(core);
+            }
+        }
+    }
+
+    @Test
     void syncAndReceiptHttpBindTrustedIdentityAndKeepPrivateRepliesUncached() throws Exception {
         try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
             context.register(HttpConfiguration.class);

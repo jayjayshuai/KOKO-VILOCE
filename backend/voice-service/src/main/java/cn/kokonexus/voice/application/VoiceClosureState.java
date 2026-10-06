@@ -16,15 +16,20 @@ public class VoiceClosureState {
 
     /** 关闭与转让共用当前读房间锁。 */ private final VoiceRoomMapper rooms;
     /** 受控房间关闭审计，失败与意图同事务回滚。 */ private final VoiceInteractionMapper interaction;
+    /** 受控房间所有媒体绑定退场，与CLOSING意图同事务。 */ private final VoiceMediaPlanRecorder media;
 
     @Transactional(timeout = 3)
     public VoiceRoom begin(long owner, long id) {
         VoiceRoom room = owned(owner, id);
-        if ("CLOSED".equals(room.getStatus()) || "CLOSING".equals(room.getStatus())) return room;
+        if ("CLOSED".equals(room.getStatus()) || "CLOSING".equals(room.getStatus())) {
+            media.reconcile(room);
+            return room;
+        }
         if (!"OPEN".equals(room.getStatus())) throw new IllegalStateException("当前房间状态不允许关闭");
         one(rooms.markClosing(id, owner));
         audit(room, owner, "CLOSE_REQUEST");
         room.setStatus("CLOSING");
+        media.reconcile(room);
         return room;
     }
 

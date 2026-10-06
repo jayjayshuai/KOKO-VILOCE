@@ -32,6 +32,11 @@ class VoiceStartupConfigurationTest {
             properties.getProperty("koko.voice.signal-admission-enabled")
         );
         var values = new HashMap<String, Object>();
+        assertEquals("${VOICE_MEDIA_PLAN_ENABLED:false}", properties.getProperty("koko.voice.media-plan-enabled"));
+        assertEquals(
+            "${VOICE_MEDIA_RETIREMENT_ENABLED:false}",
+            properties.getProperty("koko.voice.media-retirement.enabled")
+        );
         properties.forEach((key, value) -> values.put(key.toString(), value));
         var environment = new MockEnvironment();
         environment.getPropertySources().addFirst(new MapPropertySource("actual-voice-yaml", values));

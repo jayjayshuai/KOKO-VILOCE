@@ -33,7 +33,11 @@ async function setup(network) {
   }
   await module.link((name) => {
     const values =
-      name === 'vue' ? { ...vue, onBeforeUnmount: (hook) => hooks.push(hook) } : { voiceInteractionApi: api }
+      name === 'vue'
+        ? { ...vue, onBeforeUnmount: (hook) => hooks.push(hook) }
+        : name.endsWith('.vue')
+          ? { default: {} }
+          : { voiceInteractionApi: api }
     return new vm.SyntheticModule(
       Object.keys(values),
       function () {

@@ -47,6 +47,18 @@ public class VoiceInteractionController {
         return service.features();
     }
 
+    @GetMapping("/{id}/interaction/media-plan")
+    @Operation(
+        summary = "读取本人媒体授权计划进度",
+        description = "当前成员或房主授权，不返回内部媒体身份/成员会话；队列完成不等于媒体已开放。"
+    )
+    public MediaPlanView mediaPlan(
+        @Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long user,
+        @PathVariable long id
+    ) {
+        return service.mediaPlan(user, id);
+    }
+
     @PostMapping("/controlled")
     @Operation(
         summary = "创建受控房间候选",

@@ -40,7 +40,7 @@ public final class VoiceInteractionMysqlCheck {
             .table("voice_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 3, "Fresh V1-V3 required");
+        check(flyway.migrate().migrationsExecuted == 4, "Fresh V1-V4 required");
         flyway.validate();
         var bean = new MybatisSqlSessionFactoryBean();
         bean.setDataSource(source);
@@ -49,7 +49,12 @@ public final class VoiceInteractionMysqlCheck {
         bean.setConfiguration(config);
         bean.setMapperLocations(new PathMatchingResourcePatternResolver().getResources("classpath*:mapper/*.xml"));
         var sql = new SqlSessionTemplate(bean.getObject());
-        var target = new VoiceInteractionService(sql.getMapper(VoiceInteractionMapper.class), true);
+        var mediaPlan = new VoiceMediaPlanRecorder(
+            sql.getMapper(VoiceInteractionMapper.class),
+            sql.getMapper(cn.kokonexus.voice.infrastructure.persistence.VoiceMediaPlanMapper.class),
+            false
+        );
+        var target = new VoiceInteractionService(sql.getMapper(VoiceInteractionMapper.class), true, mediaPlan);
         var proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
         var manager = new DataSourceTransactionManager(source);
@@ -58,7 +63,8 @@ public final class VoiceInteractionMysqlCheck {
         var closureProxy = new ProxyFactory(
             new VoiceClosureState(
                 sql.getMapper(cn.kokonexus.voice.infrastructure.persistence.VoiceRoomMapper.class),
-                sql.getMapper(VoiceInteractionMapper.class)
+                sql.getMapper(VoiceInteractionMapper.class),
+                mediaPlan
             )
         );
         closureProxy.setProxyTargetClass(true);

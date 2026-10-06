@@ -25,6 +25,17 @@ public final class VoiceInteractionViews {
 
     private VoiceInteractionViews() {}
 
+    /** 本人媒体计划的只读诊断，不返回内部身份/会话或让UI宣称已实际清退。 */
+    public record MediaPlanView(
+        @Schema(description = "计划候选是否启用；false不代表任务完成") boolean tracked,
+        @Schema(description = "本人单调媒体轮次字符串；尚未分配或禁用为null", nullable = true) String generation,
+        @Schema(description = "本人希望接入状态，不是RTC在线状态") boolean active,
+        @Schema(description = "当前席位SQL希望允许发布，不是实际媒体确认") boolean publishDesired,
+        @Schema(description = "房间待退场/执行中任务数，未启用为null", nullable = true) Integer pendingRetirements,
+        @Schema(description = "房间耗尽预算任务数，未启用为null", nullable = true) Integer deadRetirements,
+        @Schema(description = "受控媒体尚未开放，固定false") boolean mediaReady
+    ) {}
+
     /** 条件同步仍执行当前授权与租约回收；不是媒体事件或免授权缓存。 */
     public record SyncView(
         @Schema(description = "回收后的房间版本字符串，禁转JS number") String version,

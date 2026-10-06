@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.voice.infrastructure.persistence.VoiceMediaPlanMapper">
+    <select id="activeBindings" resultType="cn.kokonexus.voice.domain.VoiceMediaPlan$Binding" timeout="2">
+        SELECT * FROM voice_media_binding WHERE room_id=#{room} AND binding_state='ACTIVE' ORDER BY user_id LIMIT 101 FOR UPDATE
+    </select>
+    <select id="binding" resultType="cn.kokonexus.voice.domain.VoiceMediaPlan$Binding" timeout="2">
+        SELECT * FROM voice_media_binding WHERE room_id=#{room} AND user_id=#{user} FOR UPDATE
+    </select>
+    <select id="bindingsForUsers" resultType="cn.kokonexus.voice.domain.VoiceMediaPlan$Binding" timeout="2">
+        SELECT * FROM voice_media_binding WHERE room_id=#{room}
+        <choose><when test="users != null and !users.isEmpty()">AND user_id IN <foreach
+          collection="users"
+          item="user"
+          open="("
+          separator=","
+          close=")"
+        >#{user}</foreach></when><otherwise>AND 1=0</otherwise></choose>
+        ORDER BY user_id FOR UPDATE
+    </select>
+    <insert id="insertBinding">
+        INSERT INTO voice_media_binding(room_id,user_id,session_id,generation,media_identity,binding_state,publish_desired,seat_no,updated_at)
+        VALUES(#{binding.roomId},#{binding.userId},#{binding.sessionId},#{binding.generation},#{binding.mediaIdentity},#{binding.bindingState},#{binding.publishDesired},#{binding.seatNo},CURRENT_TIMESTAMP(3))
+    </insert>
+    <update id="rotateBinding">
+        UPDATE voice_media_binding SET session_id=#{binding.sessionId},generation=#{binding.generation},media_identity=#{binding.mediaIdentity},binding_state=#{binding.bindingState},publish_desired=#{binding.publishDesired},seat_no=#{binding.seatNo},updated_at=CURRENT_TIMESTAMP(3)
+        WHERE room_id=#{binding.roomId} AND user_id=#{binding.userId} AND generation=#{old}
+    </update>
+    <insert id="insertRetirement">
+        INSERT INTO voice_media_retirement(id,room_id,user_id,generation,provider_room_name,media_identity,next_attempt_at,created_at)
+        VALUES(#{job.id},#{job.roomId},#{job.userId},#{job.generation},#{job.providerRoomName},#{job.mediaIdentity},CURRENT_TIMESTAMP(3),CURRENT_TIMESTAMP(3))
+    </insert>
+    <select id="dueExpired" resultType="cn.kokonexus.voice.domain.VoiceMediaPlan$Retirement" timeout="2">
+        SELECT * FROM voice_media_retirement FORCE INDEX(idx_voice_retire_expired)
+        WHERE job_state='PROCESSING' AND attempts&lt;10 AND lease_until&lt;CURRENT_TIMESTAMP(3)
+        ORDER BY lease_until,id LIMIT #{limit} FOR UPDATE SKIP LOCKED
+    </select>
+    <select id="duePending" resultType="cn.kokonexus.voice.domain.VoiceMediaPlan$Retirement" timeout="2">
+        SELECT * FROM voice_media_retirement FORCE INDEX(idx_voice_retire_due)
+        WHERE job_state='PENDING' AND attempts&lt;10 AND next_attempt_at&lt;=CURRENT_TIMESTAMP(3)
+        ORDER BY next_attempt_at,id LIMIT #{limit} FOR UPDATE SKIP LOCKED
+    </select>
+    <update id="claim">
+        UPDATE voice_media_retirement SET job_state='PROCESSING',attempts=attempts+1,lease_token=#{token},lease_until=TIMESTAMPADD(SECOND,40,CURRENT_TIMESTAMP(3))
+        WHERE id=#{id} AND attempts&lt;10 AND ((job_state='PENDING' AND next_attempt_at&lt;=CURRENT_TIMESTAMP(3)) OR (job_state='PROCESSING' AND lease_until&lt;CURRENT_TIMESTAMP(3)))
+    </update>
+    <update id="exhaustExpired">
+        UPDATE voice_media_retirement SET job_state='DEAD',lease_token=NULL,lease_until=NULL
+        WHERE job_state='PROCESSING' AND attempts=10 AND lease_until&lt;CURRENT_TIMESTAMP(3) LIMIT 100
+    </update>
+    <update id="confirmed">
+        UPDATE voice_media_retirement SET job_state='DONE',completed_at=CURRENT_TIMESTAMP(3),lease_token=NULL,lease_until=NULL
+        WHERE id=#{id} AND job_state='PROCESSING' AND lease_token=#{token} AND lease_until&gt;CURRENT_TIMESTAMP(3)
+    </update>
+    <update id="failed">
+        UPDATE voice_media_retirement SET job_state=<choose><when test="dead">'DEAD'</when><otherwise
+      >'PENDING'</otherwise></choose>,lease_token=NULL,lease_until=NULL,next_attempt_at=TIMESTAMPADD(SECOND,#{delay},CURRENT_TIMESTAMP(3))
+        WHERE id=#{id} AND job_state='PROCESSING' AND lease_token=#{token} AND lease_until&gt;CURRENT_TIMESTAMP(3)
+    </update>
+    <!-- 以下仅为有界当前房间进度展示，不是媒体授权或物理清退证明。 -->
+    <select
+    id="pending"
+    resultType="int"
+    timeout="2"
+  >SELECT COUNT(*) FROM voice_media_retirement WHERE room_id=#{room} AND job_state IN ('PENDING','PROCESSING')</select>
+    <select
+    id="dead"
+    resultType="int"
+    timeout="2"
+  >SELECT COUNT(*) FROM voice_media_retirement WHERE room_id=#{room} AND job_state='DEAD'</select>
+</mapper>

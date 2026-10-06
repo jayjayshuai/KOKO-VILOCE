@@ -26,7 +26,7 @@ class VoiceInteractionSyncTest {
 
     @BeforeEach
     void fixture() {
-        service = new VoiceInteractionService(mapper, true);
+        service = new VoiceInteractionService(mapper, true, mock(VoiceMediaPlanRecorder.class));
         room = new VoiceRoom();
         room.setId(1L);
         room.setOwnerId(42L);
@@ -156,7 +156,7 @@ class VoiceInteractionSyncTest {
         assertThatThrownBy(() -> service.receipt(0, 1, UUID.randomUUID().toString())).isInstanceOf(
             IllegalArgumentException.class
         );
-        var closed = new VoiceInteractionService(mapper, false);
+        var closed = new VoiceInteractionService(mapper, false, mock(VoiceMediaPlanRecorder.class));
         assertThatThrownBy(() -> closed.sync(42, 1, "0")).isInstanceOf(
             cn.kokonexus.common.api.ExternalDependencyUnavailableException.class
         );

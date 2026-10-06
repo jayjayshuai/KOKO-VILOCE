@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount } from 'vue';
 import { voiceInteractionApi, type VoiceActionPage } from '../services/voice-interaction';
+import VoiceMediaPlanPanel from './VoiceMediaPlanPanel.vue';
 const props = defineProps<{
   /** 已确认本人房间ID。 */ roomId: string;
   /** 当前可信账号。 */ userId: string;
@@ -70,6 +71,12 @@ onBeforeUnmount(() => {
       ><h2>房间操作历史</h2><button type="button" class="secondary" @click="emit('close')">关闭历史</button></div
     >
     <p class="hint">房间 {{ roomId }} · 关闭后仅当前房主可读；不续约成员、不请求媒体凭据。</p>
+    <VoiceMediaPlanPanel
+      :room-id="roomId"
+      :user-id="userId"
+      :session-revision="sessionRevision"
+      :allowed="!!page && !error"
+    />
     <p v-if="error" class="form-error" role="alert">{{ error }}</p
     ><p v-if="loading" role="status">正在读取审计…</p>
     <button type="button" class="secondary" :disabled="loading" @click="load()">刷新历史</button>

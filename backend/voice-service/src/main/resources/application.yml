@@ -58,6 +58,9 @@ koko.voice.gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
 koko.voice.interaction-core-enabled: ${VOICE_INTERACTION_CORE_ENABLED:false}
 # 新网关信令准入候选，未完成私有SFU/TLS/全网络验收前不开放。
 koko.voice.signal-admission-enabled: ${VOICE_SIGNAL_ADMISSION_ENABLED:false}
+# SQL计划/异步退场是分开的候选开关；都不开放CONTROLLED媒体，不启动自动业务写测试。
+koko.voice.media-plan-enabled: ${VOICE_MEDIA_PLAN_ENABLED:false}
+koko.voice.media-retirement.enabled: ${VOICE_MEDIA_RETIREMENT_ENABLED:false}
 
 management:
   endpoints.web.exposure.include: health,info,prometheus
