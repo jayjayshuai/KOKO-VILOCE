@@ -2,8 +2,10 @@ package cn.kokonexus.voice.infrastructure.media;
 
 import io.livekit.server.AccessToken;
 import io.livekit.server.CanPublish;
+import io.livekit.server.CanPublishData;
 import io.livekit.server.CanPublishSources;
 import io.livekit.server.CanSubscribe;
+import io.livekit.server.CanUpdateOwnMetadata;
 import io.livekit.server.RoomJoin;
 import io.livekit.server.RoomName;
 import io.livekit.server.RoomServiceClient;
@@ -64,6 +66,8 @@ public class LiveKitVoiceMediaGateway implements VoiceMediaGateway {
             new RoomName(roomName),
             new CanSubscribe(true),
             new CanPublish(true),
+            new CanPublishData(false),
+            new CanUpdateOwnMetadata(false),
             new CanPublishSources(List.of("microphone"))
         );
         return token.toJwt();

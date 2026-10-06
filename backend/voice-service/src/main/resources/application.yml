@@ -56,6 +56,8 @@ livekit:
 koko.voice.gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
 # 只启用候选SQL互动核心，不启用媒体发布；正式P1验收前保持false。
 koko.voice.interaction-core-enabled: ${VOICE_INTERACTION_CORE_ENABLED:false}
+# 新网关信令准入候选，未完成私有SFU/TLS/全网络验收前不开放。
+koko.voice.signal-admission-enabled: ${VOICE_SIGNAL_ADMISSION_ENABLED:false}
 
 management:
   endpoints.web.exposure.include: health,info,prometheus

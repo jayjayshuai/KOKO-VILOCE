@@ -30,6 +30,12 @@ LiveKit授权必须由服务器席位事实控制，不能只禁用前端按钮�
 不属于房间事件总线或媒体授权，未迁移或部署。现有远程库落后，本地只读调试启动通过但
 语音发现500；未以健康检查替代完整业务。见[恢复记录](VOICE_SYNC_RECOVERY_VERIFICATION_20261006.md)。
 
+2026-10-06媒体续批补Java候选信令准入(网站身份/固定JWT签名/当前房间/Origin)、独立有界RPC池、
+脱敏请求与媒体异常边界、前端同源准入URL校验。实际SDK令牌、环回HTTP/WS和Triple分别检查，
+407后端/195前端与构建通过；非真实SQL/身份二跳/LiveKit RTC全链路。自建SFU不会自动撤销旧JWT，
+入口私有化、轮次/持久补偿及持续清退仍缺，默认不开两端开关和CONTROLLED媒体。
+见[媒体计划](VOICE_MEDIA_AUTHORIZATION_PLAN.md)及[准入验证](VOICE_MEDIA_ADMISSION_VERIFICATION_20261006.md)。
+
 ## P2～P4
 
 严格资金账本与真实第三方充值/提现、举报处置申诉与录音合规、移动端/容量/多节点。

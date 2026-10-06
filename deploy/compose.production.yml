@@ -131,6 +131,7 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       # 候选SQL核心，不是媒体开关；正式P1验收前必须保持false。
       VOICE_INTERACTION_CORE_ENABLED: ${VOICE_INTERACTION_CORE_ENABLED:-false}
+      VOICE_SIGNAL_ADMISSION_ENABLED: ${VOICE_SIGNAL_ADMISSION_ENABLED:-false}
       KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
       JAVA_TOOL_OPTIONS: -Xms48m -Xmx144m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
     depends_on:
@@ -254,6 +255,11 @@ services:
       # 仍默认定址，WS 发现须所有节点元数据和真实共享会话验收后显式启用。
       CHAT_SERVICE_URI: ${CHAT_SERVICE_URI:-http://koko-nexus-chat:8087}
       CHAT_WS_SERVICE_URI: ${CHAT_WS_SERVICE_URI:-ws://koko-nexus-chat:8097}
+      # 仅Java受限媒体路由；正式启用必须同时封闭原始SFU公网信令及/rtc绕过入口。
+      MEDIA_ADMISSION_ENABLED: ${MEDIA_ADMISSION_ENABLED:-false}
+      MEDIA_ALLOWED_ORIGINS: ${MEDIA_ALLOWED_ORIGINS:-}
+      LIVEKIT_SIGNAL_WS_URI: ws://koko-nexus-livekit:7880
+      LIVEKIT_SIGNAL_HTTP_URI: http://koko-nexus-livekit:7880
       KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
       # 正式TLS验收后必须true；默认false仅保留既有阶段HTTP兼容，不代表正式上线。
       KOKO_COOKIE_SECURE: ${KOKO_COOKIE_SECURE:-false}

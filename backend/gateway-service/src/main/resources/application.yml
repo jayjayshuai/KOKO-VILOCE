@@ -6,6 +6,12 @@ koko.operations.enabled: ${OPERATIONS_ENABLED:false}
 # 同步 Sa-Token/Redis 会话访问使用有界专用池；等待数是每线程上限。
 koko.gateway.authentication.workers: ${GATEWAY_AUTH_WORKERS:4}
 koko.gateway.authentication.queued-tasks-per-thread: ${GATEWAY_AUTH_QUEUED_TASKS_PER_THREAD:64}
+# 候选媒体信令代理；启用前同步voice开关、来源白名单及私有SFU端口，仍不开放CONTROLLED媒体。
+koko.gateway.media-admission.enabled: ${MEDIA_ADMISSION_ENABLED:false}
+koko.gateway.media-admission.allowed-origins: ${MEDIA_ALLOWED_ORIGINS:}
+# Gateway内置WS TRACE会打印信令帧(包括刷新JWT)，不得对该组件打开TRACE/网络wiretap。
+logging.level.org.springframework.cloud.gateway.filter.WebsocketRoutingFilter: INFO
+logging.level.org.springframework.cloud.gateway.filter.RouteToRequestUrlFilter: INFO
 
 spring:
   application:
@@ -75,6 +81,14 @@ spring:
               uri: ${ASSET_SERVICE_URI:lb://koko-nexus-asset}
               predicates:
                 - Path=/api/assets/**
+            - id: livekit-signal
+              uri: ${LIVEKIT_SIGNAL_WS_URI:ws://localhost:7880}
+              predicates: [Path=/api/media/livekit/rtc, Method=GET]
+              filters: [StripPrefix=3]
+            - id: livekit-validate
+              uri: ${LIVEKIT_SIGNAL_HTTP_URI:http://localhost:7880}
+              predicates: [Path=/api/media/livekit/rtc/validate, Method=GET]
+              filters: [StripPrefix=3]
           default-filters:
             - AddResponseHeader=X-Content-Type-Options,nosniff
             - AddResponseHeader=Referrer-Policy,strict-origin-when-cross-origin

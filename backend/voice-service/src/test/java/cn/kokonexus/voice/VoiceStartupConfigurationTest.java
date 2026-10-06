@@ -16,6 +16,9 @@ class VoiceStartupConfigurationTest {
 
     @Test
     void realYamlKeepsCoreDisabledAndBindsBoundedServletResources() {
+        assertNotNull(
+            VoiceApplication.class.getAnnotation(org.apache.dubbo.config.spring.context.annotation.EnableDubbo.class)
+        );
         var yaml = new YamlPropertiesFactoryBean();
         yaml.setResources(new ClassPathResource("application.yml"));
         var properties = yaml.getObject();
@@ -23,6 +26,10 @@ class VoiceStartupConfigurationTest {
         assertEquals(
             "${VOICE_INTERACTION_CORE_ENABLED:false}",
             properties.getProperty("koko.voice.interaction-core-enabled")
+        );
+        assertEquals(
+            "${VOICE_SIGNAL_ADMISSION_ENABLED:false}",
+            properties.getProperty("koko.voice.signal-admission-enabled")
         );
         var values = new HashMap<String, Object>();
         properties.forEach((key, value) -> values.put(key.toString(), value));

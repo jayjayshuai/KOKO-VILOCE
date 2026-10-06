@@ -103,6 +103,13 @@ export function useVoiceConnection(
       const credential = await credentialApi(target.id, request.signal)
       if (!current()) return
       const endpoint = new URL(credential.url)
+      // 准入代理使用网站Cookie绑定身份；不能把该入口跨源配置成“看起来可用”的SDK连接。
+      if (/\/(?:api|koko-api)\/media\/livekit\/?$/.test(endpoint.pathname) && page) {
+        const sameProtocol = page.protocol === 'https:' ? 'wss:' : 'ws:'
+        const pageUrl = new URL(page.href)
+        if (endpoint.protocol !== sameProtocol || endpoint.host !== pageUrl.host)
+          throw new Error('媒体准入地址必须与当前网站同源；请检查服务端信令配置。')
+      }
       if (
         !['ws:', 'wss:'].includes(endpoint.protocol) ||
         endpoint.username ||

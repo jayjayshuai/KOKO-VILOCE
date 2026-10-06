@@ -351,3 +351,33 @@ test('受控房间不能复用原发布JWT或实例化媒体SDK', async () => {
   assert.match(s.state.voiceError.value, /媒体授权尚未开放/)
   await s.dispose()
 })
+
+test('Java媒体准入代理保留SDK基址且默认不开麦，跨源配置在SDK前拒绝', async () => {
+  const location = { protocol: 'https:', hostname: 'app.example.invalid', href: 'https://app.example.invalid/koko/' }
+  const good = await setup(
+    () =>
+      Promise.resolve({
+        url: 'wss://app.example.invalid/koko-api/media/livekit',
+        token: 'synthetic-token',
+        roomName: 'test',
+      }),
+    { location },
+  )
+  await good.state.joinVoiceRoom(target())
+  assert.equal(good.rooms[0].url, 'wss://app.example.invalid/koko-api/media/livekit')
+  assert.deepEqual(good.rooms[0].microphoneCalls, [])
+  await good.dispose()
+  const bad = await setup(
+    () =>
+      Promise.resolve({
+        url: 'wss://other.example.invalid/api/media/livekit',
+        token: 'synthetic-token',
+        roomName: 'test',
+      }),
+    { location },
+  )
+  await bad.state.joinVoiceRoom(target())
+  assert.equal(bad.rooms.length, 0)
+  assert.match(bad.state.voiceError.value, /必须.*同源/)
+  await bad.dispose()
+})

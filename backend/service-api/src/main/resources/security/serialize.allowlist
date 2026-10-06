@@ -1,4 +1,6 @@
-# 仅允许平台已声明的运营 RPC 契约。保持 Dubbo STRICT 与 Serializable 检查，不开放任意包。
+# 仅允许平台已声明的 RPC 契约。保持 Dubbo STRICT 与 Serializable 检查，不开放任意包。
+cn.kokonexus.api.voice.MediaAdmissionCommand
+cn.kokonexus.api.voice.MediaAdmissionUnavailableException
 cn.kokonexus.api.operations.OperationsAccess
 cn.kokonexus.api.operations.OperationsRoleChangeCommand
 cn.kokonexus.api.operations.OperationsRoleChangeReceipt
