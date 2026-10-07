@@ -55,6 +55,15 @@ public class LiveKitJoinTokenVerifier {
 
     /** 拒绝仅返回null，不复制JWT解析异常消息；数据库与身份决策另行当前核验。 */
     public VerifiedJoin verify(String token, String expectedUser) {
+        return verify(token, expectedUser, false);
+    }
+
+    /** 仅供已准入WS的内部持续核验；过期UUID仍要核验签名及当前绑定，绝不可用于新握手。 */
+    public VerifiedJoin verifyRetained(String token, String expectedUser) {
+        return verify(token, expectedUser, true);
+    }
+
+    private VerifiedJoin verify(String token, String expectedUser, boolean retained) {
         if (token == null || token.length() > MAX_TOKEN_LENGTH || !positive(expectedUser)) return null;
         String[] parts = token.split("\\.", -1);
         if (parts.length != 3) return null;
@@ -94,8 +103,14 @@ public class LiveKitJoinTokenVerifier {
             if (
                 !exp.isIntegralNumber() ||
                 !exp.canConvertToLong() ||
-                exp.longValue() <= now ||
+                exp.longValue() <= 0 ||
+                ((!retained || !binding) && exp.longValue() <= now) ||
                 exp.longValue() - now > 3600
+            ) return null;
+            if (
+                retained &&
+                binding &&
+                (nbf.isMissingNode() || nbf.longValue() < 0 || exp.longValue() - nbf.longValue() > 3600)
             ) return null;
             if (
                 !nbf.isMissingNode() &&

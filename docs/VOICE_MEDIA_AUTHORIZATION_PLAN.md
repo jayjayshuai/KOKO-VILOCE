@@ -47,3 +47,27 @@ Gateway自动配置重名启动失败、关闭帧取消竞态和双倍核验延�
 真实自动配置/两端TCP关闭和九组已有SQL证据见[验证记录](INITIAL_USABILITY_VERIFICATION_20261007.md)。
 受控签发仍未开放，原JWT到期结束租约，SDK刷新不会续期后台证明；物理音轨清退和完整
 Redis/RPC/SQL/SFU/TLS链路仍缺。当前发布计划优先初步可用核心，候选媒体开关继续false。
+
+## 2026-10-07受控凭据与前端接入续批
+
+新接口按当前Active身份、成员session/租约、房间版本、随机绑定轮次和席位签发SDK JWT。
+听众canPublish=false，只有当前ON_MIC且未闭麦才允许microphone；禁data/元信息/管理权限，
+有PENDING/PROCESSING/DEAD退场拒绝签发。签名在短事务返回不可变投影后完成，
+没有在SQL锁内调用身份或SFU。旧原始发布接口不能作为受控凭据回退。
+
+独立前端面板获取专属凭据、默认不开麦；快照/session/席位变化取消旧请求、定向断开，
+能力、SDK状态、设备权限与SQL希望状态分开。心跳busy不撤销有效媒体授权，
+未知管理命令、离线/隐藏或核验失败仍停止旧连接。
+
+初次JWT期限120秒并显式nbf/exp。Gateway新握手仍拒绝过期JWT；已准入UUID连接的内部retain
+只把原JWT作为已签名不可变身份投影，继续核验网站会话、Active身份及SQL当前绑定，
+不能用于新握手；旧LEGACY投影仍保留原有效期核验。SDK刷新不替代这些当前事实。
+
+VOICE_MEDIA_CREDENTIALS_ENABLED默认false，开启还要求核心、计划、绑定准入、信令与退场依赖及
+Gateway专属WSS基址，环回开发例外。该接口能力仅表示配置，不声明RTP就绪。
+持续SFU参与者对账、晚到旧握手、私有源端/TLS和双浏览器实际音频仍是原计划必须完成的项目。
+
+本轮SQL十组、前端215项/实际页面夹具、SDK/HMAC和配置/HTTP检查已完成；
+真实SFU试连卡在PeerConnection，内网7881可达而本机公网7881/STUN3478无回应，
+云安全组/链路及候选仍须核对。测试房间/实验库收尾与实际缺口见
+[受控凭据证据](VOICE_CONTROLLED_CREDENTIALS_VERIFICATION_20261007.md)。

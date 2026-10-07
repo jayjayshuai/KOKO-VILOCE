@@ -63,6 +63,7 @@ koko.voice.media-plan-enabled: ${VOICE_MEDIA_PLAN_ENABLED:false}
 koko.voice.media-retirement.enabled: ${VOICE_MEDIA_RETIREMENT_ENABLED:false}
 # 只让已验签随机身份核对当前轮次/席位；不是受控JWT签发或RTC完成开关。
 koko.voice.binding-admission-enabled: ${VOICE_BINDING_ADMISSION_ENABLED:false}
+koko.voice.media-credentials-enabled: ${VOICE_MEDIA_CREDENTIALS_ENABLED:false}
 
 management:
   endpoints.web.exposure.include: health,info,prometheus

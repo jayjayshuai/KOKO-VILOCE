@@ -39,7 +39,9 @@ public class VoiceMediaAdmissionProvider implements MediaAdmissionRpcService {
     private boolean check(MediaAdmissionCommand command, boolean entry) {
         if (!enabled) throw new MediaAdmissionUnavailableException();
         if (command == null) return false;
-        var join = verifier.verify(command.token(), command.userId());
+        var join = entry
+            ? verifier.verify(command.token(), command.userId())
+            : verifier.verifyRetained(command.token(), command.userId());
         if (join == null) return false;
         try {
             if (!directory.active(Long.parseLong(command.userId()))) return false;

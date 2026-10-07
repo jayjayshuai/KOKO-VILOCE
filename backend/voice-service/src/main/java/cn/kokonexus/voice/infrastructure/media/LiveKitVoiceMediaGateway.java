@@ -74,15 +74,45 @@ public class LiveKitVoiceMediaGateway implements VoiceMediaGateway {
 
     @Override
     public String issueJoinToken(String roomName, long userId, String displayName) {
+        return token(roomName, "user-" + userId, displayName, true, 600_000L);
+    }
+
+    @Override
+    public String issueBoundJoinToken(String roomName, String identity, String displayName, boolean publish) {
+        if (
+            roomName == null ||
+            !roomName.matches("koko-voice-[1-9][0-9]{0,18}") ||
+            identity == null ||
+            !java.util.UUID.fromString(identity).toString().equals(identity) ||
+            displayName == null ||
+            displayName.isBlank() ||
+            displayName.length() > 80
+        ) throw new IllegalArgumentException("受控媒体签发事实无效");
+        try {
+            if (Long.parseLong(roomName.substring("koko-voice-".length())) <= 0) throw new IllegalArgumentException(
+                "房间无效"
+            );
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("媒体房间标识超界");
+        }
+        return token(roomName, identity, displayName, publish, 120_000L);
+    }
+
+    /** 签名是本地纯计算，不调用SFU；新轮次初次入会期限两分钟，持续授权另由Gateway核验。 */
+    private String token(String roomName, String identity, String displayName, boolean publish, long ttl) {
         AccessToken token = new AccessToken(apiKey, apiSecret);
-        token.setIdentity("user-" + userId);
+        token.setIdentity(identity);
         token.setName(displayName);
-        token.setTtl(10 * 60 * 1000L);
+        token.setTtl(ttl);
+        // SDK默认未写nbf；明确写同一时刻的nbf/exp供持续连接核验签名期限，避免时间差溢出。
+        var issuedAt = java.time.Instant.now();
+        token.setNotBefore(java.util.Date.from(issuedAt));
+        token.setExpiration(java.util.Date.from(issuedAt.plusMillis(ttl)));
         token.addGrants(
             new RoomJoin(true),
             new RoomName(roomName),
             new CanSubscribe(true),
-            new CanPublish(true),
+            new CanPublish(publish),
             new CanPublishData(false),
             new CanUpdateOwnMetadata(false),
             new CanPublishSources(List.of("microphone"))

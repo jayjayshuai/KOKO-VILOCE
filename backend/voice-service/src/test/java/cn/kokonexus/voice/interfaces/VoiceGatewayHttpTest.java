@@ -32,6 +32,65 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 /** 真实环回TCP/Tomcat/VoiceController与过滤器；业务适配为mock，不证明DB/LiveKit。 */
 class VoiceGatewayHttpTest {
 
+    @Test
+    void controlledCredentialHttpUsesTrustedActorNoStoreAndDisabledIsUnavailable() throws Exception {
+        try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
+            context.register(HttpConfiguration.class);
+            context.refresh();
+            var issuer = context.getBean(cn.kokonexus.voice.application.VoiceMediaCredentialIssuer.class);
+            String session = "00000000-0000-0000-0000-000000000042";
+            when(issuer.issue(42, 1, session, "3")).thenReturn(
+                new cn.kokonexus.voice.application.VoiceMediaCredentialIssuer.Credential(
+                    "wss://app.example.invalid/api/media/livekit",
+                    "synthetic-token",
+                    "koko-voice-1",
+                    session,
+                    "9007199254741001",
+                    null,
+                    false,
+                    120
+                )
+            );
+            String base = "http://127.0.0.1:" + context.getWebServer().getPort();
+            try (var client = HttpClient.newHttpClient()) {
+                String body = "{\"sessionId\":\"" + session + "\",\"expectedVersion\":\"3\",\"userId\":\"43\"}";
+                var denied = client.send(
+                    HttpRequest.newBuilder(URI.create(base + "/api/voice/rooms/1/interaction/media-credentials"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(403, denied.statusCode());
+                verifyNoInteractions(issuer);
+                var builder = HttpRequest.newBuilder(
+                    URI.create(base + "/api/voice/rooms/1/interaction/media-credentials")
+                )
+                    .header("X-Koko-Gateway-Key", KEY)
+                    .header("X-Koko-User-Id", "42")
+                    .header("Content-Type", "application/json");
+                var accepted = client.send(
+                    builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(200, accepted.statusCode());
+                assertEquals("no-store", accepted.headers().firstValue("Cache-Control").orElseThrow());
+                assertTrue(accepted.body().contains("\"canPublish\":false"));
+                assertTrue(accepted.body().contains("\"generation\":\"9007199254741001\""));
+                verify(issuer).issue(42, 1, session, "3");
+                when(issuer.issue(42, 1, session, "3")).thenThrow(
+                    new cn.kokonexus.common.api.ExternalDependencyUnavailableException("受控媒体凭据尚未开放", null)
+                );
+                var disabled = client.send(
+                    builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                    HttpResponse.BodyHandlers.ofString()
+                );
+                assertEquals(503, disabled.statusCode());
+                assertFalse(disabled.body().contains("synthetic-token"));
+            }
+        }
+    }
+
     /** 固定非生产密钥，测试不调用服务器。 */
     private static final String KEY = "isolated-voice-http-gateway-key-20261005";
 
@@ -335,8 +394,18 @@ class VoiceGatewayHttpTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({ VoiceController.class, VoiceInteractionController.class, EntryPointImports.class })
+    @Import({
+        VoiceController.class,
+        VoiceInteractionController.class,
+        VoiceMediaCredentialController.class,
+        EntryPointImports.class,
+    })
     static class HttpConfiguration {
+
+        @Bean
+        cn.kokonexus.voice.application.VoiceMediaCredentialIssuer credentialIssuer() {
+            return mock(cn.kokonexus.voice.application.VoiceMediaCredentialIssuer.class);
+        }
 
         @Bean
         VoiceApplicationService voiceService() {

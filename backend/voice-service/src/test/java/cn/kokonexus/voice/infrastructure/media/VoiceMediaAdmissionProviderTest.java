@@ -13,6 +13,29 @@ import org.junit.jupiter.api.Test;
 class VoiceMediaAdmissionProviderTest {
 
     @Test
+    void retainedProofUsesConnectionVerifierButStillRequiresCurrentUserAndSql() {
+        var verifier = mock(LiveKitJoinTokenVerifier.class);
+        var identity = mock(MediaIdentityClient.class);
+        var state = mock(VoiceMediaAdmissionState.class);
+        var command = new MediaAdmissionCommand("42", "synthetic-expired-proof");
+        var join = new LiveKitJoinTokenVerifier.VerifiedJoin(
+            9,
+            "koko-voice-9",
+            java.util.UUID.randomUUID().toString(),
+            false,
+            true
+        );
+        when(verifier.verifyRetained(command.token(), "42")).thenReturn(join);
+        when(identity.active(42)).thenReturn(true);
+        when(state.allows(join, 42, false)).thenReturn(true);
+        var provider = new VoiceMediaAdmissionProvider(verifier, identity, state, true);
+        assertThat(provider.retain(command)).isTrue();
+        verify(verifier, never()).verify(anyString(), anyString());
+        when(identity.active(42)).thenReturn(false);
+        assertThat(provider.retain(command)).isFalse();
+    }
+
+    @Test
     void disabledAndInvalidTokensNeverReachIdentityOrSql() {
         var verifier = mock(LiveKitJoinTokenVerifier.class);
         var identity = mock(MediaIdentityClient.class);

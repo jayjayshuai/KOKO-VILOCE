@@ -72,6 +72,49 @@ class LiveKitJoinTokenVerifierTest {
     }
 
     @Test
+    void expiredOpaqueTokenOnlyProjectsForExistingConnectionNeverNewAdmissionOrLegacy() throws Exception {
+        var body = body();
+        body.put("sub", UUID.randomUUID().toString());
+        body.put("nbf", NOW - 200);
+        body.put("exp", NOW - 80);
+        var video = (Map<String, Object>) body.get("video");
+        video.put("canPublishData", false);
+        video.put("canUpdateOwnMetadata", false);
+        String expired = signed(body);
+        assertThat(verifier.verify(expired, "42")).isNull();
+        assertThat(verifier.verifyRetained(expired, "42")).isNotNull();
+        body.put("sub", "user-42");
+        assertThat(verifier.verifyRetained(signed(body), "42")).isNull();
+        body.put("sub", UUID.randomUUID().toString());
+        body.put("nbf", Long.MIN_VALUE);
+        assertThat(verifier.verifyRetained(signed(body), "42")).isNull();
+        body.put("nbf", NOW - 4000);
+        assertThat(verifier.verifyRetained(signed(body), "42")).isNull();
+    }
+
+    @Test
+    void actualBoundSdkTokensMatchCurrentAudienceOrMicrophoneProjection() throws Exception {
+        var sdk = new LiveKitVoiceMediaGateway(
+            "http://127.0.0.1:1",
+            "wss://app.example.invalid/api/media/livekit",
+            KEY,
+            SECRET
+        );
+        String id = UUID.randomUUID().toString();
+        for (boolean publish : List.of(false, true)) {
+            String token = sdk.issueBoundJoinToken("koko-voice-9", id, "合成成员", publish);
+            var parsed = new LiveKitJoinTokenVerifier(KEY, SECRET).verify(token, "42");
+            assertThat(parsed).isNotNull();
+            assertThat(parsed.identity()).isEqualTo(id);
+            assertThat(parsed.publish()).isEqualTo(publish);
+            var claims = json.readTree(Base64.getUrlDecoder().decode(token.split("\\.")[1]));
+            assertThat(claims.path("exp").asLong() - claims.path("nbf").asLong()).isEqualTo(120);
+            assertThat(claims.path("video").path("canPublishData").booleanValue()).isFalse();
+            assertThat(claims.path("video").path("canUpdateOwnMetadata").booleanValue()).isFalse();
+        }
+    }
+
+    @Test
     void expiredFutureMalformedAndUnboundedTimeClaimsAreRejected() throws Exception {
         for (Object expiration : List.of(NOW, NOW - 1, NOW + 3601, Long.MAX_VALUE, "future", 1.5)) {
             var body = body();

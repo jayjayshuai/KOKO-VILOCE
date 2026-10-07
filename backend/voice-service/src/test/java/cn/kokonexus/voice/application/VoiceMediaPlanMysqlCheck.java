@@ -16,7 +16,7 @@ import org.springframework.jdbc.datasource.*;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 
-/** 固定本机独立MySQL、生产XML和Spring事务；只合成事实，不发放媒体JWT或访问项目数据库。 */
+/** 固定独立MySQL、生产XML/事务与隔离JWT签名；不访问项目库或物理SFU，不输出凭据。 */
 public class VoiceMediaPlanMysqlCheck {
 
     /** 固定合成房间。 */ private static final long ROOM = 9301;
@@ -637,10 +637,60 @@ public class VoiceMediaPlanMysqlCheck {
         );
         var mismatched = verify.verify(boundJwt(freshIdentity, false), "6");
         check(!admission.allows(mismatched, 6, false), "Publish claim disagreed with current binding");
+        var credentials = proxy(
+            new VoiceMediaCredentialState(
+                sql.getMapper(VoiceRoomMapper.class),
+                sql.getMapper(VoiceInteractionMapper.class),
+                media
+            ),
+            manager
+        );
+        expect(
+            () -> credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom)),
+            cn.kokonexus.common.api.ExternalDependencyUnavailableException.class
+        );
+        for (
+            var batch = retirement.claim(UUID.randomUUID().toString());
+            !batch.isEmpty();
+            batch = retirement.claim(UUID.randomUUID().toString())
+        ) for (var done : batch)
+            check(retirement.confirmed(done.getId(), done.getLeaseToken()), "Lab retirement confirmation failed");
+        var grant = credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom));
+        check(
+            grant.publish() && grant.seatNo() == 2 && freshIdentity.equals(grant.identity()),
+            "SQL credential projection disagreed with seat/epoch"
+        );
+        expect(
+            () -> credentials.current(roleRoom, 6, UUID.randomUUID().toString(), roomVersion(roleRoom)),
+            cn.kokonexus.common.api.ForbiddenOperationException.class
+        );
+        expect(() -> credentials.current(roleRoom, 6, owner.sessionId(), "0"), IllegalStateException.class);
+        var signer = new cn.kokonexus.voice.infrastructure.media.LiveKitVoiceMediaGateway(
+            "http://127.0.0.1:1",
+            "wss://app.example.invalid/api/media/livekit",
+            "isolated-binding-admission-key",
+            "synthetic-binding-admission-secret-key-private"
+        );
+        var signed = verify.verify(
+            signer.issueBoundJoinToken(grant.roomName(), grant.identity(), grant.name(), grant.publish()),
+            "6"
+        );
+        check(
+            signed != null && signed.publish() && admission.allows(signed, 6, true),
+            "Actual SQL grant + SDK signature not admitted"
+        );
+        check(!admission.allows(signed, 7, true), "Current signed grant used by different website user");
+        System.out.println(
+            "PASS MEDIA_SQL_10 current SQL/transaction grant + actual SDK JWT, pending retirement/session/version/cross-user refusal; no SFU assertion"
+        );
         jdbc.update(
             "UPDATE voice_room_member SET lease_until=TIMESTAMPADD(SECOND,-1,CURRENT_TIMESTAMP(3)) WHERE room_id=9303 AND user_id=6"
         );
         check(!admission.allows(fresh, 6, false), "Expired member retained binding");
+        expect(
+            () -> credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom)),
+            cn.kokonexus.common.api.ForbiddenOperationException.class
+        );
         check(
             !admission.allows(
                 new cn.kokonexus.voice.infrastructure.media.LiveKitJoinTokenVerifier.VerifiedJoin(

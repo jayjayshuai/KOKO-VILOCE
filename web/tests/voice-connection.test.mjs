@@ -121,11 +121,17 @@ async function setup(network, options = {}) {
   }
   const scope = vue.effectScope()
   const state = scope.run(() =>
-    module.namespace.useVoiceConnection(session, api, root, async () => ({
-      Room,
-      RoomEvent: events,
-      Track: { Kind: { Audio: 'audio' } },
-    })),
+    module.namespace.useVoiceConnection(
+      session,
+      api,
+      root,
+      async () => ({
+        Room,
+        RoomEvent: events,
+        Track: { Kind: { Audio: 'audio' } },
+      }),
+      options.controlledPolicy,
+    ),
   )
   return {
     state,
@@ -400,4 +406,40 @@ test('Java媒体准入代理保留SDK基址且默认不开麦，跨源配置在S
   assert.equal(bad.rooms.length, 0)
   assert.match(bad.state.voiceError.value, /必须.*同源/)
   await bad.dispose()
+})
+
+test('受控专属凭据听众默认静音且不能调用发布设备，授权失效关闭旧SDK', async () => {
+  let current = true,
+    publish = false
+  const s = await setup(undefined, {
+    controlledPolicy: { enabled: true, current: () => current, canPublish: () => publish },
+  })
+  await s.state.joinVoiceRoom({ ...target(), controlled: true })
+  assert.equal(s.state.phase.value, 'connected')
+  await s.state.toggleMicrophone()
+  assert.deepEqual(s.rooms[0].microphoneCalls, [])
+  assert.match(s.state.voiceError.value, /不允许发布/)
+  publish = true
+  await s.state.toggleMicrophone()
+  assert.equal(s.state.microphoneEnabled.value, true)
+  current = false
+  await s.state.toggleMicrophone()
+  assert.equal(s.state.phase.value, 'idle')
+  assert.equal(s.state.microphoneEnabled.value, false)
+  assert.ok(s.rooms[0].disconnects > 0)
+  await s.dispose()
+})
+
+test('受控发布权限丢失后仍允许关麦，不把禁发布变成不能关闭设备', async () => {
+  let publish = true
+  const s = await setup(undefined, {
+    controlledPolicy: { enabled: true, current: () => true, canPublish: () => publish },
+  })
+  await s.state.joinVoiceRoom({ ...target(), controlled: true })
+  assert.deepEqual(s.rooms[0].microphoneCalls, [])
+  await s.state.toggleMicrophone()
+  publish = false
+  await s.state.toggleMicrophone()
+  assert.deepEqual(s.rooms[0].microphoneCalls, [true, false])
+  await s.dispose()
 })

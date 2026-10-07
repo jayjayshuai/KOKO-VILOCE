@@ -12,6 +12,11 @@ export function useVoiceConnection(
   credentialApi: (roomId: string, signal?: AbortSignal) => Promise<VoiceJoinCredential>,
   audioRoot: Ref<HTMLElement | null>,
   loadSdk: () => Promise<typeof import('livekit-client')> = () => import('livekit-client'),
+  controlledPolicy?: {
+    /** 受控调用者使用专属凭据接口，不能回退到原发布JWT。 */ enabled: boolean
+    /** 本人会话、麦位及授权快照在各异步边界仍有效。 */ current: () => boolean
+    /** 听众不得请求设备发布，即使SDK返回乐观权限也重新核验。 */ canPublish: () => boolean
+  },
 ) {
   /** 当前已成功连接的房间，不把请求受理当媒体入房。 */
   const connectedVoice = ref<VoiceRoom | null>(null)
@@ -35,7 +40,11 @@ export function useVoiceConnection(
     disposed = false,
     request = new AbortController()
   const active = (revision: number, userId: string, sessionRevision: number) =>
-    !disposed && epoch === revision && session.user?.id === userId && session.sessionRevision === sessionRevision
+    !disposed &&
+    epoch === revision &&
+    session.user?.id === userId &&
+    session.sessionRevision === sessionRevision &&
+    (!controlledPolicy || controlledPolicy.current())
   const attach = () => {
     for (const element of audio)
       if (audioRoot.value && element.parentElement !== audioRoot.value) audioRoot.value.appendChild(element)
@@ -74,7 +83,7 @@ export function useVoiceConnection(
   /** 令牌/SDK/媒体连接各边界重新检查本人轮次，绝不自动开麦。 */
   async function joinVoiceRoom(target: VoiceRoom) {
     if (disposed || !session.user) return
-    if (target.controlled) {
+    if (target.controlled && !controlledPolicy?.enabled) {
       voiceError.value = '受控房间媒体授权尚未开放，请使用房间互动面板；不会签发原发布凭据。'
       return
     }
@@ -197,6 +206,15 @@ export function useVoiceConnection(
   async function toggleMicrophone() {
     const room = connection.value
     if (disposed || !room || phase.value !== 'connected' || microphoneBusy.value || !session.user) return
+    if (controlledPolicy && !controlledPolicy.current()) {
+      await leaveVoiceRoom()
+      voiceError.value = '当前会话授权已变化，已断开旧语音连接。'
+      return
+    }
+    if (controlledPolicy && !controlledPolicy.canPublish() && !room.localParticipant.isMicrophoneEnabled) {
+      voiceError.value = '当前麦位授权不允许发布，请先重新核验。'
+      return
+    }
     const revision = epoch,
       userId = session.user.id,
       sessionRevision = session.sessionRevision

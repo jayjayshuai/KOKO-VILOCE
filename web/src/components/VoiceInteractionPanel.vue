@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useVoiceInteractionWorkspace } from '../composables/voice-interaction-workspace';
 import VoiceMediaPlanPanel from './VoiceMediaPlanPanel.vue';
+import ControlledVoiceMediaPanel from './ControlledVoiceMediaPanel.vue';
 import type { VoiceCommandType, VoiceCommand, SeatRequest } from '../services/voice-interaction';
 const props = defineProps<{
   /** 仅展示用名称快照，权限仍绑定roomId。 */ roomTitle?: string;
@@ -46,7 +47,7 @@ const owner = computed(() => fresh.value && !!snapshot.value?.mySessionId && sna
   EMPTY: '空麦',
   LOCKED: '已锁',
   RESERVED: '预约中',
-  ON_MIC: '在麦状态 · 媒体待接入',
+  ON_MIC: '在麦状态 · 非音轨确认',
 };
 watch(busy, (value) => emit('busy', value), { flush: 'sync' });
 watch(
@@ -79,8 +80,8 @@ function canReview(request: SeatRequest) {
     >
     <p class="hint">{{ roomTitle || '当前房间' }} · ID {{ roomId }}</p>
     <p class="hint"
-      >这是持久化成员与麦位状态。媒体权限尚未开放，不会访问麦克风或签发旧 LiveKit
-      凭据；成员数是有效租约数，不是媒体在线数。</p
+      >成员与麦位是持久化状态，语音连接与设备状态由连接面板独立核验，加入默认不开麦。
+      成员数是有效租约数，不是媒体在线数。</p
     >
     <p v-if="readError" class="form-error" role="alert">{{ readError }}</p>
     <p v-if="!online" class="form-error" role="status"
@@ -110,6 +111,14 @@ function canReview(request: SeatRequest) {
     }}</button>
     <p v-if="capabilities && !capabilities.enabled" role="status">互动核心尚未开放，不能执行成员或麦位操作。</p>
     <template v-if="capabilities?.enabled">
+      <ControlledVoiceMediaPanel
+        :room-id="roomId"
+        :room-title="roomTitle"
+        :user-id="userId"
+        :session-revision="sessionRevision"
+        :snapshot="snapshot"
+        :fresh="fresh && online && !pending"
+      />
       <VoiceMediaPlanPanel
         :room-id="roomId"
         :user-id="userId"
