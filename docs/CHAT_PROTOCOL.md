@@ -46,6 +46,11 @@ WS的AUTH_REQUIRED通知应用当前身份轮次并卸载私有页面，旧连�
 
 ## 恢复和群聊
 
+2026-10-07基线发布已部署V4用户同步版本和Redis连接租约，Gateway聊天WS已使用
+`lb:ws://koko-nexus-chat`，HTTP/Dubbo注册分组隔离。当前仍为单节点；实际双会话ACK/SQL/SYNC、
+移除与重加入边界通过，不据此声明多实例生产容量。
+历史“未发布”记录描述当时状态，最新发布与收尾见[基线证据](BACKEND_BASELINE_VERIFICATION_20261007.md)。
+
 `GET /chat/conversations` 游标分页本人会话，`GET /chat/conversations/{id}/messages?after={seq}` 向后补拉，`before` 向前分页，两者不能共用，单页最多 100。按服务端 UUID 去重。消息游标持久化是恢复事实来源，实时提示不是消息事实或客户端送达确认。跨节点版本源码及局部网络验证见下节；线上未发布，不能直接扩容多副本。
 
 ### V4 持久同步版本（未发布）

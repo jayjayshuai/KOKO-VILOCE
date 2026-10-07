@@ -21,6 +21,15 @@
 
 ## 发布
 
+2026-10-07后端基线续批已经发布：身份V17、社区V16、直播V5、语音V4、通知V2、资产V5、聊天V4。
+仅本项目八Java停机冷备份后向前升级，原记录摘要保持；配置保留实际HTTP/Dubbo分组隔离，
+六类HTTP及Netty WS使用Nacos发现，源代码兼容本地远程只读调试。
+回退备份为`backup-backend-usable-20261007a`；voice Advice修复前的Jar/配置另存
+`stage-voice-advice-20261007c`，原暂存Jar重复文件已定向清理，以私有恢复映射和保留副本为准。
+`backup-chat-20261001a`旧备份现以`backup-chat-20261001a.deduplicated.tgz`及清单保留，
+恢复时先核验摘要，再解压恢复原目录后执行原回退步骤，不直接运行引用原目录的旧脚本。
+实际验证、通知失败/恢复、收尾和剩余门槛见[基线记录](BACKEND_BASELINE_VERIFICATION_20261007.md)。
+
 2026-10-07 只发布前端发现分区隔离修复，先备份旧静态文件及Compose摘要，
 仅重建web、检查/reload边缘Nginx，19份公网产物与本地构建摘要一致。
 同机备份为 `backup-usable-web-20261007a`，旧文件为 `artifacts/web-before-usable-20261007a`。

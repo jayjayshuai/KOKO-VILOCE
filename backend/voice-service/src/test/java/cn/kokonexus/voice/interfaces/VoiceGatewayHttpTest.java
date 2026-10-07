@@ -3,8 +3,8 @@ package cn.kokonexus.voice.interfaces;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import cn.kokonexus.common.api.GlobalExceptionHandler;
 import cn.kokonexus.common.api.ResourceNotFoundException;
+import cn.kokonexus.voice.VoiceApplication;
 import cn.kokonexus.voice.application.VoiceApplicationService;
 import cn.kokonexus.voice.application.VoiceInteractionDirectory;
 import cn.kokonexus.voice.application.VoiceInteractionService;
@@ -335,7 +335,7 @@ class VoiceGatewayHttpTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({ VoiceController.class, VoiceInteractionController.class, GlobalExceptionHandler.class })
+    @Import({ VoiceController.class, VoiceInteractionController.class, EntryPointImports.class })
     static class HttpConfiguration {
 
         @Bean
@@ -369,6 +369,17 @@ class VoiceGatewayHttpTest {
             factory.setAddress(InetAddress.getByName("127.0.0.1"));
             factory.setBaseDirectory(Path.of("D:/KOKO/deploy/voice-p0-http-runtime-20261005").toFile());
             return factory;
+        }
+    }
+
+    /** HTTP夹具使用实际入口的共享配置，避免测试手工加Advice却掩盖真实Boot遗漏。 */
+    static class EntryPointImports implements org.springframework.context.annotation.ImportSelector {
+
+        @Override
+        public String[] selectImports(org.springframework.core.type.AnnotationMetadata metadata) {
+            return java.util.Arrays.stream(VoiceApplication.class.getAnnotation(Import.class).value())
+                .map(Class::getName)
+                .toArray(String[]::new);
         }
     }
 }

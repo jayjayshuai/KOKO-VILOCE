@@ -249,16 +249,15 @@ services:
       <<: *common-env
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      # Single-node production uses Docker DNS for deterministic routing. All services still register in Nacos,
-      # and Dubbo uses Nacos as its registry; switch these two URIs back to lb:// when adding gateway replicas.
-      COMMUNITY_SERVICE_URI: http://koko-nexus-community:8082
-      LIVE_SERVICE_URI: http://koko-nexus-live:8083
-      VOICE_SERVICE_URI: http://koko-nexus-voice:8084
-      NOTIFICATION_SERVICE_URI: http://koko-nexus-notification:8085
-      ASSET_SERVICE_URI: http://koko-nexus-asset:8086
-      # 仍默认定址，WS 发现须所有节点元数据和真实共享会话验收后显式启用。
-      CHAT_SERVICE_URI: ${CHAT_SERVICE_URI:-http://koko-nexus-chat:8087}
-      CHAT_WS_SERVICE_URI: ${CHAT_WS_SERVICE_URI:-ws://koko-nexus-chat:8097}
+      # HTTP与Dubbo分组隔离后使用实际Nacos发现；单机也不依赖重建后的旧Docker地址。
+      # 必须同步升级全部HTTP提供方及chat的WS元数据；这不代表多节点容量验收。
+      COMMUNITY_SERVICE_URI: ${COMMUNITY_SERVICE_URI:-lb://koko-nexus-community}
+      LIVE_SERVICE_URI: ${LIVE_SERVICE_URI:-lb://koko-nexus-live}
+      VOICE_SERVICE_URI: ${VOICE_SERVICE_URI:-lb://koko-nexus-voice}
+      NOTIFICATION_SERVICE_URI: ${NOTIFICATION_SERVICE_URI:-lb://koko-nexus-notification}
+      ASSET_SERVICE_URI: ${ASSET_SERVICE_URI:-lb://koko-nexus-asset}
+      CHAT_SERVICE_URI: ${CHAT_SERVICE_URI:-lb://koko-nexus-chat}
+      CHAT_WS_SERVICE_URI: ${CHAT_WS_SERVICE_URI:-lb:ws://koko-nexus-chat}
       # 仅Java受限媒体路由；正式启用必须同时封闭原始SFU公网信令及/rtc绕过入口。
       MEDIA_ADMISSION_ENABLED: ${MEDIA_ADMISSION_ENABLED:-false}
       MEDIA_ALLOWED_ORIGINS: ${MEDIA_ALLOWED_ORIGINS:-}

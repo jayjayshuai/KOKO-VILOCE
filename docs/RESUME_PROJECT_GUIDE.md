@@ -11,6 +11,10 @@
 技术栈：Java 21、Spring Boot、Spring Cloud Gateway、Sa-Token、Nacos、Dubbo、
 MyBatis-Plus、MySQL、Redis、RocketMQ、Netty、Vue 3、TypeScript、LiveKit。
 
+2026-10-07当前基线已对齐七库并发布八个后端；真实功能、通知空间故障与恢复、
+Nacos发现、测试数据清理和本地断点见[最新记录](BACKEND_BASELINE_VERIFICATION_20261007.md)。
+语音可展示自建服务的创建/关闭管理；受控八麦位的实际音轨仍未开放。
+
 - 按身份、社区内容、聊天、通知、资产与语音领域拆分服务；通过 Gateway 统一鉴权，
   下游核验资源归属，使用 Nacos 注册发现和 Dubbo 完成跨服务身份查询。
 - 实现创作者主页、文章草稿/发布、关注收藏、社区成员管理，以及 Netty WebSocket 私信和群聊；
