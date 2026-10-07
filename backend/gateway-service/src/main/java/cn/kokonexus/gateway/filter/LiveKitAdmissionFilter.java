@@ -105,6 +105,21 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
             request.getQueryParams().containsKey(sessionTokenName)
         ) return reject(exchange, 400, "MEDIA_ADMISSION_INVALID");
         var command = new MediaAdmissionCommand(user, values.getFirst());
+        var siteHeaders = request.getHeaders().getOrEmpty(sessionTokenName);
+        var siteCookies = request.getCookies().get(sessionTokenName);
+        if (siteHeaders.size() > 1 || (siteCookies != null && siteCookies.size() > 1)) return reject(
+            exchange,
+            400,
+            "MEDIA_ADMISSION_INVALID"
+        );
+        String cookie = siteCookies == null || siteCookies.isEmpty() ? null : siteCookies.getFirst().getValue();
+        String websiteToken = siteHeaders.isEmpty() ? cookie : siteHeaders.getFirst();
+        if (websiteToken == null || websiteToken.isBlank() || websiteToken.length() > 8192) return reject(
+            exchange,
+            401,
+            "MEDIA_ADMISSION_REQUIRED"
+        );
+        if (cookie != null && !cookie.equals(websiteToken)) return reject(exchange, 400, "MEDIA_ADMISSION_INVALID");
         // 只捕获本次鉴权的故障；下游传输错误不伪装为鉴权成功或改写已升级响应。
         return Mono.fromCallable(() -> client.admit(command))
             .subscribeOn(worker)
@@ -112,6 +127,9 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
             .onErrorResume(error -> Mono.empty())
             .flatMap(allowed -> {
                 if (!allowed) return reject(exchange, 403, "MEDIA_ADMISSION_DENIED").thenReturn(false);
+                if (socket) exchange
+                    .getAttributes()
+                    .put(MediaConnectionProof.ATTRIBUTE, new MediaConnectionProof(command, websiteToken));
                 var upstream = request
                     .mutate()
                     .headers(headers -> {

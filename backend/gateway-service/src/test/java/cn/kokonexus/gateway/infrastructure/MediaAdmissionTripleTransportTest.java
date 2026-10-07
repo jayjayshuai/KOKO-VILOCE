@@ -83,6 +83,10 @@ class MediaAdmissionTripleTransportTest {
         assertThat(client.admit(new MediaAdmissionCommand("42", "synthetic-allowed"))).isTrue();
         assertThat(client.admit(new MediaAdmissionCommand("43", "synthetic-allowed"))).isFalse();
         assertThat(client.admit(new MediaAdmissionCommand("42", "synthetic-denied"))).isFalse();
+        // 未实现持续核验的旧Provider必须固定不可用，不能因接口default方法被当成允许。
+        assertThatThrownBy(() -> client.retain(new MediaAdmissionCommand("42", "synthetic-allowed")))
+            .isInstanceOf(MediaAdmissionUnavailableException.class)
+            .hasNoCause();
         assertThatThrownBy(() -> client.admit(new MediaAdmissionCommand("42", "synthetic-failure")))
             .isInstanceOf(MediaAdmissionUnavailableException.class)
             .hasNoCause();

@@ -579,6 +579,82 @@ public class VoiceMediaPlanMysqlCheck {
         System.out.println(
             "PASS MEDIA_SQL_8 apply/accept/invite/consent/role grant/owner transfer do not confer implicit publisher permission"
         );
+        var admission = proxy(
+            new VoiceMediaAdmissionState(
+                sql.getMapper(VoiceRoomMapper.class),
+                sql.getMapper(VoiceInteractionMapper.class),
+                media,
+                true
+            ),
+            manager
+        );
+        var verify = new cn.kokonexus.voice.infrastructure.media.LiveKitJoinTokenVerifier(
+            "isolated-binding-admission-key",
+            "synthetic-binding-admission-secret-key-private"
+        );
+        String boundIdentity = jdbc.queryForObject(
+            "SELECT media_identity FROM voice_media_binding WHERE room_id=9303 AND user_id=6",
+            String.class
+        );
+        var bound = verify.verify(boundJwt(boundIdentity, false), "6");
+        check(bound != null && bound.binding(), "Actual SDK opaque token did not verify");
+        check(
+            !admission.allows(bound, 6, true) && admission.allows(bound, 6, false),
+            "Entry barrier confused with existing binding retention"
+        );
+        for (
+            var batch = retirement.claim(UUID.randomUUID().toString());
+            !batch.isEmpty();
+            batch = retirement.claim(UUID.randomUUID().toString())
+        ) for (var done : batch)
+            check(
+                retirement.confirmed(done.getId(), done.getLeaseToken()),
+                "Explicit lab retirement confirmation failed"
+            );
+        check(admission.allows(bound, 6, true), "Current bound audience admission denied");
+        check(!admission.allows(bound, 7, true), "Opaque token accepted by other website user");
+        core.command(
+            6,
+            roleRoom,
+            UUID.randomUUID().toString(),
+            owner.sessionId(),
+            roomVersion(roleRoom),
+            CommandType.MUTE,
+            2,
+            null,
+            null,
+            false
+        );
+        check(!admission.allows(bound, 6, false), "Old epoch retained after publish permission change");
+        String freshIdentity = jdbc.queryForObject(
+            "SELECT media_identity FROM voice_media_binding WHERE room_id=9303 AND user_id=6",
+            String.class
+        );
+        var fresh = verify.verify(boundJwt(freshIdentity, true), "6");
+        check(
+            admission.allows(fresh, 6, false) && !admission.allows(fresh, 6, true),
+            "Fresh identity ignored pending old retire barrier"
+        );
+        var mismatched = verify.verify(boundJwt(freshIdentity, false), "6");
+        check(!admission.allows(mismatched, 6, false), "Publish claim disagreed with current binding");
+        jdbc.update(
+            "UPDATE voice_room_member SET lease_until=TIMESTAMPADD(SECOND,-1,CURRENT_TIMESTAMP(3)) WHERE room_id=9303 AND user_id=6"
+        );
+        check(!admission.allows(fresh, 6, false), "Expired member retained binding");
+        check(
+            !admission.allows(
+                new cn.kokonexus.voice.infrastructure.media.LiveKitJoinTokenVerifier.VerifiedJoin(
+                    9303,
+                    "koko-voice-9303"
+                ),
+                6,
+                true
+            ),
+            "Legacy identity bypassed controlled binding"
+        );
+        System.out.println(
+            "PASS MEDIA_SQL_9 actual SDK signed UUID/current binding/cross-user denial/changed epoch/claim mismatch/expiry/entry-versus-retain barrier"
+        );
         System.out.println(
             "PASS VOICE_MEDIA_PLAN_MYSQL_ALL SQL/transaction only; no production/Gateway/LiveKit/RTC acceptance"
         );
@@ -604,6 +680,25 @@ public class VoiceMediaPlanMysqlCheck {
 
     private static String roomVersion(long room) {
         return jdbc.queryForObject("SELECT interaction_version FROM voice_room WHERE id=?", String.class, room);
+    }
+
+    private static String boundJwt(String identity, boolean publish) {
+        var token = new io.livekit.server.AccessToken(
+            "isolated-binding-admission-key",
+            "synthetic-binding-admission-secret-key-private"
+        );
+        token.setIdentity(identity);
+        token.setTtl(60000);
+        token.addGrants(
+            new io.livekit.server.RoomJoin(true),
+            new io.livekit.server.RoomName("koko-voice-9303"),
+            new io.livekit.server.CanSubscribe(true),
+            new io.livekit.server.CanPublish(publish),
+            new io.livekit.server.CanPublishData(false),
+            new io.livekit.server.CanUpdateOwnMetadata(false),
+            new io.livekit.server.CanPublishSources(List.of("microphone"))
+        );
+        return token.toJwt();
     }
 
     private static long generation(long user) {

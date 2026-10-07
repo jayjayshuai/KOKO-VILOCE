@@ -728,6 +728,82 @@ test('本人工作台在会话尚未恢复时不调用私有 API', async () => {
     h.dispose()
   }
 })
+test('语音服务500不隐藏成功内容，分区重试只读取失败领域', async () => {
+  let voiceFails = true
+  const h = await app({
+    communities: () => Promise.resolve([{ id: 'community' }]),
+    voiceRooms: () => (voiceFails ? Promise.reject(new ApiRequestError('语音服务暂不可用', 500)) : Promise.resolve([])),
+    creatorPage: () => Promise.resolve({ items: [{ userId: 'creator' }], page: 1, total: 1 }),
+    postPage: () => Promise.resolve({ items: [{ id: 'post' }], page: 1, total: 1 }),
+  })
+  try {
+    await h.state.loadDiscovery()
+    assert.equal(h.state.discoveryStates.voice.status, 'error')
+    assert.equal(h.state.discoveryStates.voice.error, '语音服务暂不可用')
+    assert.equal(h.state.discoveryStates.voice.loadedAt, null)
+    assert.equal(h.state.discoveryStates.communities.status, 'ready')
+    assert.equal(h.state.communities.value[0].id, 'community')
+    assert.equal(h.state.creators.value[0].userId, 'creator')
+    assert.equal(h.state.posts.value[0].id, 'post')
+    const contentTime = h.state.discoveryStates.posts.loadedAt
+    const initialCalls = h.calls.length
+    voiceFails = false
+    await h.state.loadDiscovery('voice')
+    assert.deepEqual(
+      h.calls.slice(initialCalls).map((call) => call.name),
+      ['voiceRooms'],
+    )
+    assert.equal(h.state.discoveryStates.voice.status, 'ready')
+    assert.equal(h.state.discoveryStates.voice.error, '')
+    assert.equal(h.state.discoveryStates.posts.loadedAt, contentTime)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('语音读取缓慢时成功内容立即可见且仍可分页', async () => {
+  const pendingVoice = deferred()
+  const h = await app({
+    voiceRooms: () => pendingVoice.promise,
+    postPage: (page) => Promise.resolve({ items: [{ id: `post-${page}` }], page, total: 2 }),
+  })
+  try {
+    const loading = h.state.loadDiscovery()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(h.state.discoveryStates.voice.status, 'loading')
+    assert.equal(h.state.discoveryStates.posts.status, 'ready')
+    assert.equal(h.state.posts.value[0].id, 'post-1')
+    await h.state.loadMore('posts')
+    assert.equal(h.state.posts.value[1].id, 'post-2')
+    pendingVoice.resolve([])
+    await loading
+  } finally {
+    h.dispose()
+  }
+})
+
+test('旧分区错误不能覆盖单独重试后成功的快照', async () => {
+  const pendingVoice = deferred()
+  let first = true
+  const h = await app({
+    voiceRooms: () => (first ? ((first = false), pendingVoice.promise) : Promise.resolve([{ id: 'current' }])),
+  })
+  try {
+    const stale = h.state.loadDiscovery()
+    const signal = h.calls.find((call) => call.name === 'voiceRooms').args[0]
+    await h.state.loadDiscovery('voice')
+    assert.equal(signal.aborted, true)
+    pendingVoice.reject(new ApiRequestError('旧请求失败', 500))
+    await stale
+    assert.equal(h.state.discoveryStates.voice.status, 'ready')
+    assert.equal(h.state.discoveryStates.voice.error, '')
+    assert.equal(h.state.voiceRooms.value[0].id, 'current')
+    assert.equal(h.state.discoveryStates.posts.status, 'ready')
+  } finally {
+    h.dispose()
+  }
+})
+
 test('公开刷新轮次取消旧快照，迟到响应不能倒退页面', async () => {
   const wait = deferred()
   let first = true

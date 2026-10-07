@@ -32,6 +32,10 @@ class VoiceStartupConfigurationTest {
             properties.getProperty("koko.voice.signal-admission-enabled")
         );
         var values = new HashMap<String, Object>();
+        assertEquals(
+            "${VOICE_BINDING_ADMISSION_ENABLED:false}",
+            properties.getProperty("koko.voice.binding-admission-enabled")
+        );
         assertEquals("${VOICE_MEDIA_PLAN_ENABLED:false}", properties.getProperty("koko.voice.media-plan-enabled"));
         assertEquals(
             "${VOICE_MEDIA_RETIREMENT_ENABLED:false}",

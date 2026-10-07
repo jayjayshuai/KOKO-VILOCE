@@ -16,7 +16,8 @@ import {
   Video,
 } from 'lucide-vue-next';
 import type { Community, CreatorPost, CreatorProfile, VoiceRoom } from '../api';
-import type { DiscoverySnapshot, PublicSection, WorkspaceAction } from '../types/workspace';
+import type { DiscoveryDomain, DiscoverySnapshot, PublicSection, WorkspaceAction } from '../types/workspace';
+import DiscoveryDomainState from '../components/DiscoveryDomainState.vue';
 const props = defineProps<{
   /** 当前公开领域；explore 显示聚合首页。 */
   section: PublicSection;
@@ -24,8 +25,6 @@ const props = defineProps<{
   data: DiscoverySnapshot;
   /** 初次/整体快照读取中。 */
   loading: boolean;
-  /** 快照读取失败原因。 */
-  error: string;
   /** 分页读取进行中。 */
   pageLoading: boolean;
   /** 分页错误，不能冒充已到列表尾部。 */
@@ -44,7 +43,7 @@ const props = defineProps<{
   voiceError: string;
 }>();
 const emit = defineEmits<{
-  retry: [];
+  retry: [domain?: DiscoveryDomain];
   loadMore: [kind: 'creators' | 'posts'];
   action: [kind: WorkspaceAction];
   readPost: [post: CreatorPost];
@@ -117,49 +116,42 @@ const actionLabels: Record<WorkspaceAction, string> = {
       ><button class="secondary" @click="emit('community')"><Users :size="16" />我的已加入社区</button
       ><button class="secondary" @click="emit('action', 'community-manage')">管理我的社区</button></nav
     ><p v-else class="snapshot-time">{{
-      data.loadedAt && !error
-        ? `最近读取 ${new Date(data.loadedAt).toLocaleTimeString('zh-CN')}`
+      data.loadedAt
+        ? `最近更新 ${new Date(data.loadedAt).toLocaleTimeString('zh-CN')} · 各分区独立读取`
         : '数据来自真实服务接口'
     }}</p
     ><button class="primary compact-button" @click="emit('action', actionForSection)"
       ><Plus :size="16" />{{ actionLabels[actionForSection] }}</button
     ></div
   >
-  <div v-if="loading" class="workspace-skeleton-grid" aria-busy="true" role="status"
-    ><div v-for="index in 3" :key="index" class="workspace-skeleton"><span />正在读取内容…</div></div
-  >
-  <div v-else-if="error" class="workspace-error" role="alert"
-    ><h2>暂时无法读取空间</h2><p>{{ error }}</p
-    ><button class="secondary" @click="emit('retry')">重新连接</button></div
-  >
-  <template v-else>
-    <div v-if="section === 'explore'" class="workspace-metrics"
-      ><article
-        ><span class="metric-icon"><BookOpen :size="20" /></span
-        ><div
-          ><strong>{{ data.postTotal }}</strong
-          ><span>已发布文章</span></div
-        ><button aria-label="查看最新文章" @click="focusLatest"><ChevronRight :size="16" /></button></article
-      ><article
-        ><span class="metric-icon"><Users :size="20" /></span
-        ><div
-          ><strong>{{ data.creatorTotal }}</strong
-          ><span>公开创作者</span></div
-        ><RouterLink to="/creators" aria-label="查看公开创作者"><ChevronRight :size="16" /></RouterLink></article
-      ><article
-        ><span class="metric-icon"><Headphones :size="20" /></span
-        ><div
-          ><strong>{{ data.voiceRooms.length }}</strong
-          ><span>语音房 · 当前列表</span></div
-        ><RouterLink to="/voice" aria-label="查看语音房"><ChevronRight :size="16" /></RouterLink></article
-    ></div>
-    <div class="discovery-workspace" :class="{ 'with-context': section === 'explore' }"
-      ><div class="discovery-primary">
-        <section v-if="section === 'explore'" id="latest-content" class="workspace-section"
-          ><div class="workspace-section-heading"
-            ><div><p class="workspace-eyebrow">LATEST STORIES</p><h2>最新内容</h2></div
-            ><RouterLink to="/studio" class="section-link">内容工作台<ArrowRight :size="15" /></RouterLink></div
-          ><div v-if="data.posts.length" class="content-card-grid"
+  <div v-if="section === 'explore'" class="workspace-metrics"
+    ><article
+      ><span class="metric-icon"><BookOpen :size="20" /></span
+      ><div
+        ><strong>{{ data.domains.posts.status === 'ready' ? data.postTotal : '—' }}</strong
+        ><span>已发布文章</span></div
+      ><button aria-label="查看最新文章" @click="focusLatest"><ChevronRight :size="16" /></button></article
+    ><article
+      ><span class="metric-icon"><Users :size="20" /></span
+      ><div
+        ><strong>{{ data.domains.creators.status === 'ready' ? data.creatorTotal : '—' }}</strong
+        ><span>公开创作者</span></div
+      ><RouterLink to="/creators" aria-label="查看公开创作者"><ChevronRight :size="16" /></RouterLink></article
+    ><article
+      ><span class="metric-icon"><Headphones :size="20" /></span
+      ><div
+        ><strong>{{ data.domains.voice.status === 'ready' ? data.voiceRooms.length : '—' }}</strong
+        ><span>语音房 · 当前列表</span></div
+      ><RouterLink to="/voice" aria-label="查看语音房"><ChevronRight :size="16" /></RouterLink></article
+  ></div>
+  <div class="discovery-workspace" :class="{ 'with-context': section === 'explore' }"
+    ><div class="discovery-primary">
+      <section v-if="section === 'explore'" id="latest-content" class="workspace-section"
+        ><div class="workspace-section-heading"
+          ><div><p class="workspace-eyebrow">LATEST STORIES</p><h2>最新内容</h2></div
+          ><RouterLink to="/studio" class="section-link">内容工作台<ArrowRight :size="15" /></RouterLink></div
+        ><DiscoveryDomainState :state="data.domains.posts" label="最新内容" @retry="emit('retry', 'posts')">
+          <div v-if="data.posts.length" class="content-card-grid"
             ><article v-for="post in data.posts" :key="post.id" class="content-card"
               ><button class="content-card-open" @click="emit('readPost', post)"
                 ><div class="content-card-cover" :class="{ 'no-cover': !post.coverUrl }"
@@ -188,15 +180,17 @@ const actionLabels: Record<WorkspaceAction, string> = {
             :disabled="pageLoading"
             @click="emit('loadMore', 'posts')"
             >{{ pageLoading ? '读取中…' : '加载更多内容' }}</button
-          ></section
-        >
-        <section v-if="show('communities')" class="workspace-section"
-          ><div class="workspace-section-heading"
-            ><div><p class="workspace-eyebrow">COMMUNITY SPACES</p><h2>公开社区</h2></div
-            ><RouterLink v-if="section === 'explore'" to="/communities" class="section-link"
-              >探索社区<ArrowRight :size="15" /></RouterLink
-            ><small v-else class="muted">当前返回最多 12 个公开社区</small></div
-          ><div v-if="data.communities.length" class="community-card-grid"
+          ></DiscoveryDomainState
+        ></section
+      >
+      <section v-if="show('communities')" class="workspace-section"
+        ><div class="workspace-section-heading"
+          ><div><p class="workspace-eyebrow">COMMUNITY SPACES</p><h2>公开社区</h2></div
+          ><RouterLink v-if="section === 'explore'" to="/communities" class="section-link"
+            >探索社区<ArrowRight :size="15" /></RouterLink
+          ><small v-else class="muted">当前返回最多 12 个公开社区</small></div
+        ><DiscoveryDomainState :state="data.domains.communities" label="社区" @retry="emit('retry', 'communities')">
+          <div v-if="data.communities.length" class="community-card-grid"
             ><article v-for="item in data.communities" :key="item.id" class="space-card"
               ><div class="space-card-heading"
                 ><span class="space-badge">{{ item.badge }}</span
@@ -210,14 +204,16 @@ const actionLabels: Record<WorkspaceAction, string> = {
           ><div v-else class="workspace-empty"
             ><Users :size="28" /><h3>这里等待第一个社区</h3><p>创建一个社区，邀请成员加入交流。</p
             ><button class="secondary" @click="emit('action', 'community')">创建社区</button></div
-          ></section
-        >
-        <section v-if="show('creators')" class="workspace-section"
-          ><div class="workspace-section-heading"
-            ><div><p class="workspace-eyebrow">PEOPLE WHO CREATE</p><h2>创作者</h2></div
-            ><RouterLink v-if="section === 'explore'" to="/creators" class="section-link"
-              >发现更多<ArrowRight :size="15" /></RouterLink></div
-          ><div v-if="data.creators.length" class="creator-workspace-grid"
+          ></DiscoveryDomainState
+        ></section
+      >
+      <section v-if="show('creators')" class="workspace-section"
+        ><div class="workspace-section-heading"
+          ><div><p class="workspace-eyebrow">PEOPLE WHO CREATE</p><h2>创作者</h2></div
+          ><RouterLink v-if="section === 'explore'" to="/creators" class="section-link"
+            >发现更多<ArrowRight :size="15" /></RouterLink></div
+        ><DiscoveryDomainState :state="data.domains.creators" label="创作者" @retry="emit('retry', 'creators')">
+          <div v-if="data.creators.length" class="creator-workspace-grid"
             ><article v-for="item in data.creators" :key="item.userId" class="creator-workspace-card"
               ><div class="creator-workspace-banner"
                 ><img v-if="item.bannerUrl" :src="item.bannerUrl" alt="" loading="lazy" /></div
@@ -248,14 +244,16 @@ const actionLabels: Record<WorkspaceAction, string> = {
             :disabled="pageLoading"
             @click="emit('loadMore', 'creators')"
             >{{ pageLoading ? '读取中…' : '加载更多创作者' }}</button
-          ></section
-        >
-        <section v-if="show('voice')" class="workspace-section"
-          ><div class="workspace-section-heading"
-            ><div><p class="workspace-eyebrow">VOICE ROOMS</p><h2>开放语音房</h2></div
-            ><RouterLink v-if="section === 'explore'" to="/voice" class="section-link"
-              >进入语音空间<ArrowRight :size="15" /></RouterLink></div
-          ><div v-if="data.voiceRooms.length" class="voice-workspace-list"
+          ></DiscoveryDomainState
+        ></section
+      >
+      <section v-if="show('voice')" class="workspace-section"
+        ><div class="workspace-section-heading"
+          ><div><p class="workspace-eyebrow">VOICE ROOMS</p><h2>开放语音房</h2></div
+          ><RouterLink v-if="section === 'explore'" to="/voice" class="section-link"
+            >进入语音空间<ArrowRight :size="15" /></RouterLink></div
+        ><DiscoveryDomainState :state="data.domains.voice" label="语音房" @retry="emit('retry', 'voice')">
+          <div v-if="data.voiceRooms.length" class="voice-workspace-list"
             ><article v-for="room in data.voiceRooms" :key="room.id" class="voice-workspace-card"
               ><span class="voice-room-mark"><Headphones :size="21" /></span
               ><div
@@ -272,14 +270,16 @@ const actionLabels: Record<WorkspaceAction, string> = {
           ><div v-else class="workspace-empty"
             ><Headphones :size="28" /><h3>当前没有开放语音房</h3><p>建立开放讨论空间，连接成功后即可加入语音交流。</p
             ><button class="secondary" @click="emit('action', 'voice')">创建语音房</button></div
-          ><p v-if="voiceError" class="form-error" role="alert">{{ voiceError }}</p></section
-        >
-        <section v-if="show('live')" class="workspace-section"
-          ><div class="workspace-section-heading"
-            ><div><p class="workspace-eyebrow">LIVE SPACES</p><h2>正在直播</h2></div
-            ><RouterLink v-if="section === 'explore'" to="/live" class="section-link"
-              >直播空间<ArrowRight :size="15" /></RouterLink></div
-          ><div v-if="data.liveRooms.length" class="community-card-grid"
+          ></DiscoveryDomainState
+        ><p v-if="voiceError" class="form-error" role="alert">{{ voiceError }}</p></section
+      >
+      <section v-if="show('live')" class="workspace-section"
+        ><div class="workspace-section-heading"
+          ><div><p class="workspace-eyebrow">LIVE SPACES</p><h2>正在直播</h2></div
+          ><RouterLink v-if="section === 'explore'" to="/live" class="section-link"
+            >直播空间<ArrowRight :size="15" /></RouterLink></div
+        ><DiscoveryDomainState :state="data.domains.live" label="直播" @retry="emit('retry', 'live')">
+          <div v-if="data.liveRooms.length" class="community-card-grid"
             ><article v-for="room in data.liveRooms" :key="room.id" class="space-card"
               ><span class="status-tag positive"><Radio :size="14" />服务已确认开播</span><h3>{{ room.title }}</h3
               ><p>{{ room.creator }} · {{ room.category }}</p
@@ -290,29 +290,29 @@ const actionLabels: Record<WorkspaceAction, string> = {
             ><Video :size="28" /><h3>当前没有已确认的直播</h3
             ><p>可以先创建排期；正式推流、转码与回放仍待媒体供应商接入。</p
             ><button class="secondary" @click="emit('action', 'live')">建立直播排期</button></div
-          ></section
-        >
-        <p v-if="pageError" class="workspace-error compact" role="alert">{{ pageError }}</p> </div
-      ><aside v-if="section === 'explore'" class="discovery-context"
-        ><section class="workspace-card quick-start"
-          ><p class="workspace-eyebrow">MAKE SOMETHING</p><h2>下一步，从这里开始</h2
-          ><button @click="emit('action', 'post')"
-            ><span class="quick-icon"><FileText :size="18" /></span
-            ><span><strong>写一篇新内容</strong><small>先保存草稿，再确认发布</small></span
-            ><ChevronRight :size="16" /></button
-          ><button @click="emit('action', 'community')"
-            ><span class="quick-icon"><Users :size="18" /></span
-            ><span><strong>建立你的社区</strong><small>真实成员与所有者管理</small></span
-            ><ChevronRight :size="16" /></button
-          ><button @click="emit('action', 'voice')"
-            ><span class="quick-icon"><Headphones :size="18" /></span
-            ><span><strong>开始语音讨论</strong><small>需要媒体连接实际就绪</small></span
-            ><ChevronRight :size="16" /></button></section
-        ><section class="workspace-card connection-guide"
-          ><span class="status-tag">能力边界</span><h2>连接正在逐步完善</h2
-          ><p>Discord OAuth、视频推流和回放尚未开放。当前页面不会展示假连接或默认直播。</p
-          ><RouterLink to="/account" class="section-link"
-            >账户与连接<ArrowRight :size="14" /></RouterLink></section></aside
-    ></div>
-  </template>
+          ></DiscoveryDomainState
+        ></section
+      >
+      <p v-if="pageError" class="workspace-error compact" role="alert">{{ pageError }}</p> </div
+    ><aside v-if="section === 'explore'" class="discovery-context"
+      ><section class="workspace-card quick-start"
+        ><p class="workspace-eyebrow">MAKE SOMETHING</p><h2>下一步，从这里开始</h2
+        ><button @click="emit('action', 'post')"
+          ><span class="quick-icon"><FileText :size="18" /></span
+          ><span><strong>写一篇新内容</strong><small>先保存草稿，再确认发布</small></span
+          ><ChevronRight :size="16" /></button
+        ><button @click="emit('action', 'community')"
+          ><span class="quick-icon"><Users :size="18" /></span
+          ><span><strong>建立你的社区</strong><small>真实成员与所有者管理</small></span
+          ><ChevronRight :size="16" /></button
+        ><button @click="emit('action', 'voice')"
+          ><span class="quick-icon"><Headphones :size="18" /></span
+          ><span><strong>开始语音讨论</strong><small>需要媒体连接实际就绪</small></span
+          ><ChevronRight :size="16" /></button></section
+      ><section class="workspace-card connection-guide"
+        ><span class="status-tag">能力边界</span><h2>连接正在逐步完善</h2
+        ><p>Discord OAuth、视频推流和回放尚未开放。当前页面不会展示假连接或默认直播。</p
+        ><RouterLink to="/account" class="section-link"
+          >账户与连接<ArrowRight :size="14" /></RouterLink></section></aside
+  ></div>
 </template>

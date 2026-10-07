@@ -352,6 +352,26 @@ test('受控房间不能复用原发布JWT或实例化媒体SDK', async () => {
   await s.dispose()
 })
 
+test('媒体准入租约结束清理连接与麦克风，不自动重连/索取凭据，旧关闭不得影响新房间', async () => {
+  const s = await setup()
+  await s.state.joinVoiceRoom(target('1'))
+  const previous = s.rooms[0],
+    old = previous.handlers.get('Disconnected')
+  await s.state.toggleMicrophone()
+  assert.equal(s.state.microphoneEnabled.value, true)
+  previous.emit('Disconnected')
+  await until(() => s.state.phase.value === 'idle')
+  assert.equal(s.state.microphoneEnabled.value, false)
+  assert.equal(s.state.connectedVoice.value, null)
+  assert.equal(s.calls.filter((call) => call[0] === 'credential').length, 1)
+  assert.match(s.state.voiceError.value, /不会自动开麦/)
+  await s.state.joinVoiceRoom(target('2'))
+  old()
+  assert.equal(s.state.connectedVoice.value.id, '2')
+  assert.equal(s.state.microphoneEnabled.value, false)
+  await s.dispose()
+})
+
 test('Java媒体准入代理保留SDK基址且默认不开麦，跨源配置在SDK前拒绝', async () => {
   const location = { protocol: 'https:', hostname: 'app.example.invalid', href: 'https://app.example.invalid/koko/' }
   const good = await setup(

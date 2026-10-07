@@ -21,6 +21,12 @@
 
 ## 发布
 
+2026-10-07 只发布前端发现分区隔离修复，先备份旧静态文件及Compose摘要，
+仅重建web、检查/reload边缘Nginx，19份公网产物与本地构建摘要一致。
+同机备份为 `backup-usable-web-20261007a`，旧文件为 `artifacts/web-before-usable-20261007a`。
+后端、数据库、Compose和媒体开关未变；本地源码的新语音Schema仍未迁移。
+本轮读取/UI/断点、第一次失败及剩余边界见[验证记录](INITIAL_USABILITY_VERIFICATION_20261007.md)。
+
 2026-10-03 仅 web 的工作台及会话修复发布见 [前端交付证据](FRONTEND_WORKSPACE_VERIFICATION_20261003.md)，最新同机备份为 `backup-frontend-workspace-20261003b`。路由采用 `/koko/#/...`，反向代理仍只代理 Web/API/RTC，不为私有页面开放新端口。AI 短剧按用户要求保持下线，恢复门槛见 [下线记录](XINGMU_OFFLINE_20261003.md)；不要对共用 Compose 执行 down 或全量 up。
 
 1. 在可信构建机执行 `mvn test` 和前端生产构建。

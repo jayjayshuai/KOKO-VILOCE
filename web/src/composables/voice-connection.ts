@@ -167,7 +167,7 @@ export function useVoiceConnection(
       room.on(RoomEvent.Disconnected, () => {
         if (!owns()) return
         void leaveVoiceRoom()
-        voiceError.value = '语音连接已断开，请重新加入。'
+        voiceError.value = '语音连接已断开；登录、房间或媒体凭据可能已变化。请重新核验后加入，不会自动开麦。'
       })
       await room.connect(credential.url, credential.token)
       if (!owns()) {

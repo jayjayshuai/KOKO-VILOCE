@@ -46,7 +46,7 @@ import ManagedImagePicker from './components/ManagedImagePicker.vue';
 import WorkspaceShell from './components/WorkspaceShell.vue';
 import CommunityMembershipPanel from './components/CommunityMembershipPanel.vue';
 import { unknownPage, workspacePages } from './router/pages';
-import type { DiscoverySnapshot, WorkspaceAction } from './types/workspace';
+import type { DiscoveryDomain, DiscoveryDomainState, DiscoverySnapshot, WorkspaceAction } from './types/workspace';
 import { useDialogAccessibility } from './composables/dialog-accessibility';
 import { useVoiceConnection } from './composables/voice-connection';
 import VoiceInteractionPanel from './components/VoiceInteractionPanel.vue';
@@ -69,7 +69,17 @@ const studioProfile = ref<CreatorProfile | null>(null),
 let disposed = false,
   discoveryRevision = 0,
   studioRevision = 0;
-let discoveryRead: AbortController | undefined, studioRead: AbortController | undefined;
+let studioRead: AbortController | undefined;
+/** 分区保留各自取消器与轮次；单独重试语音不能废弃已成功的内容。 */
+const discoveryReads: Partial<Record<DiscoveryDomain, AbortController>> = {};
+const discoveryDomains: DiscoveryDomain[] = ['communities', 'live', 'voice', 'creators', 'posts'];
+const discoveryStates = reactive<Record<DiscoveryDomain, DiscoveryDomainState>>({
+  communities: { status: 'idle', error: '', loadedAt: null },
+  live: { status: 'idle', error: '', loadedAt: null },
+  voice: { status: 'idle', error: '', loadedAt: null },
+  creators: { status: 'idle', error: '', loadedAt: null },
+  posts: { status: 'idle', error: '', loadedAt: null },
+});
 let dialogReadRevision = 0;
 /** 同一弹窗/会话轮次内的读取才可更新私有表单与集合。 */
 const dialogContext = () => ({ revision: ++dialogReadRevision, session: auth.sessionRevision, userId: auth.user?.id });
@@ -127,8 +137,7 @@ const pageError = ref('');
 const followSubmitting = ref<string | null>(null);
 const commentBody = ref('');
 const interactionSubmitting = ref(false);
-const loading = ref(true);
-const error = ref('');
+const loading = computed(() => discoveryDomains.some((domain) => discoveryStates[domain].status === 'loading'));
 const dialog = ref<
   | 'auth'
   | 'community'
@@ -208,40 +217,55 @@ const {
 } = voiceState;
 const initials = computed(() => auth.user?.displayName.slice(0, 1).toUpperCase() || '访');
 
-async function loadDiscovery() {
-  discoveryRead?.abort();
-  const revision = ++discoveryRevision,
-    controller = new AbortController();
-  discoveryRead = controller;
-  loading.value = true;
-  error.value = '';
+async function loadDiscovery(domain?: DiscoveryDomain) {
+  ++discoveryRevision;
   pageLoading.value = false;
   pageError.value = '';
+  await Promise.all((domain ? [domain] : discoveryDomains).map(loadDiscoveryDomain));
+}
+
+/** 每个请求独立发布结果；慢服务不阻塞其他卡片，旧请求不能覆盖新的成功或错误。 */
+async function loadDiscoveryDomain(domain: DiscoveryDomain) {
+  discoveryReads[domain]?.abort();
+  const controller = new AbortController();
+  discoveryReads[domain] = controller;
+  const current = () => !disposed && discoveryReads[domain] === controller;
+  discoveryStates[domain].status = 'loading';
+  discoveryStates[domain].error = '';
   try {
-    const [communityData, liveData, voiceData, creatorData, postData] = await Promise.all([
-      api.communities(controller.signal),
-      api.liveRooms(controller.signal),
-      api.voiceRooms(controller.signal),
-      api.creatorPage(1, 12, controller.signal),
-      api.postPage(1, 12, controller.signal),
-    ]);
-    if (disposed || revision !== discoveryRevision) return;
-    communities.value = communityData;
-    liveRooms.value = liveData;
-    voiceRooms.value = voiceData;
-    creators.value = creatorData.items;
-    creatorPage.value = creatorData.page;
-    creatorTotal.value = creatorData.total;
-    posts.value = postData.items;
-    postPage.value = postData.page;
-    postTotal.value = postData.total;
-    loadedAt.value = new Date().toISOString();
-    if (auth.user) await syncFollowStates(creatorData.items);
+    if (domain === 'communities') {
+      const result = await api.communities(controller.signal);
+      if (!current()) return;
+      communities.value = result;
+    } else if (domain === 'live') {
+      const result = await api.liveRooms(controller.signal);
+      if (!current()) return;
+      liveRooms.value = result;
+    } else if (domain === 'voice') {
+      const result = await api.voiceRooms(controller.signal);
+      if (!current()) return;
+      voiceRooms.value = result;
+    } else if (domain === 'creators') {
+      const result = await api.creatorPage(1, 12, controller.signal);
+      if (!current()) return;
+      creators.value = result.items;
+      creatorPage.value = result.page;
+      creatorTotal.value = result.total;
+      if (auth.user) void syncFollowStates(result.items);
+    } else {
+      const result = await api.postPage(1, 12, controller.signal);
+      if (!current()) return;
+      posts.value = result.items;
+      postPage.value = result.page;
+      postTotal.value = result.total;
+    }
+    const completedAt = new Date().toISOString();
+    discoveryStates[domain] = { status: 'ready', error: '', loadedAt: completedAt };
+    loadedAt.value = completedAt;
   } catch (cause) {
-    if (!disposed && revision === discoveryRevision)
-      error.value = cause instanceof Error ? cause.message : '服务暂时不可用';
-  } finally {
-    if (!disposed && revision === discoveryRevision) loading.value = false;
+    if (!current()) return;
+    discoveryStates[domain].status = 'error';
+    discoveryStates[domain].error = cause instanceof Error ? cause.message : '服务暂时不可用';
   }
 }
 
@@ -265,9 +289,9 @@ async function syncFollowStates(items: CreatorProfile[]) {
 }
 
 async function loadMore(kind: 'creators' | 'posts') {
-  if (disposed || loading.value || pageLoading.value) return;
+  if (disposed || discoveryStates[kind].status !== 'ready' || pageLoading.value) return;
   const revision = discoveryRevision,
-    signal = discoveryRead?.signal;
+    signal = discoveryReads[kind]?.signal;
   pageLoading.value = true;
   pageError.value = '';
   try {
@@ -922,6 +946,7 @@ const discoverySnapshot = computed<DiscoverySnapshot>(() => ({
   creatorTotal: creatorTotal.value,
   postTotal: postTotal.value,
   loadedAt: loadedAt.value,
+  domains: discoveryStates,
 }));
 
 function showAuth() {
@@ -1020,7 +1045,6 @@ const viewBindings = computed(() => {
       section: workspacePage.value.section,
       data: discoverySnapshot.value,
       loading: loading.value,
-      error: error.value,
       pageLoading: pageLoading.value,
       pageError: pageError.value,
       userId: auth.user?.id,
@@ -1124,7 +1148,7 @@ onBeforeUnmount(() => {
   disposed = true;
   ++discoveryRevision;
   ++studioRevision;
-  discoveryRead?.abort();
+  for (const read of Object.values(discoveryReads)) read.abort();
   studioRead?.abort();
   void leaveVoiceRoom();
 });

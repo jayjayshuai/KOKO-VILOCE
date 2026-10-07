@@ -28,7 +28,7 @@ class LiveKitAdmissionFilterTest {
             .header("Origin", ORIGIN)
             .header("Upgrade", "websocket")
             .header("Cookie", "koko-nexus-token=synthetic-cookie")
-            .header("koko-nexus-token", "synthetic-header")
+            .header("koko-nexus-token", "synthetic-cookie")
             .header("X-Koko-User-Id", "forged-user")
             .header("X-Koko-Gateway-Key", "synthetic-internal-key");
         var exchange = MockServerWebExchange.from(request);
@@ -190,7 +190,9 @@ class LiveKitAdmissionFilterTest {
         when(client.admit(any())).thenReturn(true);
         try (var filter = filter(client, true)) {
             var validate = MockServerWebExchange.from(
-                MockServerHttpRequest.get("/api/media/livekit/rtc/validate?access_token=" + TOKEN)
+                MockServerHttpRequest.get("/api/media/livekit/rtc/validate?access_token=" + TOKEN).cookie(
+                    new org.springframework.http.HttpCookie("koko-nexus-token", "synthetic-cookie")
+                )
             );
             validate.getAttributes().put(
                 ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR,

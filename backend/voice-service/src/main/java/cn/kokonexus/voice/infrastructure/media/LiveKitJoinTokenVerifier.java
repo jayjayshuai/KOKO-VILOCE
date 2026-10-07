@@ -81,12 +81,13 @@ public class LiveKitJoinTokenVerifier {
                 )
             ) return null;
             var body = json.readTree(decoder.decode(parts[1]));
-            if (
-                body == null ||
-                !body.isObject() ||
-                !issuer.equals(body.path("iss").asText()) ||
-                !("user-" + expectedUser).equals(body.path("sub").asText())
-            ) return null;
+            if (body == null || !body.isObject() || !issuer.equals(body.path("iss").asText())) return null;
+            String identity = body.path("sub").asText();
+            boolean binding = false;
+            if (!("user-" + expectedUser).equals(identity)) {
+                if (!canonicalUuid(identity)) return null;
+                binding = true;
+            }
             long now = clock.instant().getEpochSecond();
             JsonNode exp = body.path("exp"),
                 nbf = body.path("nbf");
@@ -109,6 +110,7 @@ public class LiveKitJoinTokenVerifier {
             if (video.has("canUpdateOwnMetadata") && !no(video.path("canUpdateOwnMetadata"))) return null;
             // 旧平台令牌没有显式data字段；新令牌禁data，保持旧10分钟令牌的准入兼容。
             if (video.has("canPublishData") && !no(video.path("canPublishData"))) return null;
+            if (binding && (!no(video.path("canPublishData")) || !no(video.path("canUpdateOwnMetadata")))) return null;
             // 当前Java SDK始终写出空sip对象；空对象不授予SIP权限，非空或非对象才拒绝。
             if (
                 (body.has("sip") && (!body.path("sip").isObject() || body.path("sip").size() != 0)) ||
@@ -128,7 +130,7 @@ public class LiveKitJoinTokenVerifier {
             if (!provider.startsWith("koko-voice-")) return null;
             String roomId = provider.substring("koko-voice-".length());
             if (!positive(roomId)) return null;
-            return new VerifiedJoin(Long.parseLong(roomId), provider);
+            return new VerifiedJoin(Long.parseLong(roomId), provider, identity, publish.booleanValue(), binding);
         } catch (java.io.IOException | IllegalArgumentException rejected) {
             return null;
         } catch (java.security.GeneralSecurityException unavailable) {
@@ -153,11 +155,27 @@ public class LiveKitJoinTokenVerifier {
         }
     }
 
+    private static boolean canonicalUuid(String value) {
+        try {
+            return java.util.UUID.fromString(value).toString().equals(value);
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
     /** 已验签投影不携带JWT；不等同于业务准入结果。 */
     public record VerifiedJoin(
         /** 凭据范围内的房间正数ID。 */ long roomId,
-        /** 凭据范围内的内部房间名，只用于当前数据库匹配。 */ String providerRoomName
+        /** 凭据范围内的内部房间名，只用于当前数据库匹配。 */ String providerRoomName,
+        /** 已验签的旧平台身份或随机绑定UUID，仅后端使用。 */ String identity,
+        /** 签名凭据希望发布标志，须与当前SQL席位相同。 */ boolean publish,
+        /** 是否随机绑定身份；不能用于旧LEGACY准入。 */ boolean binding
     ) {
+        /** 保留原Legacy内部投影构造；新控制身份必须显式提供完整已验签字段。 */
+        public VerifiedJoin(long roomId, String providerRoomName) {
+            this(roomId, providerRoomName, null, false, false);
+        }
+
         @Override
         public String toString() {
             return "VerifiedVoiceJoin[redacted]";

@@ -40,13 +40,13 @@ class VoiceMediaAdmissionProviderTest {
         var join = new LiveKitJoinTokenVerifier.VerifiedJoin(9, "koko-voice-9");
         when(verifier.verify(command.token(), "42")).thenReturn(join);
         when(identity.active(42)).thenReturn(true);
-        when(state.allows(join)).thenReturn(true);
+        when(state.allows(join, 42, true)).thenReturn(true);
         var provider = new VoiceMediaAdmissionProvider(verifier, identity, state, true);
         assertThat(provider.admit(command)).isTrue();
         var order = inOrder(identity, state);
         order.verify(identity).active(42);
-        order.verify(state).allows(join);
-        when(state.allows(join)).thenThrow(new IllegalStateException("synthetic-secret database failure"));
+        order.verify(state).allows(join, 42, true);
+        when(state.allows(join, 42, true)).thenThrow(new IllegalStateException("synthetic-secret database failure"));
         assertThatThrownBy(() -> provider.admit(command))
             .isInstanceOf(MediaAdmissionUnavailableException.class)
             .hasMessage("媒体准入暂不可用")
@@ -61,26 +61,31 @@ class VoiceMediaAdmissionProviderTest {
     @Test
     void currentRoomStateBlocksClosingClosedControlledAndWrongProvider() {
         var mapper = mock(VoiceRoomMapper.class);
-        var state = new VoiceMediaAdmissionState(mapper);
+        var state = new VoiceMediaAdmissionState(
+            mapper,
+            mock(cn.kokonexus.voice.infrastructure.persistence.VoiceInteractionMapper.class),
+            mock(cn.kokonexus.voice.infrastructure.persistence.VoiceMediaPlanMapper.class),
+            false
+        );
         var join = new LiveKitJoinTokenVerifier.VerifiedJoin(9, "koko-voice-9");
         var room = new VoiceRoom();
         room.setStatus("OPEN");
         room.setControlMode("LEGACY");
         room.setProviderRoomName("koko-voice-9");
         when(mapper.lockRoom(9)).thenReturn(room);
-        assertThat(state.allows(join)).isTrue();
+        assertThat(state.allows(join, 42, true)).isTrue();
         for (String status : java.util.List.of("CLOSING", "CLOSED", "FAILED", "PROVISIONING")) {
             room.setStatus(status);
-            assertThat(state.allows(join)).isFalse();
+            assertThat(state.allows(join, 42, true)).isFalse();
         }
         room.setStatus("OPEN");
         room.setControlMode("CONTROLLED");
-        assertThat(state.allows(join)).isFalse();
+        assertThat(state.allows(join, 42, true)).isFalse();
         room.setControlMode("LEGACY");
         room.setProviderRoomName("different-room");
-        assertThat(state.allows(join)).isFalse();
+        assertThat(state.allows(join, 42, true)).isFalse();
         when(mapper.lockRoom(9)).thenReturn(null);
-        assertThat(state.allows(join)).isFalse();
+        assertThat(state.allows(join, 42, true)).isFalse();
     }
 
     @Test

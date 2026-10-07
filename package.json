@@ -2,6 +2,7 @@
   "name": "koko-nexus-development-tools",
   "private": true,
   "scripts": {
+    "check:environment": "node scripts/check-environment.mjs",
     "check:secrets": "node scripts/check-staged-secrets.mjs --staged",
     "check:secrets:history": "node scripts/check-staged-secrets.mjs --history",
     "test:security": "node --test scripts/tests/staged-secrets.test.mjs",

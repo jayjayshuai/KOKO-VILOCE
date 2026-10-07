@@ -19,4 +19,13 @@ public class MediaAdmissionClient {
             throw new MediaAdmissionUnavailableException();
         }
     }
+
+    /** 持续核验仍受同一RPC超时/零重试约束，不把未实现方法当作允许。 */
+    public boolean retain(MediaAdmissionCommand command) {
+        try {
+            return service.retain(command);
+        } catch (RuntimeException unavailable) {
+            throw new MediaAdmissionUnavailableException();
+        }
+    }
 }

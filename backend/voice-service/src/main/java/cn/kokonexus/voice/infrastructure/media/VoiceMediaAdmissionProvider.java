@@ -28,13 +28,22 @@ public class VoiceMediaAdmissionProvider implements MediaAdmissionRpcService {
 
     @Override
     public boolean admit(MediaAdmissionCommand command) {
+        return check(command, true);
+    }
+
+    @Override
+    public boolean retain(MediaAdmissionCommand command) {
+        return check(command, false);
+    }
+
+    private boolean check(MediaAdmissionCommand command, boolean entry) {
         if (!enabled) throw new MediaAdmissionUnavailableException();
         if (command == null) return false;
         var join = verifier.verify(command.token(), command.userId());
         if (join == null) return false;
         try {
             if (!directory.active(Long.parseLong(command.userId()))) return false;
-            return state.allows(join);
+            return state.allows(join, Long.parseLong(command.userId()), entry);
         } catch (RuntimeException unavailable) {
             throw new MediaAdmissionUnavailableException();
         }

@@ -25,6 +25,25 @@ class LiveKitJoinTokenVerifierTest {
     /** 测试JSON构建，不改变生产解析器。 */ private final ObjectMapper json = new ObjectMapper();
 
     @Test
+    void opaqueSignedBindingIsOnlyAValidatedProjectionNotUserAuthorization() throws Exception {
+        String identity = UUID.randomUUID().toString();
+        var body = body();
+        body.put("sub", identity);
+        var video = (Map<String, Object>) body.get("video");
+        video.put("canPublishData", false);
+        video.put("canUpdateOwnMetadata", false);
+        var verified = verifier.verify(signed(body), "42");
+        assertThat(verified).isNotNull();
+        assertThat(verified.binding()).isTrue();
+        assertThat(verified.identity()).isEqualTo(identity);
+        assertThat(verified.publish()).isTrue();
+        // 用户归属必须由实际SQL绑定确认，不能从不含PII的subject推断。
+        assertThat(verifier.verify(signed(body), "43")).isNotNull();
+        video.remove("canPublishData");
+        assertThat(verifier.verify(signed(body), "42")).isNull();
+    }
+
+    @Test
     void actualServerSdkTokenHasOnlyMicrophoneAndNoDataOrOwnMetadataPermission() throws Exception {
         var gateway = new LiveKitVoiceMediaGateway("http://127.0.0.1:45179", "ws://127.0.0.1:45179", KEY, SECRET);
         String token = gateway.issueJoinToken("koko-voice-9223372036854775807", 42, "合成用户");
