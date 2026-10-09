@@ -37,6 +37,9 @@ async function setup(network = {}) {
     microphoneEnabled: vue.ref(false),
     microphoneBusy: vue.ref(false),
     participantCount: vue.ref(0),
+    audioPlaybackBlocked: vue.ref(false),
+    audioPlaybackBusy: vue.ref(false),
+    audioPlaybackError: vue.ref(''),
     async leaveVoiceRoom() {
       calls.push('disconnect')
       voice.phase.value = 'idle'
@@ -47,6 +50,9 @@ async function setup(network = {}) {
     },
     toggleMicrophone() {
       calls.push('device')
+    },
+    resumeVoiceAudio() {
+      calls.push('playback')
     },
   }
   const { descriptor } = parse(
@@ -60,6 +66,7 @@ async function setup(network = {}) {
     { context },
   )
   const mocks = {
+    './VoicePlaybackControls.vue': { default: {} },
     vue: { ...vue, onBeforeUnmount: (callback) => hooks.push(callback) },
     '../composables/voice-connection': {
       useVoiceConnection(_session, api, _root, _sdk, p) {

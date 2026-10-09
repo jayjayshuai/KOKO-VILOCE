@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useVoiceConnection } from '../composables/voice-connection';
 import { voiceMediaCredentialsApi, type ControlledMediaCredential } from '../services/voice-media-credentials';
 import type { InteractionSnapshot } from '../services/voice-interaction';
+import VoicePlaybackControls from './VoicePlaybackControls.vue';
 const props = defineProps<{
   /** 当前已核验的房间。 */ roomId: string;
   /** 展示标题，不参与授权。 */ roomTitle?: string;
@@ -83,7 +84,16 @@ const voice = useVoiceConnection(
   undefined,
   { enabled: true, current: grantCurrent, canPublish: () => !!credential.value?.canPublish },
 );
-const { phase, voiceError, microphoneEnabled, microphoneBusy, participantCount } = voice;
+const {
+  phase,
+  voiceError,
+  microphoneEnabled,
+  microphoneBusy,
+  participantCount,
+  audioPlaybackBlocked,
+  audioPlaybackBusy,
+  audioPlaybackError,
+} = voice;
 async function disconnect() {
   credential.value = null;
   await voice.leaveVoiceRoom();
@@ -197,6 +207,13 @@ onBeforeUnmount(() => {
         >当前授权轮次 {{ credential.generation }} · {{ credential.canPublish ? '允许本人麦克风发布' : '仅收听' }}</p
       >
       <p v-if="voiceError" role="alert" class="form-error">{{ voiceError }}</p>
+      <VoicePlaybackControls
+        :phase="phase"
+        :blocked="audioPlaybackBlocked"
+        :busy="audioPlaybackBusy"
+        :error="audioPlaybackError"
+        @resume="voice.resumeVoiceAudio"
+      />
       <div ref="audioRoot" aria-hidden="true" />
     </template>
   </section>

@@ -59,6 +59,7 @@ async function setup(network, options = {}) {
       'Reconnecting',
       'Reconnected',
       'Disconnected',
+      'AudioPlaybackStatusChanged',
     ].map((name) => [name, name]),
   )
   class Room {
@@ -67,6 +68,8 @@ async function setup(network, options = {}) {
       this.remoteParticipants = new Map()
       this.disconnects = 0
       this.microphoneCalls = []
+      this.canPlaybackAudio = options.playbackAllowed ?? true
+      this.playbackCalls = 0
       this.localParticipant = {
         isMicrophoneEnabled: false,
         setMicrophoneEnabled: async (value) => {
@@ -97,6 +100,12 @@ async function setup(network, options = {}) {
       this.localParticipant.isMicrophoneEnabled = false
       await options.disconnect?.(this)
     }
+    async startAudio() {
+      this.playbackCalls++
+      await options.playback?.(this)
+      this.canPlaybackAudio = options.playbackAfterResume ?? true
+      this.emit('AudioPlaybackStatusChanged')
+    }
   }
   const source = await readFile(new URL('../src/composables/voice-connection.ts', import.meta.url), 'utf8')
   const code = ts.transpileModule(source, {
@@ -125,11 +134,10 @@ async function setup(network, options = {}) {
       session,
       api,
       root,
-      async () => ({
-        Room,
-        RoomEvent: events,
-        Track: { Kind: { Audio: 'audio' } },
-      }),
+      async () => {
+        if (options.sdkFailure) throw new Error('synthetic module URL with token=private')
+        return { Room, RoomEvent: events, Track: { Kind: { Audio: 'audio' } } }
+      },
       options.controlledPolicy,
     ),
   )
@@ -153,7 +161,8 @@ test('加入成功默认不开麦，设备失败不盲翻转，明确点击才�
   let deny = true
   const s = await setup(null, {
     microphone: (value) => {
-      if (value && deny) throw new Error('麦克风权限拒绝')
+      if (value && deny)
+        throw Object.assign(new Error('synthetic browser permission error'), { name: 'NotAllowedError' })
     },
   })
   await s.state.joinVoiceRoom(target())
@@ -163,7 +172,7 @@ test('加入成功默认不开麦，设备失败不盲翻转，明确点击才�
   assert.equal(s.state.microphoneEnabled.value, false)
   await s.state.toggleMicrophone()
   assert.equal(s.state.microphoneEnabled.value, false)
-  assert.match(s.state.voiceError.value, /权限拒绝/)
+  assert.match(s.state.voiceError.value, /权限被拒绝/)
   deny = false
   await s.state.toggleMicrophone()
   assert.equal(s.state.microphoneEnabled.value, true)
@@ -278,6 +287,11 @@ test('SDK恢复与断开如实反馈，提前到达音频挂载后可听且离�
   }
   const element = {
     parentElement: null,
+    paused: false,
+    srcObject: { synthetic: true },
+    pause() {
+      this.paused = true
+    },
     remove() {
       children.delete(element)
       this.parentElement = null
@@ -300,6 +314,8 @@ test('SDK恢复与断开如实反馈，提前到达音频挂载后可听且离�
   await vue.nextTick()
   assert.equal(s.state.connectedVoice.value, null)
   assert.equal(children.size, 0)
+  assert.equal(element.paused, true)
+  assert.equal(element.srcObject, null)
   assert.equal(s.state.participantCount.value, 0)
   assert.match(s.state.voiceError.value, /断开/)
   await s.dispose()
@@ -442,4 +458,344 @@ test('受控发布权限丢失后仍允许关麦，不把禁发布变成不能�
   await s.state.toggleMicrophone()
   assert.deepEqual(s.rooms[0].microphoneCalls, [true, false])
   await s.dispose()
+})
+
+test('浏览器播放被阻止如实展示，明确点击恢复但不索取新凭据或开启麦克风', async () => {
+  const s = await setup(undefined, { playbackAllowed: false })
+  try {
+    await s.state.joinVoiceRoom(target())
+    assert.equal(s.state.audioPlaybackBlocked.value, true)
+    assert.equal(s.rooms[0].playbackCalls, 0)
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.rooms[0].playbackCalls, 1)
+    assert.equal(s.state.audioPlaybackBlocked.value, false)
+    assert.equal(s.state.audioPlaybackBusy.value, false)
+    assert.equal(s.state.audioPlaybackError.value, '')
+    assert.deepEqual(s.rooms[0].microphoneCalls, [])
+    assert.equal(s.calls.filter((call) => call[0] === 'credential').length, 1)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('声音恢复立即调用SDK保留用户手势，在途防重复且失败只提示播放故障', async () => {
+  const permission = deferred()
+  let fail = true
+  const s = await setup(undefined, {
+    playbackAllowed: false,
+    playback: async () => {
+      await permission.promise
+      if (fail) throw new Error('synthetic SDK message with secret=must-not-display')
+    },
+  })
+  try {
+    await s.state.joinVoiceRoom(target())
+    s.state.voiceError.value = '独立连接反馈'
+    const resume = s.state.resumeVoiceAudio()
+    assert.equal(s.rooms[0].playbackCalls, 1)
+    assert.equal(s.state.audioPlaybackBusy.value, true)
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.rooms[0].playbackCalls, 1)
+    permission.resolve()
+    await resume
+    assert.match(s.state.audioPlaybackError.value, /声音播放未确认/)
+    assert.equal(s.state.audioPlaybackError.value.includes('secret'), false)
+    assert.equal(s.state.voiceError.value, '独立连接反馈')
+    assert.equal(s.state.audioPlaybackBlocked.value, true)
+    assert.equal(s.state.audioPlaybackBusy.value, false)
+    fail = false
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.state.audioPlaybackBlocked.value, false)
+    assert.equal(s.state.audioPlaybackError.value, '')
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('SDK恢复调用成功但实际播放状态仍被阻止不能宣称已经可播放', async () => {
+  const s = await setup(undefined, { playbackAllowed: false, playbackAfterResume: false })
+  try {
+    await s.state.joinVoiceRoom(target())
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.state.audioPlaybackBlocked.value, true)
+    assert.match(s.state.audioPlaybackError.value, /仍未确认/)
+    assert.equal(s.state.phase.value, 'connected')
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('旧房间播放恢复迟到成功或失败不能覆盖新房间，旧SDK播放事件也失效', async () => {
+  for (const rejected of [true, false]) {
+    const wait = deferred()
+    const s = await setup(undefined, {
+      playbackAllowed: false,
+      playback: (room) => (room === s.rooms[0] ? wait.promise : undefined),
+    })
+    try {
+      await s.state.joinVoiceRoom(target('1'))
+      const old = s.rooms[0],
+        callback = old.handlers.get('AudioPlaybackStatusChanged')
+      const resume = s.state.resumeVoiceAudio()
+      await s.state.joinVoiceRoom(target('2'))
+      await s.state.resumeVoiceAudio()
+      if (rejected) wait.reject(new Error('old playback failure'))
+      else wait.resolve()
+      await resume
+      old.canPlaybackAudio = false
+      callback()
+      assert.equal(s.state.connectedVoice.value.id, '2')
+      assert.equal(s.state.audioPlaybackBlocked.value, false)
+      assert.equal(s.state.audioPlaybackBusy.value, false)
+      assert.equal(s.state.audioPlaybackError.value, '')
+      assert.deepEqual(s.rooms[1].microphoneCalls, [])
+    } finally {
+      await s.dispose()
+    }
+  }
+})
+
+test('声音恢复在重连/闲置时不调用SDK，离开清除播放状态', async () => {
+  const s = await setup(undefined, { playbackAllowed: false })
+  try {
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.rooms.length, 0)
+    await s.state.joinVoiceRoom(target())
+    const room = s.rooms[0]
+    room.emit('Reconnecting')
+    await s.state.resumeVoiceAudio()
+    assert.equal(room.playbackCalls, 0)
+    room.canPlaybackAudio = true
+    room.emit('Reconnected')
+    assert.equal(s.state.audioPlaybackBlocked.value, false)
+    room.canPlaybackAudio = false
+    room.emit('AudioPlaybackStatusChanged')
+    assert.equal(s.state.audioPlaybackBlocked.value, true)
+    await s.state.leaveVoiceRoom()
+    assert.equal(s.state.audioPlaybackBlocked.value, false)
+    assert.equal(s.state.audioPlaybackError.value, '')
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('听众恢复收听无需发布权，授权已失效则断开旧SDK且不调用播放', async () => {
+  let current = true
+  const s = await setup(undefined, {
+    playbackAllowed: false,
+    controlledPolicy: { enabled: true, current: () => current, canPublish: () => false },
+  })
+  try {
+    await s.state.joinVoiceRoom({ ...target(), controlled: true })
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.rooms[0].playbackCalls, 1)
+    assert.deepEqual(s.rooms[0].microphoneCalls, [])
+    current = false
+    await s.state.resumeVoiceAudio()
+    assert.equal(s.rooms[0].playbackCalls, 1)
+    assert.equal(s.state.phase.value, 'idle')
+    assert.match(s.state.voiceError.value, /授权已变化/)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('取消订阅及离开对每个真实附着元素暂停并解除MediaStream，未挂载元素也清理', async () => {
+  const s = await setup()
+  const removed = [],
+    pauses = []
+  const element = (id) => ({
+    srcObject: { synthetic: id },
+    parentElement: null,
+    pause() {
+      pauses.push(id)
+    },
+    remove() {
+      removed.push(id)
+    },
+  })
+  const a = element('a'),
+    b = element('b')
+  try {
+    await s.state.joinVoiceRoom(target())
+    const room = s.rooms[0]
+    room.emit('TrackSubscribed', { kind: 'audio', attach: () => a })
+    room.emit('TrackSubscribed', { kind: 'audio', attach: () => b })
+    room.emit('TrackUnsubscribed', { detach: () => [a] })
+    assert.equal(a.srcObject, null)
+    assert.deepEqual(pauses, ['a'])
+    await s.state.leaveVoiceRoom()
+    assert.equal(b.srcObject, null)
+    assert.deepEqual(pauses, ['a', 'b'])
+    assert.deepEqual(removed, ['a', 'b'])
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('SDK在取消订阅事件前已detach仍回收本人元素，不等待整个房间断开', async () => {
+  const s = await setup()
+  let removed = 0,
+    paused = 0
+  const element = {
+    srcObject: { synthetic: true },
+    parentElement: null,
+    pause() {
+      paused++
+    },
+    remove() {
+      removed++
+    },
+  }
+  const track = { kind: 'audio', attach: () => element, detach: () => [] }
+  try {
+    await s.state.joinVoiceRoom(target())
+    const room = s.rooms[0]
+    room.emit('TrackSubscribed', track)
+    element.srcObject = null // 原生SDK已detach，但没有删除应用附着的DOM。
+    room.emit('TrackUnsubscribed', track)
+    assert.equal(removed, 1)
+    assert.equal(paused, 1)
+    assert.equal(s.state.phase.value, 'connected')
+    await s.state.leaveVoiceRoom()
+    assert.equal(removed, 1)
+    assert.equal(paused, 1)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('单个音频元素释放异常不跳过其余元素或SDK断开，错误不含浏览器内部消息', async () => {
+  const s = await setup()
+  let secondPaused = false,
+    firstRemoved = false
+  const first = {
+    srcObject: {},
+    pause() {
+      throw new Error('synthetic private details')
+    },
+    remove() {
+      firstRemoved = true
+    },
+  }
+  const second = {
+    srcObject: {},
+    pause() {
+      secondPaused = true
+    },
+    remove() {},
+  }
+  try {
+    await s.state.joinVoiceRoom(target())
+    const room = s.rooms[0]
+    room.emit('TrackSubscribed', { kind: 'audio', attach: () => first })
+    room.emit('TrackSubscribed', { kind: 'audio', attach: () => second })
+    await s.state.leaveVoiceRoom()
+    assert.equal(first.srcObject, null)
+    assert.equal(firstRemoved, true)
+    assert.equal(secondPaused, true)
+    assert.equal(second.srcObject, null)
+    assert.equal(room.disconnects, 1)
+    assert.match(s.state.voiceError.value, /释放未确认/)
+    assert.equal(s.state.voiceError.value.includes('private'), false)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test('授权失效触发的旧断开迟到不能污染新房间播放或设备反馈', async () => {
+  for (const action of ['resumeVoiceAudio', 'toggleMicrophone']) {
+    let current = true
+    const stop = deferred()
+    const s = await setup(undefined, {
+      controlledPolicy: { enabled: true, current: () => current, canPublish: () => false },
+      disconnect: (room) => (room === s.rooms[0] ? stop.promise : undefined),
+    })
+    try {
+      await s.state.joinVoiceRoom({ ...target('1'), controlled: true })
+      current = false
+      const revoked = s.state[action]()
+      await until(() => s.rooms[0].disconnects === 1)
+      current = true
+      await s.state.joinVoiceRoom({ ...target('2'), controlled: true })
+      s.state.voiceError.value = '新房间反馈'
+      stop.resolve()
+      await revoked
+      assert.equal(s.state.connectedVoice.value.id, '2')
+      assert.equal(s.state.voiceError.value, '新房间反馈')
+    } finally {
+      stop.resolve()
+      await s.dispose()
+    }
+  }
+})
+
+test('SDK加载与媒体连接错误不向页面暴露原始令牌或地址', async () => {
+  for (const options of [
+    { sdkFailure: true },
+    {
+      connect: () => {
+        throw new Error('wss://private.invalid/rtc?access_token=synthetic-secret')
+      },
+    },
+  ]) {
+    const s = await setup(undefined, options)
+    try {
+      await s.state.joinVoiceRoom(target())
+      assert.match(s.state.voiceError.value, options.sdkFailure ? /组件加载失败/ : /媒体连接未建立/)
+      assert.equal(s.state.voiceError.value.includes('private'), false)
+      assert.equal(s.state.voiceError.value.includes('token'), false)
+      assert.equal(s.state.connectedVoice.value, null)
+      assert.equal(s.state.phase.value, 'idle')
+    } finally {
+      await s.dispose()
+    }
+  }
+})
+
+test('标准麦克风故障名称给出可操作提示，不输出SDK原始细节', async () => {
+  for (const [name, expected] of [
+    ['NotAllowedError', /权限被拒绝/],
+    ['NotFoundError', /未找到/],
+    ['NotReadableError', /暂不可读取/],
+    ['UnknownError', /状态未确认/],
+  ]) {
+    const s = await setup(undefined, {
+      microphone: () => {
+        throw Object.assign(new Error('private SDK token=fixture'), { name })
+      },
+    })
+    try {
+      await s.state.joinVoiceRoom(target())
+      await s.state.toggleMicrophone()
+      assert.match(s.state.voiceError.value, expected)
+      assert.equal(s.state.voiceError.value.includes('private'), false)
+      assert.equal(s.state.microphoneEnabled.value, false)
+    } finally {
+      await s.dispose()
+    }
+  }
+})
+
+test('旧连接失败后等待SDK断开，迟到错误不能覆盖同账号新房间', async () => {
+  const stop = deferred()
+  const s = await setup(undefined, {
+    connect: (room) => {
+      if (room === s.rooms[0]) throw new Error('old connection failed')
+    },
+    disconnect: (room) => (room === s.rooms[0] ? stop.promise : undefined),
+  })
+  try {
+    const first = s.state.joinVoiceRoom(target('1'))
+    await until(() => s.rooms[0]?.disconnects === 1)
+    await s.state.joinVoiceRoom(target('2'))
+    s.state.voiceError.value = '新房间反馈'
+    stop.resolve()
+    await first
+    assert.equal(s.state.connectedVoice.value.id, '2')
+    assert.equal(s.state.voiceError.value, '新房间反馈')
+  } finally {
+    stop.resolve()
+    await s.dispose()
+  }
 })
