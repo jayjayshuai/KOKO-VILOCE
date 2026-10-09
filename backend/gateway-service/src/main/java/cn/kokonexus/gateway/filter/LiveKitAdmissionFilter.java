@@ -23,7 +23,14 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
 
     /** 仅这两条固定路由，编码别名不能绕过核验。 */
     private static final Set<String> ROUTES = Set.of("livekit-signal", "livekit-validate");
-    /** 站点内部路由基址，SDK会自动追加/rtc及/rtc/validate。 */ private static final String BASE = "/api/media/livekit";
+    /** SDK新旧协议均走相同准入；不可用通配路径扩大为LiveKit管理API代理。 */ private static final String BASE =
+        "/api/media/livekit";
+    /** 精确版本路径，拒绝编码别名、额外段和双斜线。 */ private static final Set<String> SIGNAL_PATHS = Set.of(
+        BASE + "/rtc",
+        BASE + "/rtc/v1"
+    );
+    /** SDK验证失败端点仍要求同一个网站身份和当前媒体凭据。 */ private static final Set<String> VALIDATION_PATHS =
+        Set.of(BASE + "/rtc/validate", BASE + "/rtc/v1/validate");
     /** 不共享认证池，关闭释放；等待上限是每线程数。 */ private final Scheduler worker;
     /** 同源浏览器准入来源白名单，不信任任意Origin/X-Forwarded-Host。 */ private final Set<String> origins;
     /** voice域RPC适配器，不接收客户端身份。 */ private final MediaAdmissionClient client;
@@ -71,8 +78,8 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
         exchange.getResponse().getHeaders().setCacheControl("no-store");
         if (!enabled) return reject(exchange, 503, "MEDIA_ADMISSION_UNAVAILABLE");
         String path = exchange.getRequest().getURI().getRawPath();
-        boolean socket = (BASE + "/rtc").equals(path) && "livekit-signal".equals(route.getId());
-        boolean validation = (BASE + "/rtc/validate").equals(path) && "livekit-validate".equals(route.getId());
+        boolean socket = SIGNAL_PATHS.contains(path) && "livekit-signal".equals(route.getId());
+        boolean validation = VALIDATION_PATHS.contains(path) && "livekit-validate".equals(route.getId());
         if (exchange.getRequest().getMethod() != HttpMethod.GET || (!socket && !validation)) return reject(
             exchange,
             400,

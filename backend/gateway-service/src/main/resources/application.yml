@@ -83,11 +83,11 @@ spring:
                 - Path=/api/assets/**
             - id: livekit-signal
               uri: ${LIVEKIT_SIGNAL_WS_URI:ws://localhost:7880}
-              predicates: [Path=/api/media/livekit/rtc, Method=GET]
+              predicates: ['Path=/api/media/livekit/rtc,/api/media/livekit/rtc/v1', Method=GET]
               filters: [StripPrefix=3]
             - id: livekit-validate
               uri: ${LIVEKIT_SIGNAL_HTTP_URI:http://localhost:7880}
-              predicates: [Path=/api/media/livekit/rtc/validate, Method=GET]
+              predicates: ['Path=/api/media/livekit/rtc/validate,/api/media/livekit/rtc/v1/validate', Method=GET]
               filters: [StripPrefix=3]
           default-filters:
             - AddResponseHeader=X-Content-Type-Options,nosniff

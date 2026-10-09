@@ -87,7 +87,11 @@ class LiveKitAdmissionNetworkTest {
                 false
             );
             var handler = WebHttpHandlerBuilder.webHandler(exchange -> {
-                if (!exchange.getRequest().getURI().getRawPath().equals("/api/media/livekit/rtc")) {
+                if (
+                    !Set.of("/api/media/livekit/rtc", "/api/media/livekit/rtc/v1").contains(
+                        exchange.getRequest().getURI().getRawPath()
+                    )
+                ) {
                     exchange.getResponse().setStatusCode(HttpStatus.NOT_FOUND);
                     return exchange.getResponse().setComplete();
                 }
@@ -129,6 +133,28 @@ class LiveKitAdmissionNetworkTest {
                 assertThat(leaked).isFalse();
                 socket.sendClose(WebSocket.NORMAL_CLOSURE, "done").get(3, TimeUnit.SECONDS);
                 listener.closed.get(3, TimeUnit.SECONDS);
+                var v1Listener = new EchoListener();
+                var v1Socket = browser
+                    .newWebSocketBuilder()
+                    .header("Origin", origin)
+                    .header("Cookie", "koko-nexus-token=synthetic-cookie")
+                    .buildAsync(
+                        URI.create(
+                            "ws://127.0.0.1:" +
+                                gateway.port() +
+                                "/api/media/livekit/rtc/v1?access_token=synthetic-allowed&join_request=synthetic-binary-envelope"
+                        ),
+                        v1Listener
+                    )
+                    .get(5, TimeUnit.SECONDS);
+                v1Socket.sendText("synthetic-v1-frame", true).get(3, TimeUnit.SECONDS);
+                assertThat(v1Listener.message.get(3, TimeUnit.SECONDS)).isEqualTo("synthetic-v1-frame");
+                assertThat(upstreamUri.get()).isEqualTo(
+                    "/rtc/v1?access_token=synthetic-allowed&join_request=synthetic-binary-envelope"
+                );
+                assertThat(leaked).isFalse();
+                v1Socket.sendClose(WebSocket.NORMAL_CLOSURE, "done").get(3, TimeUnit.SECONDS);
+                v1Listener.closed.get(3, TimeUnit.SECONDS);
                 try {
                     browser
                         .newWebSocketBuilder()
@@ -150,7 +176,8 @@ class LiveKitAdmissionNetworkTest {
                         403
                     );
                 }
-                assertThat(upstreamCalls).hasValue(1);
+                // Two admitted protocols reached the actual upstream; a denied request adds no third call.
+                assertThat(upstreamCalls).hasValue(2);
                 var direct = browser.send(
                     HttpRequest.newBuilder(
                         URI.create(

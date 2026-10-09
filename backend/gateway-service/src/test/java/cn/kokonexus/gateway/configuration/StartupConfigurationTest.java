@@ -145,11 +145,17 @@ class StartupConfigurationTest {
         assertEquals("Method=GET", properties.getProperty(prefix + "[2].predicates[1]"));
         assertEquals("asset-service", properties.getProperty(prefix + "[11].id"));
         assertEquals("livekit-signal", properties.getProperty(prefix + "[12].id"));
-        assertEquals("Path=/api/media/livekit/rtc", properties.getProperty(prefix + "[12].predicates[0]"));
+        assertEquals(
+            "Path=/api/media/livekit/rtc,/api/media/livekit/rtc/v1",
+            properties.getProperty(prefix + "[12].predicates[0]")
+        );
         assertEquals("Method=GET", properties.getProperty(prefix + "[12].predicates[1]"));
         assertEquals("StripPrefix=3", properties.getProperty(prefix + "[12].filters[0]"));
         assertEquals("livekit-validate", properties.getProperty(prefix + "[13].id"));
-        assertEquals("Path=/api/media/livekit/rtc/validate", properties.getProperty(prefix + "[13].predicates[0]"));
+        assertEquals(
+            "Path=/api/media/livekit/rtc/validate,/api/media/livekit/rtc/v1/validate",
+            properties.getProperty(prefix + "[13].predicates[0]")
+        );
         assertEquals(
             "${MEDIA_ADMISSION_ENABLED:false}",
             properties.getProperty("koko.gateway.media-admission.enabled")

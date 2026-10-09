@@ -49,6 +49,90 @@ class LiveKitAdmissionFilterTest {
     }
 
     @Test
+    void versionOneUsesSameIdentityJwtPrivacyAndLeaseProofAsLegacySignal() {
+        var client = mock(MediaAdmissionClient.class);
+        when(client.admit(any())).thenReturn(true);
+        try (var gate = filter(client, true)) {
+            var exchange = exchange(
+                "/api/media/livekit/rtc/v1?access_token=" + TOKEN + "&join_request=synthetic-join-request",
+                "42"
+            );
+            var forwarded = new AtomicBoolean();
+            gate.filter(exchange, next ->
+                Mono.fromRunnable(() -> {
+                    forwarded.set(true);
+                    assertThat(next.getRequest().getHeaders().getFirst("Cookie")).isNull();
+                    assertThat(next.getRequest().getHeaders().getFirst("X-Koko-Gateway-Key")).isNull();
+                    assertThat(next.getRequest().getQueryParams().getFirst("join_request")).isEqualTo(
+                        "synthetic-join-request"
+                    );
+                    MediaConnectionProof proof = next.getAttribute(MediaConnectionProof.ATTRIBUTE);
+                    assertThat(proof).isNotNull();
+                })
+            ).block();
+            assertThat(forwarded).isTrue();
+            verify(client).admit(new MediaAdmissionCommand("42", TOKEN));
+        }
+    }
+
+    @Test
+    void versionOneAliasesDuplicatesAndWrongRouteNeverBypassAdmission() {
+        var client = mock(MediaAdmissionClient.class);
+        try (var gate = filter(client, true)) {
+            for (var path : List.of(
+                "/api/media/livekit/rtc%2Fv1",
+                "/api/media/livekit/rtc/v1/extra",
+                "/api/media/livekit/rtc//v1",
+                "/api/media/livekit/rtc/v1?access_token=a&access_token=b"
+            )) {
+                var exchange = exchange(path, "42");
+                gate.filter(exchange, next -> Mono.error(new AssertionError("Unexpected upstream"))).block();
+                assertThat(exchange.getResponse().getStatusCode().is4xxClientError()).isTrue();
+            }
+            var wrongRoute = exchange("/api/media/livekit/rtc/v1?access_token=" + TOKEN, "42");
+            wrongRoute.getAttributes().put(
+                ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR,
+                Route.async()
+                    .id("livekit-validate")
+                    .uri("http://127.0.0.1:45181")
+                    .predicate(ignored -> true)
+                    .build()
+            );
+            gate.filter(wrongRoute, next -> Mono.error(new AssertionError("Unexpected route forwarding"))).block();
+            assertThat(wrongRoute.getResponse().getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void versionOneValidationRechecksUserAndJwtWithoutCreatingSocketProof() {
+        var client = mock(MediaAdmissionClient.class);
+        when(client.admit(any())).thenReturn(true);
+        try (var gate = filter(client, true)) {
+            var exchange = exchange("/api/media/livekit/rtc/v1/validate?access_token=" + TOKEN, "42");
+            exchange.getAttributes().put(
+                ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR,
+                Route.async()
+                    .id("livekit-validate")
+                    .uri("http://127.0.0.1:45181")
+                    .predicate(ignored -> true)
+                    .build()
+            );
+            var reached = new AtomicBoolean();
+            gate.filter(exchange, next ->
+                Mono.fromRunnable(() -> {
+                    reached.set(true);
+                    MediaConnectionProof proof = next.getAttribute(MediaConnectionProof.ATTRIBUTE);
+                    assertThat(proof).isNull();
+                    assertThat(next.getRequest().getHeaders().getFirst("Cookie")).isNull();
+                })
+            ).block();
+            assertThat(reached).isTrue();
+            verify(client).admit(new MediaAdmissionCommand("42", TOKEN));
+        }
+    }
+
+    @Test
     void acceptedSignalBindsServerIdentityAndStripsCookieAndTrustedHeadersBeforeUpstream() {
         var client = mock(MediaAdmissionClient.class);
         when(client.admit(any())).thenReturn(true);
