@@ -7,7 +7,7 @@ spring:
   datasource:
     url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_identity?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${DATABASE_USER:koko}
-    password: ${DATABASE_PASSWORD:koko_local_only}
+    password: ${DATABASE_PASSWORD:}
   flyway:
     table: identity_flyway_schema_history
 
@@ -33,7 +33,7 @@ dubbo:
   registry:
     address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
     username: ${NACOS_USERNAME:nacos}
-    password: ${NACOS_PASSWORD:nacos}
+    password: ${NACOS_PASSWORD:}
     group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
     parameters:
       namespace: ${NACOS_NAMESPACE:}

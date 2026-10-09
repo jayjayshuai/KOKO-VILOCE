@@ -15,7 +15,54 @@ const DEPLOY_TEMPLATES = new Set([
   'deploy/nginx-web.conf',
 ])
 
-export function inspectFile(filename, source, privateHosts = []) {
+/** 配置支持未加引号、JSON键和短密码；只输出规则，不输出值。 */
+function configurationCredentials(filename, source, fixture, currentConfiguration) {
+  const config = /(?:^|\/)\.env(?:\.|$)/.test(filename) || /\.(?:ya?ml|json|properties|toml|ini|cnf)$/i.test(filename)
+  if (!config) return [] // 代码中的中文契约说明交给原有代码字面量规则，不视为配置。
+  const sensitive = (key) =>
+    /(?:password|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|internal[_-]?key)$/i.test(key)
+  const safe = (value) =>
+    !value ||
+    /^(?:replace[-_ ]|<[^>]+>$)/i.test(value) ||
+    (fixture && /^(?:isolated[-_]|synthetic[-_]|unit[-_]|test[-_]|fake[-_]|dummy[-_])/.test(value))
+  const allowedReference = (value) => {
+    const expression = /^\$\{[A-Za-z_][A-Za-z0-9_.-]*(?::([^{}]*))?\}$/.exec(value)
+    if (!expression) return false
+    // 旧提交的公开开发默认值已核对不等于现有凭据；只对当前树禁止再次发布这种默认值。
+    // 历史的直接字面量、令牌、私钥和已知部署信息仍检查，不对整个历史跳过扫描。
+    if (!currentConfiguration) return true
+    const compose = /(?:^|\/)(?:docker-)?compose(?:\.[a-z0-9_-]+)*\.ya?ml$/i.test(filename)
+    return expression[1] === undefined || safe(expression[1]) || (compose && expression[1].startsWith('?'))
+  }
+  if (/\.json$/i.test(filename)) {
+    const unsafe = (item) => {
+      if (Array.isArray(item)) return item.some(unsafe)
+      if (!item || typeof item !== 'object') return false
+      return Object.entries(item).some(([key, value]) =>
+        sensitive(key) && typeof value === 'string' ? !safe(value) && !allowedReference(value) : unsafe(value),
+      )
+    }
+    try {
+      if (unsafe(JSON.parse(source))) return ['configuration-credential-literal']
+    } catch {
+      // 非标准JSON仍检查逐行字面量；本工具不充当配置语法校验器。
+    }
+  }
+  for (const line of source.split(/\r?\n/)) {
+    const assignment = /^\s*(?:export\s+)?(?:["']([A-Za-z_][\w.-]*)["']|([A-Za-z_][\w.-]*))\s*[:=]\s*(.*?)\s*$/.exec(
+      line,
+    )
+    if (!assignment || !sensitive(assignment[1] ?? assignment[2])) continue
+    let raw = assignment[3].replace(/,\s*$/, '').trim()
+    const quoted = /^(["'])(.*?)\1(?:\s+#.*)?$/.exec(raw)
+    raw = quoted ? quoted[2] : raw.replace(/\s+#.*$/, '').trim()
+    if (safe(raw) || allowedReference(raw) || (config && /^(?:null|~)$/i.test(raw))) continue
+    return ['configuration-credential-literal']
+  }
+  return []
+}
+
+export function inspectFile(filename, source, privateHosts = [], currentConfiguration = true) {
   const issues = []
   const normalized = filename.replaceAll('\\', '/')
   const basename = path.posix.basename(normalized)
@@ -46,7 +93,10 @@ export function inspectFile(filename, source, privateHosts = []) {
   if (privateHosts.some((host) => host && source.includes(host))) issues.push('private-deployment-host')
 
   const fixture = /^(?:web\/tests\/|scripts\/tests\/|backend\/[^/]+\/src\/test\/)/.test(normalized)
-  for (const match of source.matchAll(/\b(?:https?|wss?):\/\/([^\s/"'@]+):([^\s/"'@]+)@/g)) {
+  issues.push(...configurationCredentials(normalized, source, fixture, currentConfiguration))
+  for (const match of source.matchAll(
+    /\b(?:https?|wss?|mysql|postgresql|rediss?|mongodb(?:\+srv)?|amqps?):\/\/([^\s/"'@]+):([^\s/"'@]+)@/g,
+  )) {
     // 仅允许明确的拒绝URL测试canary，不允许对测试目录整体跳过密钥扫描。
     if (!(fixture && match[1] === 'user' && match[2] === 'secret')) issues.push('url-credential')
   }
@@ -101,11 +151,18 @@ function entriesFor(mode, refs) {
         const filename = line.slice(separator + 1)
         const [, hash, stage] = header.split(' ')
         if (stage !== '0') throw new Error('unmerged-index')
-        return { hash, filename }
+        return { hash, filename, currentConfiguration: true }
       })
   }
   // 只检查实际待推送对象的可达历史；不读取不会推送的reflog旧孤立提交。
   if (!refs.length) return []
+  const tips = new Set(
+    refs.map((ref) =>
+      git(['rev-parse', '--verify', ref + '^{commit}'])
+        .toString('utf8')
+        .trim(),
+    ),
+  )
   const commits = git(['rev-list', ...refs])
     .toString('utf8')
     .trim()
@@ -122,7 +179,7 @@ function entriesFor(mode, refs) {
         const filename = line.slice(separator + 1)
         const [, type, hash] = header.split(' ')
         if (type !== 'blob') throw new Error('unsupported-tree-entry')
-        return { hash, filename }
+        return { hash, filename, currentConfiguration: tips.has(commit) }
       }),
   )
 }
@@ -163,7 +220,7 @@ export function run(mode = '--staged', pushInput) {
   const contents = blobContents(entries)
   const failures = new Set()
   for (const entry of entries) {
-    for (const issue of inspectFile(entry.filename, contents.get(entry.hash), privateHosts))
+    for (const issue of inspectFile(entry.filename, contents.get(entry.hash), privateHosts, entry.currentConfiguration))
       failures.add(`${JSON.stringify(entry.filename)}: ${issue}`)
   }
   if (failures.size) {

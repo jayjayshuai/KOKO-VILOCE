@@ -6,12 +6,12 @@ spring:
   datasource:
     url: ${DATABASE_URL:jdbc:mysql://localhost:3306/koko_live?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${DATABASE_USER:koko}
-    password: ${DATABASE_PASSWORD:koko_local_only}
+    password: ${DATABASE_PASSWORD:}
   flyway.table: live_flyway_schema_history
   cloud.nacos.discovery:
     server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
     username: ${NACOS_USERNAME:nacos}
-    password: ${NACOS_PASSWORD:nacos}
+    password: ${NACOS_PASSWORD:}
     namespace: ${NACOS_NAMESPACE:}
     # HTTP 实例不得与同名 Dubbo 应用实例混入同一发现列表。
     group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
@@ -24,7 +24,7 @@ dubbo:
   registry:
     address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
     username: ${NACOS_USERNAME:nacos}
-    password: ${NACOS_PASSWORD:nacos}
+    password: ${NACOS_PASSWORD:}
     group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
     parameters.namespace: ${NACOS_NAMESPACE:}
   consumer:

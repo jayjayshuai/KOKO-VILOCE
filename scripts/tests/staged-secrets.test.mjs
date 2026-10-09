@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync, unlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -46,6 +46,45 @@ test('test location never bypasses provider token scanning', () => {
   const token = ['gh', 'p_', 'B'.repeat(40)].join('')
   assert.ok(inspectFile('web/tests/security.test.mjs', token).includes('provider-token'))
   assert.deepEqual(inspectFile('web/tests/auth.test.mjs', "password='isolated-test-password'"), [])
+})
+
+test('unquoted, JSON and short configuration secrets are blocked', () => {
+  const canary = ['unpublished', '-canary'].join('')
+  for (const [filename, source] of [
+    ['.env.example', `KOKO_DB_PASSWORD=${canary}`],
+    ['application.yml', `password: ${canary}`],
+    ['application.properties', `spring.data.redis.password=${canary}`],
+    ['config.json', JSON.stringify({ api_key: canary }, null, 2)],
+    ['config.json', JSON.stringify({ nested: { password: canary } })],
+    ['application.yml', ['password: ', '1234'].join('')],
+    ['application.yml', `password: \${DATABASE_PASSWORD:${canary}}`],
+  ])
+    assert.ok(inspectFile(filename, source).includes('configuration-credential-literal'))
+  assert.deepEqual(inspectFile('application.yml', 'password: ${DATABASE_PASSWORD:}'), [])
+  assert.deepEqual(inspectFile('.env.example', 'KOKO_DB_PASSWORD=replace-with-a-random-password'), [])
+  assert.deepEqual(inspectFile('application.yml', 'api-key: "${API_KEY}" # injected privately'), [])
+  assert.deepEqual(inspectFile('compose.yml', 'DATABASE_PASSWORD: ${DB_PASSWORD:?required}'), [])
+  assert.ok(
+    inspectFile('application.yml', 'password: ${DB_PASSWORD:?not-a-Spring-fail-fast}').includes(
+      'configuration-credential-literal',
+    ),
+  )
+  assert.deepEqual(inspectFile('web/src/api.ts', 'password: input.password'), [])
+  assert.deepEqual(inspectFile('backend/demo/src/test/resources/application.yml', 'password: synthetic-only'), [])
+  for (const scheme of ['mysql', 'redis', 'mongodb+srv', 'amqp']) {
+    const connection = [scheme, '://alice:', canary, '@example.invalid'].join('')
+    assert.ok(inspectFile('application.yml', connection).includes('url-credential'))
+  }
+})
+
+test('business YAML has no built-in database or middleware password fallback', () => {
+  for (const service of ['asset', 'chat', 'community', 'gateway', 'identity', 'live', 'notification', 'voice']) {
+    const filename = path.join(workspace, 'backend', service + '-service', 'src/main/resources/application.yml')
+    const source = readFileSync(filename, 'utf8')
+    for (const match of source.matchAll(/\$\{(?:DATABASE_PASSWORD|NACOS_PASSWORD):([^}]*)\}/g)) {
+      assert.equal(match[1], '', service + ' must inject passwords privately, not use a built-in fallback')
+    }
+  }
 })
 
 test('URL credentials only have an exact synthetic rejection fixture exception', () => {
@@ -150,4 +189,26 @@ test('actual deleted historical secret stays blocked and non-HEAD push cannot by
   const outgoing = scan(directory, '--push', `refs/heads/other ${secretCommit} refs/heads/other ${'0'.repeat(40)}\n`)
   assert.equal(outgoing.status, 1)
   assert.ok(outgoing.stderr.includes('provider-token'))
+})
+
+test('new config defaults are blocked on staged/pushed tips without treating older public defaults as live passwords', () => {
+  const directory = repository()
+  const canary = ['historic', '-public-development-canary'].join('')
+  writeFileSync(path.join(directory, 'application.yml'), `password: \${DATABASE_PASSWORD:${canary}}`)
+  git(directory, ['add', 'application.yml'])
+  assert.equal(scan(directory, '--staged').status, 1)
+  git(directory, ['commit', '-q', '-m', 'synthetic historical development default'])
+  const previous = git(directory, ['rev-parse', 'HEAD'])
+  assert.equal(scan(directory, '--history').status, 1)
+  writeFileSync(path.join(directory, 'application.yml'), 'password: ${DATABASE_PASSWORD:}')
+  git(directory, ['add', 'application.yml'])
+  assert.equal(scan(directory, '--staged').status, 0)
+  git(directory, ['commit', '-q', '-m', 'remove synthetic development fallback'])
+  assert.equal(scan(directory, '--history').status, 0)
+  const current = git(directory, ['rev-parse', 'HEAD'])
+  assert.equal(scan(directory, '--push', `refs/heads/main ${current} refs/heads/main ${previous}\n`).status, 0)
+  assert.equal(
+    scan(directory, '--push', `refs/heads/rollback ${previous} refs/heads/rollback ${'0'.repeat(40)}\n`).status,
+    1,
+  )
 })

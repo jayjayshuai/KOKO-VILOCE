@@ -26,7 +26,7 @@ spring:
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
         username: ${NACOS_USERNAME:nacos}
-        password: ${NACOS_PASSWORD:nacos}
+        password: ${NACOS_PASSWORD:}
         namespace: ${NACOS_NAMESPACE:}
         # HTTP 发现与 Dubbo 应用实例分组隔离，避免 lb 路由选择 Triple 端口。
         group: ${NACOS_HTTP_GROUP:${NACOS_GROUP:KOKO_NEXUS_PROD}_HTTP}
@@ -100,7 +100,7 @@ dubbo:
   registry:
     address: nacos://${NACOS_SERVER_ADDR:localhost:8848}
     username: ${NACOS_USERNAME:nacos}
-    password: ${NACOS_PASSWORD:nacos}
+    password: ${NACOS_PASSWORD:}
     group: ${NACOS_GROUP:KOKO_NEXUS_PROD}
     parameters:
       namespace: ${NACOS_NAMESPACE:}
