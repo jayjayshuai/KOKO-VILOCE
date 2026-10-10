@@ -1,5 +1,8 @@
 /** 阶段/生产同源入口；开发代理不改变用户侧会话存储方式。 */
-export const apiBaseUrl = (import.meta.env.VITE_API_BASE || '/api').replace(/\/+$/, '')
+export const apiBaseUrl = (import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? '/koko-api' : '/api')).replace(
+  /\/+$/,
+  '',
+)
 
 export class ApiRequestError extends Error {
   constructor(

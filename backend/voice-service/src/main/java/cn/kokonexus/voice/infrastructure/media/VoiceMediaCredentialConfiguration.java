@@ -17,7 +17,8 @@ public class VoiceMediaCredentialConfiguration {
             "koko.voice.media-plan-enabled",
             "koko.voice.binding-admission-enabled",
             "koko.voice.signal-admission-enabled",
-            "koko.voice.media-retirement.enabled"
+            "koko.voice.media-retirement.enabled",
+            "koko.voice.session-reaper.enabled"
         ))
             if (!environment.getProperty(key, Boolean.class, false)) throw new IllegalStateException(
                 "受控凭据需先配置完整成员、绑定准入及退场依赖"

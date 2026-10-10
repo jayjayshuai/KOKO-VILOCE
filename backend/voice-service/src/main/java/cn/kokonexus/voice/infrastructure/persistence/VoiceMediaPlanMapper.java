@@ -7,6 +7,8 @@ import org.apache.ibatis.annotations.*;
 /** 房间锁先于绑定锁；任务领取是独立短事务，值参数绑定，复杂CAS在XML。 */
 @Mapper
 public interface VoiceMediaPlanMapper {
+    /** 非锁定有界发现，随后事务代理锁房间并重新核验；cursor避免坏房间饿死后续房间。 */
+    List<Long> expiredMemberRooms(@Param("after") long after, @Param("limit") int limit);
     List<Binding> activeBindings(@Param("room") long room);
     Binding binding(@Param("room") long room, @Param("user") long user);
     /** 当前最多100名有效成员批量当前读，避免每次快照N+1。 */

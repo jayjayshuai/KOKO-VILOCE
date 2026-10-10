@@ -102,15 +102,23 @@ public class AuthController {
         String email,
         @io.swagger.v3.oas.annotations.media.Schema(description = "登录密码，仅输入使用，禁止日志输出")
         @Size(min = 10, max = 72)
+        @NotBlank
         String password,
         @io.swagger.v3.oas.annotations.media.Schema(description = "公开用户名，用于精确查询")
         @Pattern(regexp = "[a-zA-Z0-9_]{3,32}")
+        @NotBlank
         String handle,
         @io.swagger.v3.oas.annotations.media.Schema(description = "用户公开显示名称")
         @NotBlank
         @Size(max = 80)
         String displayName
-    ) {}
+    ) {
+        /** record默认文本会泄漏密码/邮箱，序列化与访问器保持原契约。 */
+        @Override
+        public String toString() {
+            return "RegisterRequest[redacted]";
+        }
+    }
 
     /** gateway-service：请求契约；字段校验以公开接口约束为准。 */
     public record LoginRequest(
@@ -121,7 +129,13 @@ public class AuthController {
         @io.swagger.v3.oas.annotations.media.Schema(description = "登录密码，仅输入使用，禁止日志输出")
         @NotBlank
         String password
-    ) {}
+    ) {
+        /** 登录输入不得出现在框架或诊断日志的对象文本中。 */
+        @Override
+        public String toString() {
+            return "LoginRequest[redacted]";
+        }
+    }
 
     /** gateway-service：AuthResponse 领域类型；字段单位、状态及可空性见各属性说明。 */
     public record AuthResponse(
@@ -130,5 +144,11 @@ public class AuthController {
         String tokenValue,
         @io.swagger.v3.oas.annotations.media.Schema(description = "令牌有效期，秒") long expiresIn,
         @io.swagger.v3.oas.annotations.media.Schema(description = "用户公开响应投影") UserIdentity user
-    ) {}
+    ) {
+        /** 会话令牌只交给认证响应，禁止对象文本复制到日志。 */
+        @Override
+        public String toString() {
+            return "AuthResponse[redacted]";
+        }
+    }
 }

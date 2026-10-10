@@ -52,4 +52,25 @@ class VoiceInteractionServiceTest {
         ).isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(mapper);
     }
+
+    @Test
+    void backgroundReapingRefusesDisabledCoreAndIgnoresClosedOrLegacyRooms() {
+        var disabled = new VoiceInteractionService(mapper, false, mock(VoiceMediaPlanRecorder.class));
+        assertThatThrownBy(() -> disabled.reapExpiredMembers(1)).isInstanceOf(
+            cn.kokonexus.common.api.ExternalDependencyUnavailableException.class
+        );
+        verifyNoInteractions(mapper);
+        var enabled = new VoiceInteractionService(mapper, true, mock(VoiceMediaPlanRecorder.class));
+        assertThatThrownBy(() -> enabled.reapExpiredMembers(0)).isInstanceOf(IllegalArgumentException.class);
+        var room = new cn.kokonexus.voice.domain.VoiceRoom();
+        room.setStatus("CLOSED");
+        room.setControlMode("CONTROLLED");
+        when(mapper.lockRoom(1)).thenReturn(room);
+        enabled.reapExpiredMembers(1);
+        room.setStatus("OPEN");
+        room.setControlMode("LEGACY");
+        enabled.reapExpiredMembers(1);
+        verify(mapper, never()).activeMembers(anyLong());
+        verify(mapper, never()).databaseNow();
+    }
 }

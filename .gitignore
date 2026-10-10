@@ -18,9 +18,12 @@ __pycache__/
 # 部署目录积累了隔离运行证据、备份与凭据；仅提交可审查的源码/模板。
 /deploy/*
 !/deploy/compose.production.yml
+!/deploy/compose.tls.yml
 !/deploy/edge-locations.conf
 !/deploy/livekit.yaml
 !/deploy/nginx-web.conf
+!/deploy/nginx-tls.conf
+!/deploy/renew-ip-certificate.py
 !/deploy/.dockerignore
 !/deploy/minio-koko-policy.json
 !/deploy/Dockerfile.java

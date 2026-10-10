@@ -28,10 +28,15 @@ public class VoiceMediaPlanMysqlCheck {
         String url = System.getenv("VOICE_MEDIA_JDBC"),
             user = System.getenv("VOICE_MEDIA_USER");
         check(
-            url != null && url.matches("jdbc:mysql://127\\.0\\.0\\.1:33079/koko_voice_media_check_20261006\\?.+"),
+            url != null &&
+                url.matches("jdbc:mysql://127\\.0\\.0\\.1:33079/koko_voice_media_check_202610(?:06|10)\\?.+"),
             "Fixed local isolated schema required"
         );
-        check("koko_voice_media_check_20261006".equals(user), "Schema-only lab account required");
+        check(
+            List.of("koko_voice_media_check_20261006", "koko_voice_media_check_20261010").contains(user) &&
+                url.startsWith("jdbc:mysql://127.0.0.1:33079/" + user + "?"),
+            "Exact schema-only lab account required"
+        );
         var source = new DriverManagerDataSource(url, user, System.getenv("VOICE_MEDIA_PASSWORD"));
         jdbc = new JdbcTemplate(source);
         check(jdbc.queryForObject("SELECT VERSION()", String.class).startsWith("8.4."), "Actual MySQL8.4 required");
@@ -48,7 +53,7 @@ public class VoiceMediaPlanMysqlCheck {
             .table("voice_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 4, "Fresh V1-V4 required");
+        check(flyway.migrate().migrationsExecuted == 5, "Fresh V1-V5 required");
         flyway.validate();
         var factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(source);
@@ -85,7 +90,7 @@ public class VoiceMediaPlanMysqlCheck {
         );
         check(!publish(2) && jobs() == 1, "Muted seat is not publish grant");
         System.out.println(
-            "PASS MEDIA_SQL_1 actual V1-V4/FKs/scope account/join/opaque seat generation/same transaction"
+            "PASS MEDIA_SQL_1 actual V1-V5/FKs/scope account/join/opaque seat generation/same transaction"
         );
 
         String muted = identity(2),
@@ -202,8 +207,81 @@ public class VoiceMediaPlanMysqlCheck {
         jdbc.update(
             "UPDATE voice_room_member SET lease_until=TIMESTAMPADD(SECOND,-1,CURRENT_TIMESTAMP(3)) WHERE room_id=9301 AND user_id=3"
         );
-        core.snapshot(1, ROOM);
-        check(generation(3) == 2, "Explicit expiry fixture did not retire identity");
+        check(media.expiredMemberRooms(0, 4).equals(List.of(ROOM)), "Background expired-room discovery missing");
+        String scanSql = sql
+            .getSqlSessionFactory()
+            .getConfiguration()
+            .getMappedStatement("cn.kokonexus.voice.infrastructure.persistence.VoiceMediaPlanMapper.expiredMemberRooms")
+            .getBoundSql(Map.of("after", 0L, "limit", 4))
+            .getSql();
+        check(
+            jdbc
+                .queryForList("EXPLAIN " + scanSql, 0L, 4)
+                .stream()
+                .anyMatch(row -> "idx_voice_expired_members".equals(row.get("key"))),
+            "Real expired lease index not selected"
+        );
+        long beforeExpiryJobs = jobs();
+        String beforeExpiryVersion = version();
+        jdbc.execute(
+            "CREATE TRIGGER synthetic_fail_reap_audit BEFORE INSERT ON voice_room_action FOR EACH ROW BEGIN IF NEW.command_type='EXPIRE' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic reap rollback'; END IF; END"
+        );
+        try {
+            new cn.kokonexus.voice.infrastructure.media.VoiceSessionReaper(
+                media,
+                core,
+                true,
+                true,
+                true,
+                4,
+                5000
+            ).tick();
+            check(
+                generation(3) == 1 && jobs() == beforeExpiryJobs && version().equals(beforeExpiryVersion),
+                "Background audit failure did not roll back binding/version/job"
+            );
+            check(
+                "ACTIVE".equals(
+                    jdbc.queryForObject(
+                        "SELECT member_state FROM voice_room_member WHERE room_id=9301 AND user_id=3",
+                        String.class
+                    )
+                ),
+                "Failed background expiry left partial member state"
+            );
+        } finally {
+            jdbc.execute("DROP TRIGGER synthetic_fail_reap_audit");
+        }
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var barrier = new CyclicBarrier(2);
+            var futures = new ArrayList<Future<?>>();
+            for (int i = 0; i < 2; i++) futures.add(
+                pool.submit(() -> {
+                    barrier.await();
+                    new cn.kokonexus.voice.infrastructure.media.VoiceSessionReaper(
+                        media,
+                        core,
+                        true,
+                        true,
+                        true,
+                        4,
+                        5000
+                    ).tick();
+                    return null;
+                })
+            );
+            for (var future : futures) future.get(10, TimeUnit.SECONDS);
+        }
+        check(
+            generation(3) == 2 &&
+                jobs() == beforeExpiryJobs + 1 &&
+                Long.parseLong(version()) == Long.parseLong(beforeExpiryVersion) + 1,
+            "Concurrent background expiry duplicated version/retirement"
+        );
+        check(media.expiredMemberRooms(0, 4).isEmpty(), "Completed expiry remains in scan");
+        System.out.println(
+            "PASS MEDIA_SQL_BACKGROUND_V5 indexed autonomous reaping/audit rollback/two-worker idempotence; no page snapshot used"
+        );
         closure.begin(1, ROOM);
         long closingJobs = jobs();
         closure.begin(1, ROOM);

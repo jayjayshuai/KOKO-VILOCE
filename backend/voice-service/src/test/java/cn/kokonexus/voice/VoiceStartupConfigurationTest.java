@@ -41,6 +41,10 @@ class VoiceStartupConfigurationTest {
             "${VOICE_MEDIA_RETIREMENT_ENABLED:false}",
             properties.getProperty("koko.voice.media-retirement.enabled")
         );
+        assertEquals(
+            "${VOICE_SESSION_REAPER_ENABLED:false}",
+            properties.getProperty("koko.voice.session-reaper.enabled")
+        );
         properties.forEach((key, value) -> values.put(key.toString(), value));
         var environment = new MockEnvironment();
         environment.getPropertySources().addFirst(new MapPropertySource("actual-voice-yaml", values));

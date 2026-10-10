@@ -1,0 +1,23 @@
+# 单独选择此文件才要求TLS目录，避免未使用TLS时Compose仍解析profile内必填变量。
+name: koko-nexus-tls
+services:
+  tls-edge:
+    image: nginx:1.29-alpine
+    container_name: koko-nexus-tls-edge
+    restart: unless-stopped
+    networks: [platform]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run]
+    ports: ["443:443/tcp"]
+    volumes:
+      - ${KOKO_TLS_CONFIG_FILE:?KOKO_TLS_CONFIG_FILE is required}:/etc/nginx/conf.d/default.conf:ro
+      - ${KOKO_TLS_SERVING_DIR:?KOKO_TLS_SERVING_DIR is required}:/etc/koko-tls:ro
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+networks:
+  platform:
+    external: true
+    name: infra_default

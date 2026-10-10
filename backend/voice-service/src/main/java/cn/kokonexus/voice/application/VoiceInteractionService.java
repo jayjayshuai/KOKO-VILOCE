@@ -79,6 +79,16 @@ public class VoiceInteractionService {
         if (!enabled) throw new ExternalDependencyUnavailableException("语音房互动核心尚未开放", null);
     }
 
+    /** 后台仅回收当前OPEN受控房间；与用户命令使用同一房间锁/审计/媒体退场事务。 */
+    @Transactional(timeout = 3)
+    public void reapExpiredMembers(long roomId) {
+        requireEnabled();
+        if (roomId <= 0) throw new IllegalArgumentException("回收房间标识无效");
+        VoiceRoom room = mapper.lockRoom(roomId);
+        if (room == null || !"OPEN".equals(room.getStatus()) || !"CONTROLLED".equals(room.getControlMode())) return;
+        prepare(room);
+    }
+
     /** 只返回候选开关，媒体准备度不能由配置伪造为true。 */
     public Capabilities features() {
         return new Capabilities(enabled, false, null, false);

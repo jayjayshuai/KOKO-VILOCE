@@ -40,7 +40,7 @@ public final class VoiceInteractionMysqlCheck {
             .table("voice_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 4, "Fresh V1-V4 required");
+        check(flyway.migrate().migrationsExecuted == 5, "Fresh V1-V5 required");
         flyway.validate();
         var bean = new MybatisSqlSessionFactoryBean();
         bean.setDataSource(source);

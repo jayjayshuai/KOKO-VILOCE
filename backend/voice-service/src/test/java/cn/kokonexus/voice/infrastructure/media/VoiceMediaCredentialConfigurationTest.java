@@ -17,7 +17,8 @@ class VoiceMediaCredentialConfigurationTest {
             "koko.voice.media-plan-enabled",
             "koko.voice.binding-admission-enabled",
             "koko.voice.signal-admission-enabled",
-            "koko.voice.media-retirement.enabled"
+            "koko.voice.media-retirement.enabled",
+            "koko.voice.session-reaper.enabled"
         ))
             env.withProperty(key, "true");
         env.withProperty("livekit.public-url", "wss://app.example.invalid/koko-api/media/livekit");

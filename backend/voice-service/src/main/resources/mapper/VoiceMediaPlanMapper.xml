@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="cn.kokonexus.voice.infrastructure.persistence.VoiceMediaPlanMapper">
+    <select id="expiredMemberRooms" resultType="java.lang.Long" timeout="2">
+        SELECT DISTINCT m.room_id
+        FROM voice_room_member m FORCE INDEX (idx_voice_expired_members)
+        INNER JOIN voice_room r ON r.id=m.room_id
+        WHERE m.member_state='ACTIVE' AND m.lease_until&lt;=CURRENT_TIMESTAMP(3)
+          AND m.room_id&gt;#{after} AND r.control_mode='CONTROLLED' AND r.status='OPEN'
+        ORDER BY m.room_id LIMIT #{limit}
+    </select>
     <select id="activeBindings" resultType="cn.kokonexus.voice.domain.VoiceMediaPlan$Binding" timeout="2">
         SELECT * FROM voice_media_binding WHERE room_id=#{room} AND binding_state='ACTIVE' ORDER BY user_id LIMIT 101 FOR UPDATE
     </select>

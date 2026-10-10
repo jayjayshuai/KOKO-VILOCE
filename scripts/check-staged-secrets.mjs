@@ -9,10 +9,13 @@ const DEPLOY_TEMPLATES = new Set([
   'deploy/Dockerfile.java',
   'deploy/Dockerfile.web',
   'deploy/compose.production.yml',
+  'deploy/compose.tls.yml',
   'deploy/edge-locations.conf',
   'deploy/livekit.yaml',
   'deploy/minio-koko-policy.json',
   'deploy/nginx-web.conf',
+  'deploy/nginx-tls.conf',
+  'deploy/renew-ip-certificate.py',
 ])
 
 /** 配置支持未加引号、JSON键和短密码；只输出规则，不输出值。 */

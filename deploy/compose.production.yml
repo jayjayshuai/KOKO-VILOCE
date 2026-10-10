@@ -40,7 +40,8 @@ services:
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
-      - "7880:7880/tcp"
+      # API/信令仅供服务器本机和容器内网；公网必须经过Java当前身份/麦位准入。
+      - "127.0.0.1:7880:7880/tcp"
       - "7881:7881/tcp"
       - "7882:7882/udp"
       - "3478:3478/udp"
@@ -137,6 +138,7 @@ services:
       VOICE_MEDIA_RETIREMENT_ENABLED: ${VOICE_MEDIA_RETIREMENT_ENABLED:-false}
       VOICE_BINDING_ADMISSION_ENABLED: ${VOICE_BINDING_ADMISSION_ENABLED:-false}
       VOICE_MEDIA_CREDENTIALS_ENABLED: ${VOICE_MEDIA_CREDENTIALS_ENABLED:-false}
+      VOICE_SESSION_REAPER_ENABLED: ${VOICE_SESSION_REAPER_ENABLED:-false}
       KOKO_GATEWAY_INTERNAL_KEY: ${KOKO_GATEWAY_INTERNAL_KEY:?KOKO_GATEWAY_INTERNAL_KEY is required}
       JAVA_TOOL_OPTIONS: -Xms48m -Xmx144m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
     depends_on:

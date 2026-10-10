@@ -46,7 +46,7 @@ public final class VoiceOwnerMysqlCheck {
             .table("voice_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 4, "Fresh V1-V4 migration required");
+        check(flyway.migrate().migrationsExecuted == 5, "Fresh V1-V5 migration required");
         flyway.validate();
         var bean = new MybatisSqlSessionFactoryBean();
         bean.setDataSource(source);
