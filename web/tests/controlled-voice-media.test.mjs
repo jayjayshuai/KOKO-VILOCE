@@ -110,7 +110,7 @@ async function setup(network = {}) {
   })
   await module.evaluate()
   const scope = vue.effectScope()
-  const state = scope.run(() => module.namespace.default.setup(props, { expose() {} }))
+  const state = scope.run(() => module.namespace.default.setup(props, { expose() {}, emit() {} }))
   await new Promise((resolve) => setImmediate(resolve))
   return {
     props,

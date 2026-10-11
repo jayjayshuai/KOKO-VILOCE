@@ -129,7 +129,7 @@ public final class VoiceInteractionMysqlCheck {
         long claimant = Long.parseLong(request.userId());
         command(1, CommandType.ACCEPT, null, null, request.id(), null);
         check("ON_MIC".equals(service.snapshot(1, ROOM).seats().getFirst().state()), "Apply acceptance failed");
-        command(claimant, CommandType.MUTE, 1, null, null, false);
+        command(1, CommandType.MUTE, 1, null, null, false);
         command(claimant, CommandType.DOWN, 1, null, null, null);
         check("EMPTY".equals(service.snapshot(1, ROOM).seats().getFirst().state()), "Down did not release");
         expect(

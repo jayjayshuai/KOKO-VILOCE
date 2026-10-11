@@ -15,6 +15,7 @@ interface InteractionContext {
   /** 房间ID字符串。 */ roomId: string
   /** 当前账号ID。 */ userId: string
   /** 同账号新登录也改变轮次。 */ sessionRevision: number
+  /** 仅延续已有真实通话的后台核验，不授予新入房或设备操作。 */ keepAlive?: boolean
 }
 /** 一次未知写入的不可变重试事实，不重用新版本/新会话。 */
 type Attempt =
@@ -111,7 +112,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     heartbeat: ReturnType<typeof setInterval> | undefined
   /** 失败读取5/10/20/40/60秒退避，手工刷新和恢复不受此限制。 */ let readFailures = 0,
     nextReadAt = 0
-  const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  const visible = () =>
+    typeof document === 'undefined' || document.visibilityState !== 'hidden' || context.keepAlive === true
   /** 明确新操作的前置读取独占窗口，续约/轮询不能取消它；不代表请求已发送。 */
   const actionPreparing = ref(false)
   const capture = () => ({
@@ -497,6 +499,13 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     if (visible()) onFocus()
     else suspend()
   }
+  const stopBackground = watch(
+    () => context.keepAlive,
+    () => {
+      if (!visible()) suspend()
+    },
+    { flush: 'sync' },
+  )
   if (typeof window !== 'undefined') {
     window.addEventListener('offline', onOffline)
     window.addEventListener('online', onOnline)
@@ -523,6 +532,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     disposed = true
     stop()
     stopAudit()
+    stopBackground()
     if (typeof window !== 'undefined') {
       window.removeEventListener('offline', onOffline)
       window.removeEventListener('online', onOnline)

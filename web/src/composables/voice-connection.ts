@@ -110,6 +110,14 @@ export function useVoiceConnection(
     participantCount.value = 0
     if (!clearAudio() && !disposed) voiceError.value = '音频元素释放未确认，请关闭页面并检查浏览器声音权限。'
     if (old) {
+      // SDK断开可能等待内部互斥；先同步停止本人采集，不等待离房HTTP或媒体信令。
+      for (const publication of old.localParticipant.audioTrackPublications?.values() || []) {
+        try {
+          publication.track?.stop()
+        } catch {
+          voiceError.value = '麦克风释放未确认，请检查浏览器设备状态。'
+        }
+      }
       old.removeAllListeners()
       try {
         await old.disconnect()

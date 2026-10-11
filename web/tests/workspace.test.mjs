@@ -672,6 +672,7 @@ async function app(overrides = {}, authOverrides = {}) {
       './components/WorkspaceShell.vue': { default: {} },
       './components/CommunityMembershipPanel.vue': { default: {} },
       './components/VoiceInteractionPanel.vue': { default: {} },
+      './components/PersistentVoiceCallBar.vue': { default: {} },
     }
   })
   return { ...h, auth, route }

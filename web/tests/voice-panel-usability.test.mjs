@@ -37,7 +37,11 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
   state.fresh.value = false
   state.busy.value = false
   state.pending.value = null
-  state.command = (...args) => writes.push(args)
+  let onCommand = () => {}
+  state.command = (...args) => {
+    onCommand(...args)
+    return writes.push(args)
+  }
   let preflight = async () => {}
   state.load = (...args) => preflight(...args)
   state.prepareAction = async (...args) => {
@@ -51,11 +55,16 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
     './VoiceMediaPlanPanel.vue': { default: {} },
     './ControlledVoiceMediaPanel.vue': { default: {} },
   }
-  const context = vm.createContext({ defineProps: () => props, defineEmits: () => () => {}, confirm: () => true })
+  const context = vm.createContext({
+    defineProps: () => props,
+    defineEmits: () => () => {},
+    defineExpose() {},
+    confirm: () => true,
+  })
   const module = new vm.SourceTextModule(
     ts.transpileModule(
       script +
-        '\nexport { target, showMediaPlan, intent, mySeat, freeSeat, myApplication, execute, requestSpeaking, mediaPanel, arrivalError };',
+        '\nexport { target, showMediaPlan, intent, mySeat, freeSeat, myApplication, execute, requestSpeaking, mediaPanel, arrivalError, pendingAffectsMedia, setMemberSpeaking, leaveRoomPage };',
       {
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       },
@@ -85,6 +94,9 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
     requestSpeaking,
     mediaPanel,
     arrivalError,
+    pendingAffectsMedia,
+    setMemberSpeaking,
+    leaveRoomPage,
   } = module.namespace
   state.snapshot.value = {
     mySessionId: 'synthetic-session',
@@ -185,6 +197,44 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
   await vue.nextTick()
   assert.equal(arrivalError.value, '', '只在实际连接成功后清旧入房失败')
   assert.equal(state.writeError.value, '真实未知写入', '成功连接不能隐去真实未知提交')
+  state.snapshot.value = {
+    ...state.snapshot.value,
+    myRole: 'OWNER',
+    seats: [
+      { seatNo: 1, state: 'ON_MIC', userId: props.userId, muted: false },
+      { seatNo: 2, state: 'ON_MIC', userId: '99', muted: false },
+    ],
+  }
+  state.pending.value = { kind: 'COMMAND', input: { type: 'MUTE', seatNo: 2, value: true } }
+  assert.equal(pendingAffectsMedia.value, false, '禁别人麦不能切断自己的发布')
+  state.pending.value = { kind: 'COMMAND', input: { type: 'MUTE', seatNo: 1, value: true } }
+  assert.equal(pendingAffectsMedia.value, true, '自己的禁麦立即停止旧授权')
+  state.pending.value = { kind: 'COMMAND', input: { type: 'MUTE', seatNo: 8, value: true } }
+  assert.equal(pendingAffectsMedia.value, true, '未知目标保守失效')
+  state.pending.value = { kind: 'COMMAND', input: { type: 'LEAVE' } }
+  assert.equal(pendingAffectsMedia.value, true)
+  state.pending.value = null
+  preflight = async () => {
+    state.snapshot.value = {
+      ...state.snapshot.value,
+      seats: [
+        { seatNo: 2, state: 'ON_MIC', userId: '100', muted: false },
+        { seatNo: 3, state: 'ON_MIC', userId: '99', muted: false },
+      ],
+    }
+  }
+  await setMemberSpeaking('99', false)
+  assert.equal(writes.at(-1)[1].seatNo, 3, '核验后按目标成员定位，不能把旧席位上的新成员禁麦')
+  assert.equal(writes.at(-1)[1].value, true)
+  const order = []
+  mediaPanel.value = { disconnect: async () => order.push('device-stop'), connected: () => false }
+  preflight = async () => order.push('read')
+  onCommand = (type) => {
+    order.push(type)
+    state.snapshot.value = { ...state.snapshot.value, mySessionId: null }
+  }
+  await leaveRoomPage()
+  assert.deepEqual(order, ['device-stop', 'read', 'LEAVE'], '先停止本机媒体，再核验并离房')
 })
 
 test('用户可见说明区分连接和发声，技术进度默认折叠且不宣称媒体未开放', async () => {

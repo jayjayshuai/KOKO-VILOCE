@@ -5,6 +5,8 @@ import { voiceMediaCredentialsApi, type ControlledMediaCredential } from '../ser
 import type { InteractionSnapshot } from '../services/voice-interaction';
 import VoicePlaybackControls from './VoicePlaybackControls.vue';
 import { waitForVoiceMediaRetirement } from '../services/voice-media-preparation';
+import type { ScopedVoiceCallStatus } from '../stores/voice-call';
+const emit = defineEmits<{ state: [value: ScopedVoiceCallStatus] }>();
 const props = defineProps<{
   /** 当前已核验的房间。 */ roomId: string;
   /** 展示标题，不参与授权。 */ roomTitle?: string;
@@ -113,6 +115,21 @@ const {
   audioPlaybackBusy,
   audioPlaybackError,
 } = voice;
+/** 只向常驻条传递实际SDK投影，不传递设备、SDK或凭据。 */
+watch(
+  () => ({
+    roomId: props.roomId,
+    userId: props.userId,
+    sessionRevision: props.sessionRevision,
+    phase: phase.value,
+    microphoneEnabled: microphoneEnabled.value,
+    microphoneBusy: microphoneBusy.value,
+    participantCount: participantCount.value,
+    canToggleMicrophone: phase.value === 'connected' && !!credential.value?.canPublish && grantCurrent(),
+  }),
+  (value) => emit('state', value),
+  { immediate: true },
+);
 async function disconnect() {
   connectRevision++;
   connectionPreparing.value = false;
@@ -250,7 +267,12 @@ onBeforeUnmount(() => {
   credential.value = null;
 });
 /** 房间页只编排一次明确进入；不开放设备或凭据引用给父级。 */
-defineExpose({ connect, disconnect, connected: () => phase.value === 'connected' });
+defineExpose({
+  connect,
+  disconnect,
+  toggleMicrophone: voice.toggleMicrophone,
+  connected: () => phase.value === 'connected',
+});
 </script>
 <template>
   <section aria-label="受控语音连接" class="workspace-card">
@@ -297,7 +319,9 @@ defineExpose({ connect, disconnect, connected: () => phase.value === 'connected'
         >已订阅
         {{ receivedAudioTracks }} 条对方音轨（不等于已听见）。若仍无声，请检查媒体音量、蓝牙输出及声音播放提示。</p
       >
-      <p class="hint">下麦、闭麦或切换页面后可能断开。手机锁屏或切到后台会暂停核验，请保持本页在前台。</p>
+      <p class="hint"
+        >切换站内页面会保留通话。下麦、房主禁麦或授权失效会断开；手机锁屏可能被系统冻结，需要回到页面重新核验。</p
+      >
       <button
         type="button"
         class="primary"

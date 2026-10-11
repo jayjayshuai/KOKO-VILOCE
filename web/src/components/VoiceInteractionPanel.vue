@@ -5,6 +5,7 @@ import VoiceMediaPlanPanel from './VoiceMediaPlanPanel.vue';
 import ControlledVoiceMediaPanel from './ControlledVoiceMediaPanel.vue';
 import type { VoiceCommandType, VoiceCommand, SeatRequest } from '../services/voice-interaction';
 import { arriveInVoiceRoom } from '../services/voice-room-entry';
+import type { ScopedVoiceCallStatus } from '../stores/voice-call';
 const props = defineProps<{
   /** 仅展示用名称快照，权限仍绑定roomId。 */ roomTitle?: string;
   /** 本次操作房间。 */ roomId: string;
@@ -16,8 +17,32 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 不撤销后台未知写入。 */ close: [];
   /** 父页面禁止并行操作。 */ busy: [value: boolean];
+  /** 仅确认离房才清除恢复入口。 */ left: [];
+  /** 实际SDK状态，供常驻条和后台策略使用。 */ 'media-state': [value: ScopedVoiceCallStatus];
 }>();
-const state = useVoiceInteractionWorkspace(props);
+/** 只延续已经连接的后台通话，不是自动入房或开设备许可。 */
+const backgroundEnabled = ref(true),
+  mediaConnected = ref(false);
+const state = useVoiceInteractionWorkspace({
+  get roomId() {
+    return props.roomId;
+  },
+  get userId() {
+    return props.userId;
+  },
+  get sessionRevision() {
+    return props.sessionRevision;
+  },
+  get keepAlive() {
+    return backgroundEnabled.value && mediaConnected.value;
+  },
+});
+function mediaState(value: ScopedVoiceCallStatus) {
+  if (value.roomId !== props.roomId || value.userId !== props.userId || value.sessionRevision !== props.sessionRevision)
+    return;
+  mediaConnected.value = value.phase === 'connected' || value.phase === 'reconnecting';
+  emit('media-state', value);
+}
 const { actions, actionLoading, actionError, loadActions } = state;
 const {
   capabilities,
@@ -49,6 +74,23 @@ const {
   () => fresh.value && !!snapshot.value?.mySessionId && ['OWNER', 'ADMIN'].includes(snapshot.value.myRole || ''),
 );
 const owner = computed(() => fresh.value && !!snapshot.value?.mySessionId && snapshot.value.myRole === 'OWNER');
+/** 保守判定待确认操作是否影响本人媒体；管理明确的其他目标不应切断自己的通话。 */
+const pendingAffectsMedia = computed(() => {
+  const attempt = pending.value;
+  if (!attempt) return false;
+  if (attempt.kind !== 'COMMAND') return true;
+  const input = attempt.input;
+  if (['MUTE', 'KICK', 'LOCK'].includes(input.type)) {
+    const seat = snapshot.value?.seats.find((item) => item.seatNo === input.seatNo);
+    return !seat || seat.userId === props.userId || (!seat.userId && input.type !== 'LOCK');
+  }
+  if (['INVITE', 'PULL'].includes(input.type)) return !input.targetUserId || input.targetUserId === props.userId;
+  if (['ACCEPT', 'REJECT', 'CANCEL'].includes(input.type)) {
+    const request = snapshot.value?.requests.find((item) => item.id === input.seatRequestId);
+    return !request || request.userId === props.userId;
+  }
+  return true;
+});
 /** 高级进度只在用户展开时读取，不为普通通话反复请求后台诊断。 */
 const showMediaPlan = ref(false);
 /** 仅切换使用引导，不授予发布权限，也不自动操作麦克风。 */
@@ -153,8 +195,31 @@ async function execute(
   return command(type, input);
 }
 async function leaveRoomPage() {
+  // 先停止本人媒体，不把等待HTTP回包当成继续采集/播放的理由。
+  await mediaPanel.value?.disconnect();
   await execute('LEAVE');
-  if (!disposed && fresh.value && !pending.value && !snapshot.value?.mySessionId) emit('close');
+  if (!disposed && fresh.value && !pending.value && !snapshot.value?.mySessionId) {
+    emit('left');
+    emit('close');
+  }
+}
+/** 管理操作在核验后按目标成员重新定位席位，不能因换位禁错人。 */
+async function setMemberSpeaking(userId: string, allowed: boolean) {
+  if (disabled.value || !manager.value || (allowed && !owner.value)) return;
+  const scope = [props.roomId, props.userId, props.sessionRevision] as const;
+  if (
+    !(await prepareAction()) ||
+    disabled.value ||
+    !manager.value ||
+    (allowed && !owner.value) ||
+    scope[0] !== props.roomId ||
+    scope[1] !== props.userId ||
+    scope[2] !== props.sessionRevision
+  )
+    return;
+  const seat = snapshot.value?.seats.find((item) => item.state === 'ON_MIC' && item.userId === userId);
+  if (!seat || seat.muted === !allowed) return;
+  return command('MUTE', { seatNo: seat.seatNo, value: !allowed });
 }
 /** 入房也是一次用户明确写入，先读最新能力，失败/换身份不发送。 */
 async function joinRoom() {
@@ -195,6 +260,19 @@ async function requestSpeaking() {
 function canReview(request: SeatRequest) {
   return request.type === 'APPLY' ? manager.value : request.userId === props.userId;
 }
+/** 常驻条只代理本面板，不创建额外SDK。 */
+defineExpose({
+  leave: leaveRoomPage,
+  connect: async () => {
+    await mediaPanel.value?.connect();
+  },
+  disconnect: async () => {
+    await mediaPanel.value?.disconnect();
+  },
+  toggleMicrophone: async () => {
+    await mediaPanel.value?.toggleMicrophone();
+  },
+});
 </script>
 <template>
   <section
@@ -211,7 +289,7 @@ function canReview(request: SeatRequest) {
     >
     <p class="hint">{{ roomTitle || '当前房间' }}</p>
     <p class="hint" role="note"
-      >手机与电脑请用不同账号，保持本页在前台；一端戴耳机，避免回声。加入不会自动打开麦克风。</p
+      >手机与电脑请用不同账号；建议戴耳机，避免回声。支持八个麦位同时发言，加入不会自动打开麦克风。</p
     >
     <div class="voice-sync-status" role="status" aria-live="polite" aria-atomic="true">
       <span v-if="!online">网络已离线，声音连接及新操作已暂停；恢复后请核验房间状态。</span>
@@ -240,9 +318,10 @@ function canReview(request: SeatRequest) {
       :user-id="userId"
       :session-revision="sessionRevision"
       :snapshot="snapshot"
-      :fresh="fresh && online && !pending"
+      :fresh="fresh && online && !pendingAffectsMedia"
       :reading="loading"
       :prepare-connection="prepareAction"
+      @state="mediaState"
     />
     <section v-if="presentation === 'room'" class="room-overview" aria-label="房间成员">
       <div class="workspace-card-heading"
@@ -267,6 +346,26 @@ function canReview(request: SeatRequest) {
             }}{{ member.role === 'OWNER' ? '房主' : member.role === 'ADMIN' ? '房管' : '成员' }}</span
           >
           <small>{{ member.seatNo ? `麦位 ${member.seatNo}` : '听众' }} · 成员身份不代表已连接声音</small>
+          <template
+            v-if="member.seatNo && snapshot?.seats.find((seat) => seat.seatNo === member.seatNo)?.state === 'ON_MIC'"
+          >
+            <small>{{
+              snapshot?.seats.find((seat) => seat.seatNo === member.seatNo)?.muted
+                ? '房间闭麦 · 需房主允许'
+                : '房主已允许发言'
+            }}</small>
+            <button
+              v-if="owner"
+              class="secondary"
+              :disabled="disabled"
+              @click="
+                setMemberSpeaking(member.userId, !!snapshot?.seats.find((seat) => seat.seatNo === member.seatNo)?.muted)
+              "
+              >{{
+                snapshot?.seats.find((seat) => seat.seatNo === member.seatNo)?.muted ? '允许发言' : '禁止发言'
+              }}</button
+            >
+          </template>
         </article></div
       >
     </section>
@@ -284,6 +383,9 @@ function canReview(request: SeatRequest) {
     <button type="button" class="secondary" :disabled="busy || actionPreparing || !online" @click="load()">{{
       loading ? '读取中…' : '刷新房间状态'
     }}</button>
+    <label class="hint"
+      ><input v-model="backgroundEnabled" type="checkbox" />切换浏览器标签页时保留已连接通话（手机系统可能冻结）</label
+    >
     <p v-if="capabilities && !capabilities.enabled" role="status">互动核心尚未开放，不能执行成员或麦位操作。</p>
     <template v-if="capabilities?.enabled">
       <section v-if="presentation !== 'room'" class="voice-guide-step" aria-label="加入房间">
@@ -320,10 +422,14 @@ function canReview(request: SeatRequest) {
         <template v-else>
           <p v-if="!snapshot?.mySessionId">请先完成第 1 步，加入房间。</p>
           <template v-else-if="mySeat">
-            <p v-if="mySeat.muted">你在麦位 {{ mySeat.seatNo }}，但房间发言权限仍关闭。先解除闭麦。</p>
+            <p v-if="mySeat.muted"
+              >你在麦位 {{ mySeat.seatNo }}，房间闭麦中。{{
+                owner ? '允许发言后才能开麦。' : '请等待房主允许发言，你不能自行解除禁麦。'
+              }}</p
+            >
             <p v-else role="status">发言权限已就绪。在声音连接区连接语音，再点击“开启麦克风”。</p>
             <button
-              v-if="mySeat.muted"
+              v-if="mySeat.muted && owner"
               type="button"
               class="primary"
               :disabled="disabled"
@@ -359,9 +465,10 @@ function canReview(request: SeatRequest) {
         :user-id="userId"
         :session-revision="sessionRevision"
         :snapshot="snapshot"
-        :fresh="fresh && online && !pending"
+        :fresh="fresh && online && !pendingAffectsMedia"
         :reading="loading"
         :prepare-connection="prepareAction"
+        @state="mediaState"
       />
       <details @toggle="showMediaPlan = ($event.target as HTMLDetailsElement).open">
         <summary>高级：媒体授权和退场进度</summary>
@@ -480,8 +587,8 @@ function canReview(request: SeatRequest) {
                   ><button
                     type="button"
                     class="secondary"
-                    :disabled="disabled"
-                    @click="execute('MUTE', { seatNo: seat.seatNo, value: !seat.muted })"
+                    :disabled="disabled || (seat.muted && !owner)"
+                    @click="setMemberSpeaking(seat.userId!, seat.muted)"
                     >{{ seat.muted ? '解除闭麦' : '设置闭麦状态' }}</button
                   ><button
                     v-if="manager"

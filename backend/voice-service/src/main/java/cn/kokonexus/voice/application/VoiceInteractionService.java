@@ -456,6 +456,11 @@ public class VoiceInteractionService {
                     "仅本人下麦"
                 );
                 if (type == CommandType.KICK || user != target.getUserId()) hierarchy(actor, target);
+                // 房间闭麦是房主的发布许可，不是客户端麦克风开关；成员/房管不得自行解除房主禁麦。
+                // 下麦、重进或重新申请得到的席位仍默认闭麦，必须由当前房主重新许可。
+                if (type == CommandType.MUTE && Boolean.FALSE.equals(value) && !"OWNER".equals(actor.getRoomRole())) {
+                    throw new ForbiddenOperationException("仅房主可允许成员发言；本人不能解除房间禁麦");
+                }
                 if (type == CommandType.MUTE) seat.setMuted(value);
                 else clear(seat);
                 one(mapper.saveSeat(seat));

@@ -781,6 +781,36 @@ test('标准麦克风故障名称给出可操作提示，不输出SDK原始细�
   }
 })
 
+test('明确断开先同步停止本人采集，不等待SDK网络释放', async () => {
+  const stop = deferred()
+  const s = await setup(undefined, { disconnect: () => stop.promise })
+  let stopped = false
+  try {
+    await s.state.joinVoiceRoom(target('1'))
+    s.rooms[0].localParticipant.audioTrackPublications = new Map([
+      [
+        'audio',
+        {
+          track: {
+            stop() {
+              stopped = true
+            },
+          },
+        },
+      ],
+    ])
+    const leaving = s.state.leaveVoiceRoom()
+    assert.equal(stopped, true)
+    assert.equal(s.state.phase.value, 'idle')
+    assert.equal(s.state.microphoneEnabled.value, false)
+    stop.resolve()
+    await leaving
+  } finally {
+    stop.resolve()
+    await s.dispose()
+  }
+})
+
 test('旧连接失败后等待SDK断开，迟到错误不能覆盖同账号新房间', async () => {
   const stop = deferred()
   const s = await setup(undefined, {

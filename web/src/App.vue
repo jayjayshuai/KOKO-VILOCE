@@ -50,6 +50,7 @@ import type { DiscoveryDomain, DiscoveryDomainState, DiscoverySnapshot, Workspac
 import { useDialogAccessibility } from './composables/dialog-accessibility';
 import { useVoiceConnection } from './composables/voice-connection';
 import VoiceInteractionPanel from './components/VoiceInteractionPanel.vue';
+import PersistentVoiceCallBar from './components/PersistentVoiceCallBar.vue';
 
 const auth = useAuthStore();
 const route = useRoute(),
@@ -58,7 +59,7 @@ const workspacePage = computed(() => workspacePages.find((page) => page.name ===
 /** 文本连接不能复用同账号另一登录轮次；其余工作台仍保留原有命令恢复生命周期。 */
 const workspaceViewKey = computed(() => {
   const identity = `${String(route.name)}:${auth.user?.id ?? 'anonymous'}`;
-  return route.name === 'messages' ? `${identity}:${auth.sessionRevision}` : identity;
+  return ['messages', 'voice-room'].includes(String(route.name)) ? `${identity}:${auth.sessionRevision}` : identity;
 });
 const loggingOut = ref(false),
   workspaceError = ref('');
@@ -935,8 +936,11 @@ async function joinVoiceRoom(target: VoiceRoom) {
       params: { roomId: target.id },
       state: {
         kokoVoiceEntry: {
-          roomId: target.id, title: target.title, userId: auth.user.id,
-          revision: auth.sessionRevision, documentOrigin: globalThis.performance?.timeOrigin,
+          roomId: target.id,
+          title: target.title,
+          userId: auth.user.id,
+          revision: auth.sessionRevision,
+          documentOrigin: globalThis.performance?.timeOrigin,
         },
       },
     });
@@ -1198,8 +1202,10 @@ onBeforeUnmount(() => {
       ><button class="primary" @click="showAuth">登录 / 注册</button></section
     >
     <RouterView v-else v-slot="{ Component }"
-      ><component :is="Component" :key="workspaceViewKey" v-bind="viewBindings"
-    /></RouterView>
+      ><KeepAlive include="VoiceRoomView" :max="1"
+        ><component :is="Component" :key="workspaceViewKey" v-bind="viewBindings" /></KeepAlive
+    ></RouterView>
+    <PersistentVoiceCallBar />
   </WorkspaceShell>
   <div
     v-if="dialog"
@@ -1315,7 +1321,8 @@ onBeforeUnmount(() => {
       ><label>话题<textarea v-model.trim="voice.topic" maxlength="300"></textarea></label
       ><label>人数上限<input v-model.number="voice.maxParticipants" type="number" min="2" max="100" required /></label
       ><p class="hint">创建操作会实时调用自建 LiveKit；媒体服务不可用时不会返回假成功。</p>
-      <p v-if="voice.controlled" class="hint">入房默认静音；上麦并解除闭麦后，点击开启麦克风。语音需要 HTTPS 和浏览器麦克风权限，连接状态以实际结果为准。</p
+      <p v-if="voice.controlled" class="hint"
+        >入房默认静音；上麦并解除闭麦后，点击开启麦克风。语音需要 HTTPS 和浏览器麦克风权限，连接状态以实际结果为准。</p
       ><p v-if="formError" class="form-error">{{ formError }}</p
       ><button class="primary wide" :disabled="submitting">创建语音房</button></form
     >

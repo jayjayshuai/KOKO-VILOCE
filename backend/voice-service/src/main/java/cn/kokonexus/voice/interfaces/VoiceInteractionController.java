@@ -148,7 +148,7 @@ public class VoiceInteractionController {
     @PostMapping("/{id}/interaction/commands")
     @Operation(
         summary = "执行幂等麦位/成员管理命令",
-        description = "原UUID与参数绑定，当前角色和全房间版本检查；状态/审计/收据同事务，媒体未开放。"
+        description = "原UUID与参数绑定，当前角色和全房间版本检查；状态/审计/收据及媒体退场计划同事务。仅当前房主可解除房间闭麦，不能远程开启成员设备，实际媒体退场异步确认。"
     )
     public Ack command(
         @Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long user,

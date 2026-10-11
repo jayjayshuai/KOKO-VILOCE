@@ -744,6 +744,52 @@ test('离线暂停请求和续约，恢复先重新授权，旧同步回复不�
   }
 })
 
+test('已有通话后台继续核验和续约，关闭保留或离线仍立即失效', async () => {
+  const h = await setup()
+  try {
+    await until(() => h.state.fresh.value)
+    h.context.keepAlive = true
+    h.document.visibilityState = 'hidden'
+    h.dispatch('visibilitychange', 'document')
+    assert.equal(h.state.fresh.value, true)
+    await h.state.load(false)
+    await h.state.pulse()
+    assert.equal(h.calls.filter((call) => call.name === 'heartbeat').length, 1)
+    assert.equal(h.state.fresh.value, true)
+    h.context.keepAlive = false
+    assert.equal(h.state.fresh.value, false)
+    const count = h.calls.length
+    await h.state.pulse()
+    assert.equal(h.calls.length, count)
+    h.document.visibilityState = 'visible'
+    h.dispatch('visibilitychange', 'document')
+    await until(() => h.state.fresh.value)
+    h.context.keepAlive = true
+    h.dispatch('offline')
+    assert.equal(h.state.fresh.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('后台通话不能延长最近核验期限；核验超时无自动入房或写入', async () => {
+  const waiting = deferred()
+  const h = await setup({ sync: () => waiting.promise })
+  try {
+    await until(() => h.state.fresh.value)
+    h.context.keepAlive = true
+    h.document.visibilityState = 'hidden'
+    h.dispatch('visibilitychange', 'document')
+    h.advance(16000)
+    const timer = [...h.timers].find((timer) => timer.ms === 5000)
+    timer.callback()
+    assert.equal(h.state.fresh.value, false)
+    assert.equal(h.calls.filter((call) => ['join', 'command'].includes(call.name)).length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
 test('隐藏停止续约，回前台重取事实，卸载移除所有监听', async () => {
   const h = await setup()
   await until(() => !h.state.loading.value)
