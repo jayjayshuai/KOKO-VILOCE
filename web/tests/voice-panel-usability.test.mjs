@@ -41,7 +41,8 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
     return state.fresh.value && !state.busy.value
   }
   const imports = {
-    vue,
+    vue: { ...vue, onMounted: () => {}, onBeforeUnmount: () => {} },
+    '../services/voice-room-entry': { arriveInVoiceRoom: async () => false },
     '../composables/voice-interaction-workspace': { useVoiceInteractionWorkspace: () => state },
     './VoiceMediaPlanPanel.vue': { default: {} },
     './ControlledVoiceMediaPanel.vue': { default: {} },

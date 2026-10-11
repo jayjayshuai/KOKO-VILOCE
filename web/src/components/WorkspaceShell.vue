@@ -162,7 +162,7 @@ watch(
         <section v-for="group in groups" :key="group.key" class="nav-group">
           <h2>{{ group.title }}</h2>
           <RouterLink
-            v-for="item in workspacePages.filter((candidate) => candidate.group === group.key)"
+            v-for="item in workspacePages.filter((candidate) => candidate.group === group.key && !candidate.hidden)"
             :key="item.name"
             :to="item.path"
             class="workspace-nav-item"

@@ -265,7 +265,7 @@ const actionLabels: Record<WorkspaceAction, string> = {
                 @click="emit('joinVoice', room)"
                 :disabled="!room.controlled || voiceJoining === room.id"
                 >{{
-                  !room.controlled ? '旧版房间暂不可连麦' : voiceJoining === room.id ? '连接中…' : '加入讨论'
+                  !room.controlled ? '旧版房间暂不可连麦' : voiceJoining === room.id ? '连接中…' : '进入房间'
                 }}</button
               ></article
             ></div

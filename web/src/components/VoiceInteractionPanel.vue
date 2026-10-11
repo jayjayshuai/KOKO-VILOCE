@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVoiceInteractionWorkspace } from '../composables/voice-interaction-workspace';
 import VoiceMediaPlanPanel from './VoiceMediaPlanPanel.vue';
 import ControlledVoiceMediaPanel from './ControlledVoiceMediaPanel.vue';
 import type { VoiceCommandType, VoiceCommand, SeatRequest } from '../services/voice-interaction';
+import { arriveInVoiceRoom } from '../services/voice-room-entry';
 const props = defineProps<{
   /** 仅展示用名称快照，权限仍绑定roomId。 */ roomTitle?: string;
   /** 本次操作房间。 */ roomId: string;
   /** 当前可信账号，HTTP仍用Cookie。 */ userId: string;
   /** 本次登录轮次。 */ sessionRevision: number;
+  /** 参数化房间页布局；旧管理入口保留原布局。 */ presentation?: 'room';
+  /** 同身份、同轮次的一次明确导航点击，刷新默认false。 */ automaticEntry?: boolean;
 }>();
 const emit = defineEmits<{
   /** 不撤销后台未知写入。 */ close: [];
@@ -47,6 +50,48 @@ const owner = computed(() => fresh.value && !!snapshot.value?.mySessionId && sna
 const showMediaPlan = ref(false);
 /** 仅切换使用引导，不授予发布权限，也不自动操作麦克风。 */
 const intent = ref<'listen' | 'speak'>('listen');
+/** 只暴露连接控制，不获取JWT或开启设备。 */
+const mediaPanel = ref<InstanceType<typeof ControlledVoiceMediaPanel> | null>(null);
+/** 入房串行且保留真实失败。 */
+const arrivalBusy = ref(false),
+  arrivalError = ref('');
+let disposed = false;
+async function enterAndListen() {
+  if (disposed || arrivalBusy.value || pending.value || busy.value) return;
+  const scope = [props.roomId, props.userId, props.sessionRevision] as const;
+  const current = () =>
+    !disposed && scope[0] === props.roomId && scope[1] === props.userId && scope[2] === props.sessionRevision;
+  arrivalBusy.value = true;
+  arrivalError.value = '';
+  try {
+    const connected = await arriveInVoiceRoom({
+      load,
+      current,
+      ready: () => fresh.value && online.value && !!capabilities.value?.enabled,
+      joined: () => !!snapshot.value?.mySessionId,
+      pending: () => !!pending.value,
+      prepare: prepareAction,
+      join,
+      connect: async () => {
+        await nextTick();
+        if (current()) await mediaPanel.value?.connect();
+      },
+      connected: () => mediaPanel.value?.connected() === true,
+    });
+    if (current() && !connected)
+      arrivalError.value = '尚未完成声音连接，请查看下方具体提示；不会自动重发未知入房请求。';
+  } catch {
+    if (current()) arrivalError.value = '入房未完成，请核验房间状态后重试。';
+  } finally {
+    if (current()) arrivalBusy.value = false;
+  }
+}
+onMounted(() => {
+  if (props.presentation === 'room' && props.automaticEntry) void enterAndListen();
+});
+onBeforeUnmount(() => {
+  disposed = true;
+});
 /** 本人麦位与空位均来自已核验快照，不从界面选择推断权限。 */
 const mySeat = computed(() =>
   snapshot.value?.seats.find((seat) => seat.state === 'ON_MIC' && seat.userId === props.userId),
@@ -95,7 +140,11 @@ async function execute(
   if (!(await prepareAction())) return;
   if (disabled.value || scope[0] !== props.roomId || scope[1] !== props.userId || scope[2] !== props.sessionRevision)
     return;
-  void command(type, input);
+  return command(type, input);
+}
+async function leaveRoomPage() {
+  await execute('LEAVE');
+  if (!disposed && fresh.value && !pending.value && !snapshot.value?.mySessionId) emit('close');
 }
 /** 入房也是一次用户明确写入，先读最新能力，失败/换身份不发送。 */
 async function joinRoom() {
@@ -117,12 +166,17 @@ function canReview(request: SeatRequest) {
 }
 </script>
 <template>
-  <section class="workspace-card voice-interaction" aria-label="语音房互动核心" :aria-busy="loading || busy">
+  <section
+    class="workspace-card voice-interaction"
+    :class="{ 'room-layout': presentation === 'room' }"
+    aria-label="语音房互动核心"
+    :aria-busy="loading || busy"
+  >
     <div class="workspace-card-heading"
-      ><h2>进入语音房</h2
-      ><button type="button" class="secondary" :disabled="busy || actionPreparing" @click="emit('close')"
-        >关闭面板</button
-      ></div
+      ><h2>{{ presentation === 'room' ? '房间控制' : '进入语音房' }}</h2
+      ><button type="button" class="secondary" :disabled="busy || actionPreparing" @click="emit('close')">{{
+        presentation === 'room' ? '返回列表' : '关闭面板'
+      }}</button></div
     >
     <p class="hint">{{ roomTitle || '当前房间' }}</p>
     <p class="hint" role="note"
@@ -138,7 +192,48 @@ function canReview(request: SeatRequest) {
     <p class="hint">成员状态在后台同步，不会重新加载页面。点击操作时才核验最新权限。</p>
     <p v-if="writeError" class="form-error" role="alert">{{ writeError }}</p>
     <p v-if="renewalError" class="form-error" role="alert">{{ renewalError }}</p>
-    <p v-if="success" role="status">{{ success }}</p>
+    <p v-if="success && presentation !== 'room'" role="status">{{ success }}</p>
+    <p v-if="arrivalBusy" role="status">正在进入房间并准备声音，请稍候…</p>
+    <p v-if="arrivalError" role="alert" class="form-error">{{ arrivalError }}</p>
+    <ControlledVoiceMediaPanel
+      v-if="presentation === 'room' && capabilities?.enabled"
+      ref="mediaPanel"
+      :in-room="true"
+      :room-id="roomId"
+      :room-title="roomTitle"
+      :user-id="userId"
+      :session-revision="sessionRevision"
+      :snapshot="snapshot"
+      :fresh="fresh && online && !pending"
+      :reading="loading"
+      :prepare-connection="prepareAction"
+    />
+    <section v-if="presentation === 'room'" class="room-overview" aria-label="房间成员">
+      <div class="workspace-card-heading"
+        ><h3>房间成员 · {{ snapshot ? snapshot.members.length : '—' }}（有效租约）</h3>
+        <button
+          v-if="snapshot?.mySessionId"
+          class="secondary"
+          :disabled="disabled || arrivalBusy"
+          @click="leaveRoomPage"
+          >离开房间</button
+        >
+      </div>
+      <p v-if="!snapshot?.mySessionId">你已打开房间页面，点击进入后开始收听。不会自动打开麦克风。</p>
+      <button v-if="!snapshot?.mySessionId" class="primary" :disabled="disabled || arrivalBusy" @click="enterAndListen"
+        >进入并收听</button
+      >
+      <div class="room-members"
+        ><article v-for="member in snapshot?.members ?? []" :key="member.userId">
+          <strong>{{ member.displayName }}</strong
+          ><span
+            >{{ member.userId === userId ? '你 · ' : ''
+            }}{{ member.role === 'OWNER' ? '房主' : member.role === 'ADMIN' ? '房管' : '成员' }}</span
+          >
+          <small>{{ member.seatNo ? `麦位 ${member.seatNo}` : '听众' }} · 成员身份不代表已连接声音</small>
+        </article></div
+      >
+    </section>
     <div v-if="pending" class="workspace-error"
       ><p>原请求结果未确认。重试保持原 UUID、会话及版本，放弃只停止本地等待，不取消后台操作。</p
       ><div class="page-actions"
@@ -155,7 +250,7 @@ function canReview(request: SeatRequest) {
     }}</button>
     <p v-if="capabilities && !capabilities.enabled" role="status">互动核心尚未开放，不能执行成员或麦位操作。</p>
     <template v-if="capabilities?.enabled">
-      <section class="voice-guide-step" aria-label="加入房间">
+      <section v-if="presentation !== 'room'" class="voice-guide-step" aria-label="加入房间">
         <h3>1 · 加入房间</h3>
         <p v-if="!snapshot?.mySessionId">先加入，才能收听或申请发言。</p>
         <p v-else role="status">已加入房间。接下来选择收听或发言。</p>
@@ -165,7 +260,7 @@ function canReview(request: SeatRequest) {
         <button v-else type="button" class="secondary" :disabled="disabled" @click="execute('LEAVE')">离开房间</button>
       </section>
       <section class="voice-guide-step" aria-label="选择语音方式">
-        <h3>2 · 你想做什么？</h3>
+        <h3>{{ presentation === 'room' ? '发言控制' : '2 · 你想做什么？' }}</h3>
         <p class="hint">这里切换操作指引，不会开关麦克风。停止发声请点击第 3 步的“关闭麦克风”。</p>
         <div class="page-actions">
           <button
@@ -227,6 +322,9 @@ function canReview(request: SeatRequest) {
         </template>
       </section>
       <ControlledVoiceMediaPanel
+        v-if="presentation !== 'room'"
+        ref="mediaPanel"
+        :in-room="presentation === 'room'"
         :room-id="roomId"
         :room-title="roomTitle"
         :user-id="userId"
@@ -466,6 +564,29 @@ function canReview(request: SeatRequest) {
 }
 .voice-guide-step h3 {
   margin: 0 0 12px;
+}
+.room-layout {
+  margin-top: 0;
+}
+.room-overview {
+  padding: 20px 0;
+}
+.room-members {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.room-members article {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--border-color, #303541);
+  border-radius: 12px;
+}
+.room-members span,
+.room-members small {
+  color: var(--text-muted, #a8aabc);
 }
 .voice-management summary {
   cursor: pointer;

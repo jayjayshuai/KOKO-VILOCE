@@ -48,6 +48,15 @@ export const workspacePages: WorkspacePage[] = [
     section: 'live',
   },
   {
+    name: 'voice-room',
+    path: '/voice/rooms/:roomId',
+    title: '语音房间',
+    description: '进入指定语音房并查看真实成员与声音状态。',
+    group: 'space',
+    requiresAuth: true,
+    hidden: true,
+  },
+  {
     name: 'studio',
     path: '/studio',
     title: '内容工作台',

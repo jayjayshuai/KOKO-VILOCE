@@ -14,6 +14,7 @@ const props = defineProps<{
   /** 当前读取成功且页面在线可见，未知写入期间false。 */ fresh: boolean;
   /** 只阻止新连接，不使已有通话因定期读取而断开。 */ reading?: boolean;
   /** 用户点击后核验最新快照，可抢占静默同步；不发送业务命令。 */ prepareConnection?: () => Promise<boolean>;
+  /** 独立房间页使用声音控件标题，不再提示弹窗步骤。 */ inRoom?: boolean;
 }>();
 /** 仅在内存持有当前授权投影，断开后清除JWT引用。 */
 const credential = shallowRef<ControlledMediaCredential | null>(null);
@@ -141,12 +142,6 @@ async function loadCapability() {
 }
 async function connect() {
   if (disposed || connectionPreparing.value || phase.value !== 'idle') return;
-  if (!enabled.value || props.reading || !contextCurrent()) {
-    voiceError.value = props.reading
-      ? '房间状态正在读取，请待核验结束后连接。'
-      : '请先加入房间并核验当前权限，再连接语音。';
-    return;
-  }
   const revision = ++connectRevision,
     room = props.roomId,
     user = props.userId,
@@ -160,6 +155,30 @@ async function connect() {
   connectionPreparing.value = true;
   voiceError.value = '';
   try {
+    if (loading.value)
+      await new Promise<void>((resolve) => {
+        const stop = watch(
+          () => [loading.value, connectionPreparing.value],
+          () => {
+            if (!loading.value || !connectionPreparing.value) {
+              stop();
+              resolve();
+            }
+          },
+          { flush: 'sync' },
+        );
+        if (!loading.value || !connectionPreparing.value) {
+          stop();
+          resolve();
+        }
+      });
+    if (!current()) return;
+    if (!enabled.value || props.reading || !contextCurrent()) {
+      voiceError.value = props.reading
+        ? '房间状态正在读取，请待核验结束后连接。'
+        : '请先加入房间并核验当前权限，再连接语音。';
+      return;
+    }
     const verified = props.prepareConnection ? await props.prepareConnection() : true;
     await nextTick();
     if (!current()) return;
@@ -225,19 +244,23 @@ watch(
 onBeforeUnmount(() => {
   disposed = true;
   connectRevision++;
+  connectionPreparing.value = false;
   capabilityRevision++;
   read.abort();
   credential.value = null;
 });
+/** 房间页只编排一次明确进入；不开放设备或凭据引用给父级。 */
+defineExpose({ connect, disconnect, connected: () => phase.value === 'connected' });
 </script>
 <template>
   <section aria-label="受控语音连接" class="workspace-card">
-    <h3>3 · 连接声音</h3>
+    <h3>{{ inRoom ? '声音连接' : '3 · 连接声音' }}</h3>
     <p v-if="capabilityError" role="alert" class="form-error">{{ capabilityError }}</p>
     <button v-if="capabilityError" type="button" class="secondary" :disabled="loading" @click="loadCapability"
       >重新核验媒体能力</button
     >
-    <p v-if="!enabled" role="status">受控语音连接尚未开放，成员和麦位操作不会自动开启麦克风。</p>
+    <p v-if="loading" role="status">正在核验声音服务，请稍候…</p>
+    <p v-else-if="!enabled" role="status">受控语音连接尚未开放，成员和麦位操作不会自动开启麦克风。</p>
     <template v-else>
       <p role="status">{{
         connectionPreparing && phase === 'idle'

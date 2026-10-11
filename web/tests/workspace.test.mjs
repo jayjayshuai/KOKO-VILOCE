@@ -569,12 +569,12 @@ test('离开通知页取消请求且忽略卸载后的迟到成功', async () =>
   assert.equal(h.state.items.value.length, 0)
 })
 
-test('十三个页面具有唯一 URL，房主工作台与其他私有领域不能标成公开发现页', async () => {
+test('页面具有唯一 URL，房主工作台与其他私有领域不能标成公开发现页', async () => {
   const source = await readFile(new URL('../src/router/pages.ts', import.meta.url), 'utf8')
   const { workspacePages, unknownPage } = await execute(source)
-  assert.equal(workspacePages.length, 13)
-  assert.equal(new Set(workspacePages.map((page) => page.path)).size, 13)
-  assert.equal(new Set(workspacePages.map((page) => page.name)).size, 13)
+  assert.equal(workspacePages.length, 14)
+  assert.equal(new Set(workspacePages.map((page) => page.path)).size, 14)
+  assert.equal(new Set(workspacePages.map((page) => page.name)).size, 14)
   assert.equal(workspacePages.find((page) => page.name === 'voice-owner').requiresAuth, true)
   assert.equal(workspacePages.find((page) => page.name === 'binding-operations').requiresAuth, true)
   assert.equal(workspacePages.find((page) => page.name === 'operations').requiresAuth, true)

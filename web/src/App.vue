@@ -930,8 +930,16 @@ async function joinVoiceRoom(target: VoiceRoom) {
     return;
   }
   if (target.controlled) {
-    selectedInteractionRoom.value = target;
-    dialog.value = 'voice-interaction';
+    await router.push({
+      name: 'voice-room',
+      params: { roomId: target.id },
+      state: {
+        kokoVoiceEntry: {
+          roomId: target.id, title: target.title, userId: auth.user.id,
+          revision: auth.sessionRevision, documentOrigin: globalThis.performance?.timeOrigin,
+        },
+      },
+    });
     return;
   }
   await voiceState.joinVoiceRoom(target);

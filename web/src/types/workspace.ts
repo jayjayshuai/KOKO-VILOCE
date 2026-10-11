@@ -56,4 +56,6 @@ export interface WorkspacePage {
   requiresAuth: boolean
   /** 公开页面域，非公开页面不存在。 */
   section?: PublicSection
+  /** 参数化详情页不作为侧栏占位链接。 */
+  hidden?: boolean
 }
