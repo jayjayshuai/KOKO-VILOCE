@@ -102,6 +102,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
   /** 失败读取5/10/20/40/60秒退避，手工刷新和恢复不受此限制。 */ let readFailures = 0,
     nextReadAt = 0
   const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  /** 明确新操作的前置读取独占窗口，续约/轮询不能取消它；不代表请求已发送。 */
+  const actionPreparing = ref(false)
   const capture = () => ({
     epoch,
     roomId: context.roomId,
@@ -120,8 +122,16 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     fresh.value = false
     clearActions()
   }
-  async function load(force = true) {
-    if (disposed || busy.value || !context.userId || !online.value || !visible() || (!force && Date.now() < nextReadAt))
+  async function load(force = true, preparingRead = false) {
+    if (
+      disposed ||
+      busy.value ||
+      (actionPreparing.value && !preparingRead) ||
+      !context.userId ||
+      !online.value ||
+      !visible() ||
+      (!force && Date.now() < nextReadAt)
+    )
       return
     read.abort()
     read = new AbortController()
@@ -173,6 +183,30 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       if (current(saved) && revision === readRevision) loading.value = false
     }
   }
+  /** 仅准备一次用户新操作；核验失败、取消、换身份后false，不写入也不重试旧请求。 */
+  async function prepareAction() {
+    if (
+      disposed ||
+      actionPreparing.value ||
+      busy.value ||
+      loading.value ||
+      pending.value ||
+      !fresh.value ||
+      !online.value ||
+      !visible()
+    )
+      return false
+    const saved = capture()
+    actionPreparing.value = true
+    try {
+      await load(true, true)
+      return (
+        current(saved) && fresh.value && !loading.value && !busy.value && !pending.value && online.value && visible()
+      )
+    } finally {
+      if (current(saved)) actionPreparing.value = false
+    }
+  }
   async function transmit() {
     if (disposed || busy.value || !pending.value || !online.value || !visible()) return
     const saved = capture(),
@@ -203,6 +237,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
   function join() {
     if (
       disposed ||
+      actionPreparing.value ||
       busy.value ||
       loading.value ||
       pending.value ||
@@ -226,6 +261,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     const data = snapshot.value
     if (
       disposed ||
+      actionPreparing.value ||
       busy.value ||
       loading.value ||
       pending.value ||
@@ -294,6 +330,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     const sessionId = snapshot.value?.mySessionId
     if (
       disposed ||
+      actionPreparing.value ||
       busy.value ||
       pending.value ||
       !fresh.value ||
@@ -334,6 +371,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     pending.value = null
     loading.value = false
     busy.value = false
+    actionPreparing.value = false
     readError.value = ''
     writeError.value = ''
     success.value = ''
@@ -359,7 +397,9 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     void load()
   }
   function onFocus() {
-    suspend()
+    // 普通焦点切换不等于失权；后台/离线已由对应事件失效。刷新失败或超过15秒仍按原策略断开。
+    if (fresh.value && lastVerifiedAt.value !== null && Date.now() - lastVerifiedAt.value < 15000) return
+    if (fresh.value) invalidate()
     void load()
   }
   function onVisibility() {
@@ -414,6 +454,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     pending,
     success,
     load,
+    prepareAction,
+    actionPreparing,
     join,
     command,
     transmit,

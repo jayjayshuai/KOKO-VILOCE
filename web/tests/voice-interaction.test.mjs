@@ -123,6 +123,59 @@ async function setup(overrides = {}) {
     },
   }
 }
+test('前台焦点切换保留近期有效授权，不抢占用户点击；主动复查失败仍立即失效', async () => {
+  let next = null
+  const h = await setup({
+    capabilities: () =>
+      next
+        ? next.promise
+        : Promise.resolve({ enabled: true, mediaReady: false, version: '9007199254741001', canInspect: true }),
+  })
+  try {
+    await until(() => h.state.fresh.value)
+    next = deferred()
+    h.dispatch('focus')
+    assert.equal(h.state.loading.value, false)
+    void h.state.load()
+    assert.equal(h.state.loading.value, true)
+    assert.equal(h.state.fresh.value, true)
+    next.reject(new Error('复查失败'))
+    await until(() => !h.state.loading.value)
+    assert.equal(h.state.fresh.value, false)
+    assert.match(h.state.readError.value, /复查失败/)
+  } finally {
+    h.dispose()
+  }
+})
+test('新操作前置核验独占读取，续约/轮询不抢占；只使用新版本且不自动发送', async () => {
+  let next = null,
+    version = '9007199254741001'
+  const h = await setup({
+    capabilities: () =>
+      next ? next.promise : Promise.resolve({ enabled: true, mediaReady: false, version, canInspect: true }),
+    snapshot: async () => snapshot(version),
+  })
+  try {
+    await until(() => h.state.fresh.value)
+    next = deferred()
+    const prepared = h.state.prepareAction()
+    assert.equal(h.state.actionPreparing.value, true)
+    await h.state.pulse()
+    await h.state.load()
+    h.dispatch('focus')
+    assert.equal(h.calls.filter((call) => call.name === 'heartbeat').length, 0)
+    assert.equal(h.calls.filter((call) => call.name === 'capabilities').length, 2)
+    assert.equal(h.calls.filter((call) => call.name === 'command').length, 0)
+    version = '9007199254741003'
+    next.resolve({ enabled: true, mediaReady: false, version, canInspect: true })
+    assert.equal(await prepared, true)
+    assert.equal(h.state.actionPreparing.value, false)
+    await h.state.command('LOCK', { seatNo: 1, value: true })
+    assert.equal(h.calls.find((call) => call.name === 'command').args[1].expectedVersion, version)
+  } finally {
+    h.dispose()
+  }
+})
 test('关闭核心不是假快照，不请求成员或媒体API', async () => {
   const h = await setup({
     capabilities: () => Promise.resolve({ enabled: false, mediaReady: false, version: null, canInspect: false }),

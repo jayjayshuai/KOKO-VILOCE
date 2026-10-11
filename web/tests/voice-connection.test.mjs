@@ -651,13 +651,17 @@ test('SDK在取消订阅事件前已detach仍回收本人元素，不等待整�
   try {
     await s.state.joinVoiceRoom(target())
     const room = s.rooms[0]
+    assert.equal(s.state.receivedAudioTracks.value, 0)
     room.emit('TrackSubscribed', track)
+    assert.equal(s.state.receivedAudioTracks.value, 1)
     element.srcObject = null // 原生SDK已detach，但没有删除应用附着的DOM。
     room.emit('TrackUnsubscribed', track)
+    assert.equal(s.state.receivedAudioTracks.value, 0)
     assert.equal(removed, 1)
     assert.equal(paused, 1)
     assert.equal(s.state.phase.value, 'connected')
     await s.state.leaveVoiceRoom()
+    assert.equal(s.state.receivedAudioTracks.value, 0)
     assert.equal(removed, 1)
     assert.equal(paused, 1)
   } finally {

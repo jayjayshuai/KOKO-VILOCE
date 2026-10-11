@@ -4,6 +4,7 @@ import { useVoiceConnection } from '../composables/voice-connection';
 import { voiceMediaCredentialsApi, type ControlledMediaCredential } from '../services/voice-media-credentials';
 import type { InteractionSnapshot } from '../services/voice-interaction';
 import VoicePlaybackControls from './VoicePlaybackControls.vue';
+import { waitForVoiceMediaRetirement } from '../services/voice-media-preparation';
 const props = defineProps<{
   /** 当前已核验的房间。 */ roomId: string;
   /** 展示标题，不参与授权。 */ roomTitle?: string;
@@ -11,6 +12,7 @@ const props = defineProps<{
   /** 同账号重登录也改变该轮次。 */ sessionRevision: number;
   /** 当前本人授权快照，失权/过期为空。 */ snapshot: InteractionSnapshot | null;
   /** 当前读取成功且页面在线可见，未知写入期间false。 */ fresh: boolean;
+  /** 只阻止新连接，不使已有通话因定期读取而断开。 */ reading?: boolean;
 }>();
 /** 仅在内存持有当前授权投影，断开后清除JWT引用。 */
 const credential = shallowRef<ControlledMediaCredential | null>(null);
@@ -55,6 +57,16 @@ const voice = useVoiceConnection(
     // Vue快照可能原地更新；跨await只保存不可变标量，不能拿同一个对象的新值核验旧回复。
     const expectedSession = snapshot.mySessionId,
       expectedVersion = snapshot.version;
+    await waitForVoiceMediaRetirement(id, signal);
+    if (
+      disposed ||
+      !contextCurrent() ||
+      props.sessionRevision !== revision ||
+      props.userId !== user ||
+      props.snapshot?.mySessionId !== expectedSession ||
+      props.snapshot?.version !== expectedVersion
+    )
+      throw new Error('房间权限在准备期间变化，请重新核验后连接语音');
     const result = await voiceMediaCredentialsApi.issue(id, expectedSession, expectedVersion, signal);
     if (
       disposed ||
@@ -90,6 +102,7 @@ const {
   microphoneEnabled,
   microphoneBusy,
   participantCount,
+  receivedAudioTracks,
   audioPlaybackBlocked,
   audioPlaybackBusy,
   audioPlaybackError,
@@ -120,7 +133,7 @@ async function loadCapability() {
   }
 }
 function connect() {
-  if (!enabled.value || !contextCurrent()) return;
+  if (!enabled.value || props.reading || !contextCurrent()) return;
   void voice.joinVoiceRoom({
     id: props.roomId,
     title: props.roomTitle || '当前房间',
@@ -175,7 +188,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <section aria-label="受控语音连接" class="workspace-card">
-    <h3>语音连接</h3>
+    <h3>3 · 连接声音</h3>
     <p v-if="capabilityError" role="alert" class="form-error">{{ capabilityError }}</p>
     <button v-if="capabilityError" type="button" class="secondary" :disabled="loading" @click="loadCapability"
       >重新核验媒体能力</button
@@ -186,13 +199,41 @@ onBeforeUnmount(() => {
         phase === 'connected'
           ? `已连接 · 当前媒体成员 ${participantCount}`
           : phase === 'joining'
-            ? '正在连接…'
+            ? '正在准备并连接声音…'
             : phase === 'reconnecting'
               ? '正在恢复连接…'
               : '未连接'
       }}</p>
-      <p class="hint">加入默认静音。更换会话、下麦或闭麦后须重新核验连接；音轨状态以实际设备为准。</p>
-      <button type="button" class="primary" :disabled="!contextCurrent() || phase !== 'idle'" @click="connect"
+      <p v-if="!snapshot?.mySessionId" class="hint">请先点击第 1 步的“加入房间”，才能连接声音。</p>
+      <p v-else-if="phase === 'idle'" class="hint"
+        >点击“连接语音”开始收听。只有麦位已授权且解除闭麦后，才能开启麦克风。</p
+      >
+      <p v-else-if="phase === 'connected' && !credential?.canPublish" class="hint"
+        >已连接，当前仅收听。要发声，请在第 2 步选择“我要发言”，取得麦位并解除闭麦，然后重新连接。</p
+      >
+      <p v-else-if="phase === 'connected' && !microphoneEnabled" class="hint"
+        >发言权限已就绪，但麦克风还没开启。点击“开启麦克风”，并允许浏览器访问麦克风。</p
+      >
+      <p v-else-if="microphoneEnabled" role="status"
+        >麦克风已开启，正在向房间发布音轨。对方还需要连接语音并允许声音播放。</p
+      >
+      <p v-if="reading" class="hint">正在核验房间状态，请稍候再连接；定期读取不会主动中断已有通话。</p>
+      <p v-if="phase === 'connected' && participantCount <= 1" role="status"
+        >目前只有你连接了声音，请让对方也完成第 3 步。</p
+      >
+      <p v-else-if="phase === 'connected' && receivedAudioTracks === 0" role="status"
+        >对方已连接，但尚未收到对方音轨。请让对方取得发言权限并开启麦克风。</p
+      >
+      <p v-else-if="phase === 'connected'" class="hint"
+        >已订阅
+        {{ receivedAudioTracks }} 条对方音轨（不等于已听见）。若仍无声，请检查媒体音量、蓝牙输出及声音播放提示。</p
+      >
+      <p class="hint">下麦、闭麦或切换页面后可能断开。手机锁屏或切到后台会暂停核验，请保持本页在前台。</p>
+      <button
+        type="button"
+        class="primary"
+        :disabled="reading || !contextCurrent() || phase !== 'idle'"
+        @click="connect"
         >连接语音</button
       >
       <button type="button" class="secondary" :disabled="phase === 'idle'" @click="disconnect">断开语音</button>

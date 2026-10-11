@@ -36,6 +36,8 @@ export function useVoiceConnection(
   const audioPlaybackError = ref('')
   /** 仅客户端当前媒体在线数，不当全站精确人数。 */
   const participantCount = ref(0)
+  /** 本连接已订阅的远端音频轨数，不表示有声能量、已播放或已经听见。 */
+  const receivedAudioTracks = ref(0)
   /** SDK实际连接阶段；恢复中不显示成已稳定连接。 */
   const phase = ref<'idle' | 'joining' | 'connected' | 'reconnecting'>('idle')
   /** SDK引用只在内存中保存，pending也立即可定向断开。 */
@@ -75,6 +77,7 @@ export function useVoiceConnection(
     for (const element of audio) if (!removeAudio(element)) released = false
     audio.clear()
     trackAudio.clear()
+    receivedAudioTracks.value = 0
     return released
   }
   const message = (cause: unknown) => (cause instanceof Error ? cause.message : '语音连接或设备操作失败')
@@ -208,12 +211,14 @@ export function useVoiceConnection(
         const elements = trackAudio.get(track) ?? new Set<HTMLMediaElement>()
         elements.add(element)
         trackAudio.set(track, elements)
+        receivedAudioTracks.value = trackAudio.size
         attach()
       })
       room.on(RoomEvent.TrackUnsubscribed, (track) => {
         if (!owns()) return
         const elements = new Set([...(trackAudio.get(track) ?? []), ...track.detach()])
         trackAudio.delete(track)
+        receivedAudioTracks.value = trackAudio.size
         for (const element of elements) {
           audio.delete(element)
           if (!removeAudio(element)) voiceError.value = '音频元素释放未确认，请关闭页面并检查浏览器声音权限。'
@@ -372,6 +377,7 @@ export function useVoiceConnection(
     audioPlaybackBusy,
     audioPlaybackError,
     participantCount,
+    receivedAudioTracks,
     phase,
     joinVoiceRoom,
     leaveVoiceRoom,

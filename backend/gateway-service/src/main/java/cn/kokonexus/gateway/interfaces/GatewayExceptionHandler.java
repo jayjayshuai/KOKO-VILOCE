@@ -12,6 +12,39 @@ import org.springframework.web.server.ServerWebExchange;
 @RestControllerAdvice
 public class GatewayExceptionHandler {
 
+    /** RPC故障不是输入错误，写入结果可能已提交；不回传远端堆栈或原始参数。 */
+    @ExceptionHandler(org.apache.dubbo.rpc.RpcException.class)
+    ResponseEntity<ApiError> rpcUnavailable(org.apache.dubbo.rpc.RpcException exception, ServerWebExchange exchange) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .header("Cache-Control", "no-store")
+            .header("Retry-After", "1")
+            .body(error("SERVICE_UNAVAILABLE", "服务暂不可用，请稍后重试；写入结果未确认，注册可先尝试登录", exchange));
+    }
+
+    @ExceptionHandler(cn.kokonexus.api.identity.RegistrationConflictException.class)
+    ResponseEntity<ApiError> registrationConflict(
+        cn.kokonexus.api.identity.RegistrationConflictException exception,
+        ServerWebExchange exchange
+    ) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .header("Cache-Control", "no-store")
+            .body(error("REGISTRATION_CONFLICT", "邮箱或用户名已被注册，请登录或使用其他邮箱和用户名", exchange));
+    }
+
+    /** Bean校验消息可能包含拒绝的密码值，只输出固定格式说明，不回传/打印原BindException。 */
+    @ExceptionHandler(org.springframework.web.bind.support.WebExchangeBindException.class)
+    ResponseEntity<ApiError> invalidBody(
+        org.springframework.web.bind.support.WebExchangeBindException exception,
+        ServerWebExchange exchange
+    ) {
+        String message = "/api/auth/register".equals(exchange.getRequest().getPath().value())
+            ? "请填写有效邮箱、3～32位字母数字下划线用户名、显示名称及10～72位密码"
+            : "输入参数不符合要求，请检查字段格式和长度";
+        return ResponseEntity.badRequest()
+            .header("Cache-Control", "no-store")
+            .body(error("INVALID_INPUT", message, exchange));
+    }
+
     @ExceptionHandler(cn.kokonexus.api.voice.MediaAdmissionUnavailableException.class)
     ResponseEntity<ApiError> mediaRetirementUnavailable(RuntimeException exception, ServerWebExchange exchange) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

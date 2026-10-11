@@ -66,6 +66,7 @@ async function setup(network = {}) {
     { context },
   )
   const mocks = {
+    '../services/voice-media-preparation': { waitForVoiceMediaRetirement: network.prepare ?? (async () => {}) },
     './VoicePlaybackControls.vue': { default: {} },
     vue: { ...vue, onBeforeUnmount: (callback) => hooks.push(callback) },
     '../composables/voice-connection': {
@@ -157,6 +158,7 @@ test('旧媒体请求晚返回、数值化轮次或席位不一致均不能进�
   const late = deferred()
   const h = await setup({ issue: () => late.promise })
   const pending = h.api('9', new AbortController().signal)
+  await new Promise((resolve) => setImmediate(resolve)) // 先越过准备读取，保持验证“凭据在途晚到”边界。
   h.props.snapshot.version = '4'
   late.resolve({ sessionId: sid, generation: '1', seatNo: null, canPublish: false, expiresInSeconds: 120 })
   await assert.rejects(pending, /快照已变化/)
@@ -177,6 +179,24 @@ test('旧媒体请求晚返回、数值化轮次或席位不一致均不能进�
     assert.equal(bad.state.credential.value, null)
     bad.dispose()
   }
+})
+test('准备期间换权限不能继续申请凭据，设备与JWT都不隐式重试', async () => {
+  const ready = deferred()
+  let issues = 0
+  const h = await setup({
+    prepare: () => ready.promise,
+    issue: async () => {
+      issues++
+      throw new Error('不应签发')
+    },
+  })
+  const pending = h.api('9', new AbortController().signal)
+  h.props.fresh = false
+  ready.resolve()
+  await assert.rejects(pending, /准备期间变化/)
+  assert.equal(issues, 0)
+  assert.equal(h.calls.includes('device'), false)
+  h.dispose()
 })
 test('同账号新登录轮次废弃旧能力请求，不回填旧enabled状态', async () => {
   const old = deferred()

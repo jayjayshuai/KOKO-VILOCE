@@ -15,6 +15,30 @@ import org.junit.jupiter.api.Test;
 
 class IdentityApplicationServiceTest {
 
+    @Test
+    void duplicateRegistrationDoesNotExposeOrSerializeDriverCause() {
+        when(userMapper.insert(any(UserAccount.class))).thenThrow(
+            new org.springframework.dao.DuplicateKeyException(
+                "synthetic-private-email-and-password-hash",
+                new java.sql.SQLIntegrityConstraintViolationException("synthetic-driver-detail")
+            )
+        );
+        assertThatThrownBy(() ->
+            service.register(
+                new RegisterIdentityCommand(
+                    "duplicate@example.invalid",
+                    "synthetic-password-value",
+                    "synthetic_user",
+                    "合成用户"
+                )
+            )
+        )
+            .isInstanceOf(cn.kokonexus.api.identity.RegistrationConflictException.class)
+            .hasMessage("邮箱或用户名已被注册，请登录或使用其他邮箱和用户名")
+            .hasNoCause();
+        verify(userMapper).insert(any(UserAccount.class));
+    }
+
     private final UserMapper userMapper = mock(UserMapper.class);
     private final IdentityApplicationService service = new IdentityApplicationService(userMapper);
 

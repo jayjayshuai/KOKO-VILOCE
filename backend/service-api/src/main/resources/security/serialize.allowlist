@@ -1,4 +1,6 @@
 # 仅允许平台已声明的 RPC 契约。保持 Dubbo STRICT 与 Serializable 检查，不开放任意包。
+cn.kokonexus.api.identity.RegistrationConflictException
+cn.kokonexus.api.identity.RegisterIdentityCommand
 cn.kokonexus.api.voice.MediaAdmissionCommand
 cn.kokonexus.api.voice.MediaWebsiteSessionCommand
 cn.kokonexus.api.voice.MediaAdmissionUnavailableException

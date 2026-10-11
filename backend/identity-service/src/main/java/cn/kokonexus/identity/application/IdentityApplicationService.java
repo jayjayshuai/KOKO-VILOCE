@@ -43,7 +43,8 @@ public class IdentityApplicationService {
                 throw new IllegalStateException("账号创建失败");
             }
         } catch (DuplicateKeyException exception) {
-            throw new IllegalArgumentException("邮箱或用户名已被注册", exception);
+            // SQL异常可能含邮箱/哈希且驱动类型不能安全跨RPC；保持唯一约束，不自动覆盖账号。
+            throw new cn.kokonexus.api.identity.RegistrationConflictException();
         }
         return toIdentity(user);
     }

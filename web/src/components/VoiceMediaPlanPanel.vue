@@ -11,7 +11,7 @@ const { plan, loading, error, load, paused } = useVoiceMediaPlan(props);
 <template>
   <section aria-label="媒体授权计划" :aria-busy="loading">
     <h3>媒体授权计划与退场</h3>
-    <p class="hint">这是后台希望值与退场任务进度，不是音轨授权或实际发声确认；受控媒体仍未开放。</p>
+    <p class="hint">这里显示后台授权目标和退场进度；实际连接、收听和发声状态请查看语音连接面板。</p>
     <button type="button" class="secondary" :disabled="loading || !allowed || !!paused" @click="load()"
       >查询媒体计划</button
     >

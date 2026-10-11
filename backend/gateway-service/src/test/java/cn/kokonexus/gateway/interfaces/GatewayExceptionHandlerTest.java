@@ -9,6 +9,31 @@ import org.springframework.mock.web.server.MockServerWebExchange;
 
 class GatewayExceptionHandlerTest {
 
+    @Test
+    void rpcFailureDoesNotLeakRemotePayloadOrPretendRegistrationWasRolledBack() {
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/auth/register"));
+        var response = handler.rpcUnavailable(
+            new org.apache.dubbo.rpc.RpcException("synthetic-private-password-and-sql"),
+            exchange
+        );
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.getBody().code()).isEqualTo("SERVICE_UNAVAILABLE");
+        assertThat(response.getBody().message()).contains("写入结果未确认").doesNotContain("synthetic-private");
+    }
+
+    @Test
+    void duplicateRegistrationReturnsSafeConflictRatherThanServerFailure() {
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/api/auth/register"));
+        var response = handler.registrationConflict(
+            new cn.kokonexus.api.identity.RegistrationConflictException(),
+            exchange
+        );
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody().code()).isEqualTo("REGISTRATION_CONFLICT");
+        assertThat(response.getBody().message()).contains("已被注册");
+        assertThat(response.getHeaders().getCacheControl()).isEqualTo("no-store");
+    }
+
     private final GatewayExceptionHandler handler = new GatewayExceptionHandler();
 
     @Test

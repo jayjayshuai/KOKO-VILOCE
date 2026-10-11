@@ -4,7 +4,8 @@ import java.util.List;
 
 /** 平台公共契约：业务用例；涉及写入时遵守领域事务与权限约束。 */
 public interface IdentityRpcService {
-    UserIdentity register(RegisterIdentityCommand command);
+    /** 唯一键冲突为明确可序列化的业务异常，不向网关传递SQL/驱动异常。 */
+    UserIdentity register(RegisterIdentityCommand command) throws RegistrationConflictException;
 
     UserIdentity authenticate(AuthenticateIdentityCommand command);
 
