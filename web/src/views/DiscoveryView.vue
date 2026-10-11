@@ -262,9 +262,11 @@ const actionLabels: Record<WorkspaceAction, string> = {
                 ><small>{{ room.owner }} · 上限 {{ room.maxParticipants }} 人</small></div
               ><button
                 class="secondary compact-button"
-                :disabled="voiceJoining === room.id"
                 @click="emit('joinVoice', room)"
-                >{{ voiceJoining === room.id ? '连接中…' : '加入讨论' }}</button
+                :disabled="!room.controlled || voiceJoining === room.id"
+                >{{
+                  !room.controlled ? '旧版房间暂不可连麦' : voiceJoining === room.id ? '连接中…' : '加入讨论'
+                }}</button
               ></article
             ></div
           ><div v-else class="workspace-empty"

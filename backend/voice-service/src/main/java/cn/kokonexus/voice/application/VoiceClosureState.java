@@ -9,7 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 关闭意图与确认各自短事务；媒体删除在事务外，归属在CLOSING冻结。 */
+/** 与核心共用房间行锁及RC，不对其他房间建立空范围间隙锁；媒体删除在事务外，归属在CLOSING冻结。 */
 @Service
 @RequiredArgsConstructor
 public class VoiceClosureState {
@@ -18,7 +18,7 @@ public class VoiceClosureState {
     /** 受控房间关闭审计，失败与意图同事务回滚。 */ private final VoiceInteractionMapper interaction;
     /** 受控房间所有媒体绑定退场，与CLOSING意图同事务。 */ private final VoiceMediaPlanRecorder media;
 
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public VoiceRoom begin(long owner, long id) {
         VoiceRoom room = owned(owner, id);
         if ("CLOSED".equals(room.getStatus()) || "CLOSING".equals(room.getStatus())) {
@@ -33,7 +33,7 @@ public class VoiceClosureState {
         return room;
     }
 
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void finish(long owner, long id) {
         VoiceRoom room = owned(owner, id);
         if ("CLOSED".equals(room.getStatus())) return;

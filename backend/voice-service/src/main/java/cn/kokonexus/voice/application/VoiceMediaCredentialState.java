@@ -8,7 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.*;
 
-/** 房间锁下读取不可变签发投影；SQL事务内不调用身份RPC或媒体API。 */
+/** 房间锁下读取签发事实及绑定当前网站会话；SQL事务内不调用身份RPC或媒体API。 */
 @Service
 @RequiredArgsConstructor
 public class VoiceMediaCredentialState {
@@ -16,10 +16,12 @@ public class VoiceMediaCredentialState {
     /** 与关闭/转让/麦位命令共用当前房间行锁。 */ private final VoiceRoomMapper rooms;
     /** 当前成员、席位和数据库租约时钟。 */ private final VoiceInteractionMapper core;
     /** 当前UUID绑定及持久退场屏障。 */ private final VoiceMediaPlanMapper media;
+    /** 网站授权轮次写入，与核心使用相同事务/旧目标计划。 */ private final VoiceMediaPlanRecorder plans;
 
     @Transactional(timeout = 2, isolation = Isolation.READ_COMMITTED)
-    public Grant current(long roomId, long user, String session, String version) {
+    public Grant current(long roomId, long user, String session, String version, String scope) {
         if (
+            !cn.kokonexus.api.voice.WebsiteSessionScope.valid(scope) ||
             roomId <= 0 ||
             user <= 0 ||
             session == null ||
@@ -87,6 +89,16 @@ public class VoiceMediaCredentialState {
             "旧媒体退场未确认，暂不签发新凭据",
             null
         );
+        boolean ready = true;
+        if (binding.getWebsiteSessionHash() == null) {
+            if (media.claimWebsite(roomId, user, binding.getGeneration(), scope) != 1) throw new IllegalStateException(
+                "网站媒体绑定未确认"
+            );
+            binding.setWebsiteSessionHash(scope);
+        } else if (!scope.equals(binding.getWebsiteSessionHash())) {
+            plans.rotateWebsite(room, binding, scope);
+            ready = false;
+        }
         return new Grant(
             room.getProviderRoomName(),
             binding.getMediaIdentity(),
@@ -94,7 +106,8 @@ public class VoiceMediaCredentialState {
             session,
             binding.getGeneration().toString(),
             binding.getSeatNo(),
-            publish
+            publish,
+            ready
         );
     }
 
@@ -106,8 +119,21 @@ public class VoiceMediaCredentialState {
         /** 当前成员会话。 */ String sessionId,
         /** 不转JS number的单调授权轮次。 */ String generation,
         /** 当前占用麦位，听众为空。 */ Integer seatNo,
-        /** 是否仅允许麦克风发布。 */ boolean publish
+        /** 是否仅允许麦克风发布。 */ boolean publish,
+        /** 新网站轮次登记已提交但旧退场未确认时为false，不能签JWT。 */ boolean ready
     ) {
+        public Grant(
+            String roomName,
+            String identity,
+            String name,
+            String sessionId,
+            String generation,
+            Integer seatNo,
+            boolean publish
+        ) {
+            this(roomName, identity, name, sessionId, generation, seatNo, publish, true);
+        }
+
         @Override
         public String toString() {
             return "VoiceMediaGrant[redacted]";

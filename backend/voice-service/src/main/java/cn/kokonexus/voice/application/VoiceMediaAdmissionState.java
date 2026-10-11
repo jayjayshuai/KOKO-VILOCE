@@ -31,14 +31,15 @@ public class VoiceMediaAdmissionState {
 
     /** 已提交CLOSING即拒绝；CONTROLLED尚无完整媒体协议，始终拒绝旧发布凭据。 */
     @Transactional(timeout = 2, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public boolean allows(VerifiedJoin join, long user, boolean entry) {
+    public boolean allows(VerifiedJoin join, long user, boolean entry, String scope) {
         var room = rooms.lockRoom(join.roomId());
         if (
             room == null ||
             !"OPEN".equals(room.getStatus()) ||
             !join.providerRoomName().equals(room.getProviderRoomName())
         ) return false;
-        if ("LEGACY".equals(room.getControlMode())) return !join.binding();
+        // 正式受控媒体候选不继续接受不能隔离网站会话的LEGACY user-ID令牌。
+        if ("LEGACY".equals(room.getControlMode())) return !bindingEnabled && !join.binding();
         if (
             !bindingEnabled || !"CONTROLLED".equals(room.getControlMode()) || !join.binding() || user <= 0
         ) return false;
@@ -54,6 +55,8 @@ public class VoiceMediaAdmissionState {
         var binding = media.binding(room.getId(), user);
         if (
             binding == null ||
+            !cn.kokonexus.api.voice.WebsiteSessionScope.valid(scope) ||
+            !scope.equals(binding.getWebsiteSessionHash()) ||
             !"ACTIVE".equals(binding.getBindingState()) ||
             !member.getSessionId().equals(binding.getSessionId()) ||
             !join.identity().equals(binding.getMediaIdentity()) ||

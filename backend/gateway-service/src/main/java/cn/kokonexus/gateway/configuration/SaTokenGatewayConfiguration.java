@@ -63,6 +63,12 @@ public class SaTokenGatewayConfiguration {
                     SaReactorSyncHolder.getExchange()
                         .getAttributes()
                         .put(TrustedUserHeaderFilter.LOGIN_ID_ATTRIBUTE, StpUtil.getLoginIdAsString());
+                    SaReactorSyncHolder.getExchange()
+                        .getAttributes()
+                        .put(
+                            TrustedUserHeaderFilter.WEBSITE_SCOPE_ATTRIBUTE,
+                            cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(StpUtil.getTokenValue())
+                        );
                 }
             })
             .setError(error -> {

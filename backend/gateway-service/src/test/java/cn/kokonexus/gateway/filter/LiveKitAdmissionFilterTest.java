@@ -71,7 +71,9 @@ class LiveKitAdmissionFilterTest {
                 })
             ).block();
             assertThat(forwarded).isTrue();
-            verify(client).admit(new MediaAdmissionCommand("42", TOKEN));
+            verify(client).admit(
+                new MediaAdmissionCommand("42", TOKEN, WebsiteSessionScope.fromToken("synthetic-cookie"))
+            );
         }
     }
 
@@ -128,7 +130,9 @@ class LiveKitAdmissionFilterTest {
                 })
             ).block();
             assertThat(reached).isTrue();
-            verify(client).admit(new MediaAdmissionCommand("42", TOKEN));
+            verify(client).admit(
+                new MediaAdmissionCommand("42", TOKEN, WebsiteSessionScope.fromToken("synthetic-cookie"))
+            );
         }
     }
 
@@ -152,7 +156,9 @@ class LiveKitAdmissionFilterTest {
                 )
                 .block();
             assertThat(forwarded).isTrue();
-            verify(client).admit(new MediaAdmissionCommand("42", TOKEN));
+            verify(client).admit(
+                new MediaAdmissionCommand("42", TOKEN, WebsiteSessionScope.fromToken("synthetic-cookie"))
+            );
         }
     }
 

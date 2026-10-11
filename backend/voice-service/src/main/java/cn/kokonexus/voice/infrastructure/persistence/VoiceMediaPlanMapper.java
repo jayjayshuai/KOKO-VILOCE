@@ -7,6 +7,15 @@ import org.apache.ibatis.annotations.*;
 /** 房间锁先于绑定锁；任务领取是独立短事务，值参数绑定，复杂CAS在XML。 */
 @Mapper
 public interface VoiceMediaPlanMapper {
+    /** 非锁定、索引有界发现；事务代理重新核对摘要，不删除新会话。 */
+    List<Long> websiteRooms(@Param("user") long user, @Param("scope") String scope, @Param("limit") int limit);
+    /** 仅首次未绑定网站会话的当前轮次可声明归属。 */
+    int claimWebsite(
+        @Param("room") long room,
+        @Param("user") long user,
+        @Param("generation") long generation,
+        @Param("scope") String scope
+    );
     /** 非锁定有界发现，随后事务代理锁房间并重新核验；cursor避免坏房间饿死后续房间。 */
     List<Long> expiredMemberRooms(@Param("after") long after, @Param("limit") int limit);
     List<Binding> activeBindings(@Param("room") long room);

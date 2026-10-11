@@ -15,12 +15,53 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 房间锁下的持久互动核心；不授予媒体权限，不在事务中调用媒体或身份RPC。 */
+/** 房间行锁串行同房事实，RC避免不同房间的空范围间隙锁互等；不在事务中访问RPC/SFU。 */
 @Service
 public class VoiceInteractionService {
 
+    /** 内部注销补偿：匹配网站摘要后才清理成员/麦位/审计及旧身份任务，迟到调用不动新绑定。 */
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public void retireWebsiteSession(long roomId, long user, String scope) {
+        requireEnabled();
+        identity(user, roomId);
+        VoiceRoom room = mapper.lockRoom(roomId);
+        if (room == null || !"CONTROLLED".equals(room.getControlMode())) return;
+        var binding = media.websiteBinding(roomId, user, scope);
+        if (binding == null) return;
+        var member = mapper.member(roomId, user);
+        boolean changed =
+            member != null &&
+            "ACTIVE".equals(member.getMemberState()) &&
+            binding.getSessionId().equals(member.getSessionId());
+        if (changed) {
+            for (Seat seat : mapper.seats(roomId))
+                if (Objects.equals(seat.getUserId(), user) && binding.getSessionId().equals(seat.getSessionId())) {
+                    if (seat.getRequestId() != null) one(mapper.finishRequest(seat.getRequestId(), "CANCELLED"));
+                    clear(seat);
+                    one(mapper.saveSeat(seat));
+                }
+            one(mapper.setMemberState(roomId, user, "LEFT"));
+            bump(room);
+            one(
+                mapper.audit(
+                    UUID.randomUUID().toString(),
+                    roomId,
+                    user,
+                    "WEBSITE_LOGOUT",
+                    room.getInteractionVersion(),
+                    mapper.databaseNow(),
+                    user,
+                    null,
+                    null,
+                    null
+                )
+            );
+        }
+        media.revokeWebsite(room, binding);
+    }
+
     /** 授权先于审计查询，每次当前角色、版本游标有界。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ActionPage actions(long user, long roomId, String before, int size) {
         requireEnabled();
         identity(user, roomId);
@@ -80,7 +121,7 @@ public class VoiceInteractionService {
     }
 
     /** 后台仅回收当前OPEN受控房间；与用户命令使用同一房间锁/审计/媒体退场事务。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void reapExpiredMembers(long roomId) {
         requireEnabled();
         if (roomId <= 0) throw new IllegalArgumentException("回收房间标识无效");
@@ -95,7 +136,7 @@ public class VoiceInteractionService {
     }
 
     /** 与核心快照相同的当前授权，再返回本人计划与房间队列的诊断。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public MediaPlanView mediaPlan(long user, long roomId) {
         requireEnabled();
         identity(user, roomId);
@@ -113,7 +154,7 @@ public class VoiceInteractionService {
     }
 
     /** 只给版本/能力，不向未加入者展示成员或申请。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Capabilities capabilities(long user, long roomId) {
         identity(user, roomId);
         if (!enabled) return new Capabilities(false, false, null, false);
@@ -128,7 +169,7 @@ public class VoiceInteractionService {
     }
 
     /** 名称必须由Controller外的身份目录提供；新UUID幂等绑定版本，不复活过期成员。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Ack join(long user, long roomId, String requestId, String expectedVersion, String displayName) {
         requireEnabled();
         identity(user, roomId);
@@ -176,7 +217,7 @@ public class VoiceInteractionService {
     }
 
     /** 每25秒续约建议；旧轮次或过期租约不允许复活，不增加命令/审计预算。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void heartbeat(long user, long roomId, String sessionId) {
         requireEnabled();
         identity(user, roomId);
@@ -188,7 +229,7 @@ public class VoiceInteractionService {
     }
 
     /** 房主可未加入观察；其他人仅有效成员，收据不当当前快照。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Snapshot snapshot(long user, long roomId) {
         requireEnabled();
         identity(user, roomId);
@@ -200,7 +241,7 @@ public class VoiceInteractionService {
     }
 
     /** 同版本也先锁房间、回收租约、核对当前成员；不返回旧权限下的快照。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public SyncView sync(long user, long roomId, String knownVersion) {
         requireEnabled();
         identity(user, roomId);
@@ -217,7 +258,7 @@ public class VoiceInteractionService {
     }
 
     /** 用原UUID核对本人提交；房间锁后当前读，允许离房/关闭后核对原事实，不登记或续约。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ReceiptView receipt(long user, long roomId, String requestId) {
         requireEnabled();
         identity(user, roomId);
@@ -302,7 +343,7 @@ public class VoiceInteractionService {
     }
 
     /** 全部输入参与指纹；同UUID重复不执行，旧版本不覆盖新状态。 */
-    @Transactional(timeout = 3)
+    @Transactional(timeout = 3, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Ack command(
         long user,
         long roomId,

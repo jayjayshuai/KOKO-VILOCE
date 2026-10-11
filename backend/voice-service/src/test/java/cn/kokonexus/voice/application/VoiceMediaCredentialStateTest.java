@@ -15,6 +15,9 @@ import org.junit.jupiter.api.Test;
 /** 当前绑定/席位/租约与待退场拒绝；实际XML与事务另由独立MySQL检查。 */
 class VoiceMediaCredentialStateTest {
 
+    /** 合成高熵网站会话摘要，不是生产Cookie。 */ private static final String SCOPE =
+        cn.kokonexus.api.voice.WebsiteSessionScope.fromToken("synthetic-website-token");
+
     /** 明确模拟持久事实边界，不使用该桩证明SQL正确。 */ private final VoiceRoomMapper rooms = mock(
         VoiceRoomMapper.class
     );
@@ -23,7 +26,8 @@ class VoiceMediaCredentialStateTest {
     /** 真实授权用例，未开启事务代理。 */ private final VoiceMediaCredentialState state = new VoiceMediaCredentialState(
         rooms,
         core,
-        media
+        media,
+        mock(VoiceMediaPlanRecorder.class)
     );
     /** 合成会话，不是登录凭据。 */ private final String session = UUID.randomUUID().toString();
     /** 合成数据库时钟。 */ private final LocalDateTime now = LocalDateTime.of(2026, 10, 7, 12, 0);
@@ -61,6 +65,7 @@ class VoiceMediaCredentialStateTest {
         }
         when(core.seats(9)).thenReturn(seats);
         var binding = new Binding();
+        binding.setWebsiteSessionHash(SCOPE);
         binding.setBindingState("ACTIVE");
         binding.setSessionId(session);
         binding.setGeneration(9007199254741001L);
@@ -72,52 +77,68 @@ class VoiceMediaCredentialStateTest {
     }
 
     @Test
+    void firstWebsiteClaimsCurrentGenerationAndDifferentWebsiteRotatesBeforeSigning() {
+        var binding = fixture(true);
+        binding.setWebsiteSessionHash(null);
+        when(media.claimWebsite(9, 42, binding.getGeneration(), SCOPE)).thenReturn(1);
+        assertThat(state.current(9, 42, session, "3", SCOPE).ready()).isTrue();
+        verify(media).claimWebsite(9, 42, binding.getGeneration(), SCOPE);
+        String another = cn.kokonexus.api.voice.WebsiteSessionScope.fromToken("synthetic-another-cookie");
+        assertThat(state.current(9, 42, session, "3", another).ready()).isFalse();
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", null)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void listenerAndCurrentPublisherUseOpaqueIdentityWithoutRoleBasedPrivilege() {
         var b = fixture(false);
-        var grant = state.current(9, 42, session, "3");
+        var grant = state.current(9, 42, session, "3", SCOPE);
         assertThat(grant.publish()).isFalse();
         assertThat(grant.seatNo()).isNull();
         assertThat(grant.identity()).isEqualTo(b.getMediaIdentity());
         assertThat(grant.generation()).isEqualTo("9007199254741001");
         assertThat(grant.toString()).doesNotContain(b.getMediaIdentity(), session);
         fixture(true);
-        assertThat(state.current(9, 42, session, "3").publish()).isTrue();
+        assertThat(state.current(9, 42, session, "3", SCOPE).publish()).isTrue();
     }
 
     @Test
     void expiredWrongSessionVersionAndUnconfirmedRetirementCannotMintGrant() {
         fixture(true);
-        assertThatThrownBy(() -> state.current(9, 42, UUID.randomUUID().toString(), "3")).isInstanceOf(
+        assertThatThrownBy(() -> state.current(9, 42, UUID.randomUUID().toString(), "3", SCOPE)).isInstanceOf(
             ForbiddenOperationException.class
         );
-        assertThatThrownBy(() -> state.current(9, 42, session, "2")).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> state.current(9, 42, session, "2", SCOPE)).isInstanceOf(IllegalStateException.class);
         when(media.pending(9)).thenReturn(1);
-        assertThatThrownBy(() -> state.current(9, 42, session, "3")).isInstanceOf(
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", SCOPE)).isInstanceOf(
             ExternalDependencyUnavailableException.class
         );
         when(media.pending(9)).thenReturn(0);
         when(media.dead(9)).thenReturn(1);
-        assertThatThrownBy(() -> state.current(9, 42, session, "3")).isInstanceOf(
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", SCOPE)).isInstanceOf(
             ExternalDependencyUnavailableException.class
         );
         when(media.dead(9)).thenReturn(0);
         core.member(9, 42).setLeaseUntil(now);
-        assertThatThrownBy(() -> state.current(9, 42, session, "3")).isInstanceOf(ForbiddenOperationException.class);
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", SCOPE)).isInstanceOf(
+            ForbiddenOperationException.class
+        );
     }
 
     @Test
     void staleBindingCannotRestorePublishingOrCrossSessionPermission() {
         var binding = fixture(true);
         binding.setPublishDesired(false);
-        assertThatThrownBy(() -> state.current(9, 42, session, "3")).isInstanceOf(
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", SCOPE)).isInstanceOf(
             ExternalDependencyUnavailableException.class
         );
         binding.setPublishDesired(true);
         binding.setSessionId(UUID.randomUUID().toString());
-        assertThatThrownBy(() -> state.current(9, 42, session, "3")).isInstanceOf(
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", SCOPE)).isInstanceOf(
             ExternalDependencyUnavailableException.class
         );
         rooms.lockRoom(9).setStatus("CLOSING");
-        assertThatThrownBy(() -> state.current(9, 42, session, "3")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> state.current(9, 42, session, "3", SCOPE)).isInstanceOf(
+            ResourceNotFoundException.class
+        );
     }
 }

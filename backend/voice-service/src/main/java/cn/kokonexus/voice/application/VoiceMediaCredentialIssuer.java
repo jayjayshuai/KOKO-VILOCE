@@ -30,7 +30,7 @@ public class VoiceMediaCredentialIssuer {
         return enabled;
     }
 
-    public Credential issue(long user, long roomId, String session, String version) {
+    public Credential issue(long user, long roomId, String session, String version, String scope) {
         if (!enabled) throw new ExternalDependencyUnavailableException("受控媒体凭据尚未开放", null);
         try {
             if (!identity.active(user)) throw new ForbiddenOperationException("当前账号不可用");
@@ -39,13 +39,17 @@ public class VoiceMediaCredentialIssuer {
         }
         VoiceMediaCredentialState.Grant grant;
         try {
-            grant = state.current(roomId, user, session, version);
+            grant = state.current(roomId, user, session, version, scope);
         } catch (
             org.springframework.dao.DataAccessException
             | org.springframework.transaction.TransactionException unavailable
         ) {
             throw new ExternalDependencyUnavailableException("当前媒体授权读取暂不可用", null);
         }
+        if (!grant.ready()) throw new ExternalDependencyUnavailableException(
+            "旧网站媒体正在清退，请稍后重新连接",
+            null
+        );
         String token = media.issueBoundJoinToken(grant.roomName(), grant.identity(), grant.name(), grant.publish());
         return new Credential(
             media.publicUrl(),

@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="cn.kokonexus.voice.infrastructure.persistence.VoiceMediaPlanMapper">
+    <select id="websiteRooms" resultType="java.lang.Long" timeout="2">
+        SELECT room_id FROM voice_media_binding FORCE INDEX(idx_voice_website_binding)
+        WHERE user_id=#{user} AND website_session_hash=#{scope} AND binding_state='ACTIVE'
+        ORDER BY room_id LIMIT #{limit}
+    </select>
+    <update id="claimWebsite">
+        UPDATE voice_media_binding SET website_session_hash=#{scope},updated_at=CURRENT_TIMESTAMP(3)
+        WHERE room_id=#{room} AND user_id=#{user} AND generation=#{generation}
+          AND binding_state='ACTIVE' AND website_session_hash IS NULL
+    </update>
     <select id="expiredMemberRooms" resultType="java.lang.Long" timeout="2">
         SELECT DISTINCT m.room_id
         FROM voice_room_member m FORCE INDEX (idx_voice_expired_members)
@@ -31,7 +41,7 @@
         VALUES(#{binding.roomId},#{binding.userId},#{binding.sessionId},#{binding.generation},#{binding.mediaIdentity},#{binding.bindingState},#{binding.publishDesired},#{binding.seatNo},CURRENT_TIMESTAMP(3))
     </insert>
     <update id="rotateBinding">
-        UPDATE voice_media_binding SET session_id=#{binding.sessionId},generation=#{binding.generation},media_identity=#{binding.mediaIdentity},binding_state=#{binding.bindingState},publish_desired=#{binding.publishDesired},seat_no=#{binding.seatNo},updated_at=CURRENT_TIMESTAMP(3)
+        UPDATE voice_media_binding SET session_id=#{binding.sessionId},generation=#{binding.generation},media_identity=#{binding.mediaIdentity},binding_state=#{binding.bindingState},publish_desired=#{binding.publishDesired},seat_no=#{binding.seatNo},website_session_hash=#{binding.websiteSessionHash},updated_at=CURRENT_TIMESTAMP(3)
         WHERE room_id=#{binding.roomId} AND user_id=#{binding.userId} AND generation=#{old}
     </update>
     <insert id="insertRetirement">

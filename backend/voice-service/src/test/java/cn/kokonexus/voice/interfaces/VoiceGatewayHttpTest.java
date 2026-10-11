@@ -32,6 +32,9 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 /** 真实环回TCP/Tomcat/VoiceController与过滤器；业务适配为mock，不证明DB/LiveKit。 */
 class VoiceGatewayHttpTest {
 
+    /** 合成高熵网站会话摘要，不是生产Cookie。 */ private static final String SCOPE =
+        cn.kokonexus.api.voice.WebsiteSessionScope.fromToken("synthetic-website-token");
+
     @Test
     void controlledCredentialHttpUsesTrustedActorNoStoreAndDisabledIsUnavailable() throws Exception {
         try (var context = new AnnotationConfigServletWebServerApplicationContext()) {
@@ -39,7 +42,7 @@ class VoiceGatewayHttpTest {
             context.refresh();
             var issuer = context.getBean(cn.kokonexus.voice.application.VoiceMediaCredentialIssuer.class);
             String session = "00000000-0000-0000-0000-000000000042";
-            when(issuer.issue(42, 1, session, "3")).thenReturn(
+            when(issuer.issue(42, 1, session, "3", SCOPE)).thenReturn(
                 new cn.kokonexus.voice.application.VoiceMediaCredentialIssuer.Credential(
                     "wss://app.example.invalid/api/media/livekit",
                     "synthetic-token",
@@ -68,6 +71,7 @@ class VoiceGatewayHttpTest {
                 )
                     .header("X-Koko-Gateway-Key", KEY)
                     .header("X-Koko-User-Id", "42")
+                    .header("X-Koko-Website-Scope", SCOPE)
                     .header("Content-Type", "application/json");
                 var accepted = client.send(
                     builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
@@ -77,8 +81,8 @@ class VoiceGatewayHttpTest {
                 assertEquals("no-store", accepted.headers().firstValue("Cache-Control").orElseThrow());
                 assertTrue(accepted.body().contains("\"canPublish\":false"));
                 assertTrue(accepted.body().contains("\"generation\":\"9007199254741001\""));
-                verify(issuer).issue(42, 1, session, "3");
-                when(issuer.issue(42, 1, session, "3")).thenThrow(
+                verify(issuer).issue(42, 1, session, "3", SCOPE);
+                when(issuer.issue(42, 1, session, "3", SCOPE)).thenThrow(
                     new cn.kokonexus.common.api.ExternalDependencyUnavailableException("受控媒体凭据尚未开放", null)
                 );
                 var disabled = client.send(

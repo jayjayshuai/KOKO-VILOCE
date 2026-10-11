@@ -12,12 +12,15 @@ import org.junit.jupiter.api.Test;
 /** 用例顺序/失败关闭与当前房间状态单元检查；SQL锁/二跳网络需另行实证。 */
 class VoiceMediaAdmissionProviderTest {
 
+    /** 合成高熵网站会话摘要，不是生产Cookie。 */ private static final String SCOPE =
+        cn.kokonexus.api.voice.WebsiteSessionScope.fromToken("synthetic-website-token");
+
     @Test
     void retainedProofUsesConnectionVerifierButStillRequiresCurrentUserAndSql() {
         var verifier = mock(LiveKitJoinTokenVerifier.class);
         var identity = mock(MediaIdentityClient.class);
         var state = mock(VoiceMediaAdmissionState.class);
-        var command = new MediaAdmissionCommand("42", "synthetic-expired-proof");
+        var command = new MediaAdmissionCommand("42", "synthetic-expired-proof", SCOPE);
         var join = new LiveKitJoinTokenVerifier.VerifiedJoin(
             9,
             "koko-voice-9",
@@ -27,8 +30,14 @@ class VoiceMediaAdmissionProviderTest {
         );
         when(verifier.verifyRetained(command.token(), "42")).thenReturn(join);
         when(identity.active(42)).thenReturn(true);
-        when(state.allows(join, 42, false)).thenReturn(true);
-        var provider = new VoiceMediaAdmissionProvider(verifier, identity, state, true);
+        when(state.allows(join, 42, false, SCOPE)).thenReturn(true);
+        var provider = new VoiceMediaAdmissionProvider(
+            verifier,
+            identity,
+            state,
+            mock(cn.kokonexus.voice.application.VoiceWebsiteSessionRetirement.class),
+            true
+        );
         assertThat(provider.retain(command)).isTrue();
         verify(verifier, never()).verify(anyString(), anyString());
         when(identity.active(42)).thenReturn(false);
@@ -41,15 +50,23 @@ class VoiceMediaAdmissionProviderTest {
         var identity = mock(MediaIdentityClient.class);
         var state = mock(VoiceMediaAdmissionState.class);
         assertThatThrownBy(() ->
-            new VoiceMediaAdmissionProvider(verifier, identity, state, false).admit(
-                new MediaAdmissionCommand("42", "synthetic-token")
-            )
+            new VoiceMediaAdmissionProvider(
+                verifier,
+                identity,
+                state,
+                mock(cn.kokonexus.voice.application.VoiceWebsiteSessionRetirement.class),
+                false
+            ).admit(new MediaAdmissionCommand("42", "synthetic-token", SCOPE))
         ).isInstanceOf(MediaAdmissionUnavailableException.class);
         verifyNoInteractions(verifier, identity, state);
         assertThat(
-            new VoiceMediaAdmissionProvider(verifier, identity, state, true).admit(
-                new MediaAdmissionCommand("42", "synthetic-token")
-            )
+            new VoiceMediaAdmissionProvider(
+                verifier,
+                identity,
+                state,
+                mock(cn.kokonexus.voice.application.VoiceWebsiteSessionRetirement.class),
+                true
+            ).admit(new MediaAdmissionCommand("42", "synthetic-token", SCOPE))
         ).isFalse();
         verifyNoInteractions(identity, state);
     }
@@ -59,17 +76,25 @@ class VoiceMediaAdmissionProviderTest {
         var verifier = mock(LiveKitJoinTokenVerifier.class);
         var identity = mock(MediaIdentityClient.class);
         var state = mock(VoiceMediaAdmissionState.class);
-        var command = new MediaAdmissionCommand("42", "synthetic-token");
+        var command = new MediaAdmissionCommand("42", "synthetic-token", SCOPE);
         var join = new LiveKitJoinTokenVerifier.VerifiedJoin(9, "koko-voice-9");
         when(verifier.verify(command.token(), "42")).thenReturn(join);
         when(identity.active(42)).thenReturn(true);
-        when(state.allows(join, 42, true)).thenReturn(true);
-        var provider = new VoiceMediaAdmissionProvider(verifier, identity, state, true);
+        when(state.allows(join, 42, true, SCOPE)).thenReturn(true);
+        var provider = new VoiceMediaAdmissionProvider(
+            verifier,
+            identity,
+            state,
+            mock(cn.kokonexus.voice.application.VoiceWebsiteSessionRetirement.class),
+            true
+        );
         assertThat(provider.admit(command)).isTrue();
         var order = inOrder(identity, state);
         order.verify(identity).active(42);
-        order.verify(state).allows(join, 42, true);
-        when(state.allows(join, 42, true)).thenThrow(new IllegalStateException("synthetic-secret database failure"));
+        order.verify(state).allows(join, 42, true, SCOPE);
+        when(state.allows(join, 42, true, SCOPE)).thenThrow(
+            new IllegalStateException("synthetic-secret database failure")
+        );
         assertThatThrownBy(() -> provider.admit(command))
             .isInstanceOf(MediaAdmissionUnavailableException.class)
             .hasMessage("媒体准入暂不可用")
@@ -96,19 +121,19 @@ class VoiceMediaAdmissionProviderTest {
         room.setControlMode("LEGACY");
         room.setProviderRoomName("koko-voice-9");
         when(mapper.lockRoom(9)).thenReturn(room);
-        assertThat(state.allows(join, 42, true)).isTrue();
+        assertThat(state.allows(join, 42, true, SCOPE)).isTrue();
         for (String status : java.util.List.of("CLOSING", "CLOSED", "FAILED", "PROVISIONING")) {
             room.setStatus(status);
-            assertThat(state.allows(join, 42, true)).isFalse();
+            assertThat(state.allows(join, 42, true, SCOPE)).isFalse();
         }
         room.setStatus("OPEN");
         room.setControlMode("CONTROLLED");
-        assertThat(state.allows(join, 42, true)).isFalse();
+        assertThat(state.allows(join, 42, true, SCOPE)).isFalse();
         room.setControlMode("LEGACY");
         room.setProviderRoomName("different-room");
-        assertThat(state.allows(join, 42, true)).isFalse();
+        assertThat(state.allows(join, 42, true, SCOPE)).isFalse();
         when(mapper.lockRoom(9)).thenReturn(null);
-        assertThat(state.allows(join, 42, true)).isFalse();
+        assertThat(state.allows(join, 42, true, SCOPE)).isFalse();
     }
 
     @Test

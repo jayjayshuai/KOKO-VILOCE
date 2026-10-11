@@ -12,6 +12,13 @@ import org.springframework.web.server.ServerWebExchange;
 @RestControllerAdvice
 public class GatewayExceptionHandler {
 
+    @ExceptionHandler(cn.kokonexus.api.voice.MediaAdmissionUnavailableException.class)
+    ResponseEntity<ApiError> mediaRetirementUnavailable(RuntimeException exception, ServerWebExchange exchange) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .header("Retry-After", "1")
+            .body(error("MEDIA_RETIREMENT_UNCONFIRMED", "网站会话已退出，媒体退场登记未完整确认", exchange));
+    }
+
     @ExceptionHandler(cn.kokonexus.api.operations.OperationsNotFoundException.class)
     ResponseEntity<ApiError> operationsNotFound(RuntimeException exception, ServerWebExchange exchange) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(

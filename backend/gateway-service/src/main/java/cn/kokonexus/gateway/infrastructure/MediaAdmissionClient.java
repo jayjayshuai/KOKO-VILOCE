@@ -8,6 +8,15 @@ import org.springframework.stereotype.Component;
 @Component
 public class MediaAdmissionClient {
 
+    /** 同一RPC超时/零重试；未完整登记不得冒充注销媒体已清退。 */
+    public boolean retireWebsiteSession(MediaWebsiteSessionCommand command) {
+        try {
+            return service.retireWebsiteSession(command);
+        } catch (RuntimeException unavailable) {
+            throw new MediaAdmissionUnavailableException();
+        }
+    }
+
     /** 单次有限等待，不重试携带JWT的鉴权RPC。 */
     @DubboReference(version = "1.0.0", check = false, timeout = 2000, retries = 0)
     private MediaAdmissionRpcService service;

@@ -176,7 +176,7 @@ const communityEdit = reactive<{
   version: 0,
 });
 const live = reactive({ slug: '', title: '', category: '', interactive: true });
-const voice = reactive({ slug: '', title: '', topic: '', maxParticipants: 30, controlled: false });
+const voice = reactive({ slug: '', title: '', topic: '', maxParticipants: 30, controlled: true });
 const creatorProfile = reactive<CreatorProfile>({
   userId: '',
   slug: '',
@@ -460,7 +460,7 @@ function editCommunity(item: Community) {
 }
 
 function requireLogin(next: 'community' | 'live' | 'voice') {
-  if (next === 'voice') voice.controlled = false;
+  if (next === 'voice') voice.controlled = true;
   dialog.value = auth.user ? next : 'auth';
   formError.value = auth.user ? '' : '请先登录，再使用创作者功能。';
 }
@@ -1079,7 +1079,7 @@ const viewBindings = computed(() => {
       userId: auth.user?.id,
       sessionRevision: auth.sessionRevision,
       refreshRevision: voiceOwnerRefreshRevision.value,
-      onCreate: (controlled = false) => {
+      onCreate: (controlled = true) => {
         requireLogin('voice');
         voice.controlled = controlled;
       },
@@ -1296,7 +1296,7 @@ onBeforeUnmount(() => {
         :disabled="submitting || imageUploading || interactionSubmitting"
         @click="closeDialog"
         >×</button
-      ><p class="eyebrow">LIVEKIT VOICE</p><h2>{{ voice.controlled ? '创建受控房间（媒体待接入）' : '创建语音房' }}</h2
+      ><p class="eyebrow">LIVEKIT VOICE</p><h2>创建语音房</h2
       ><label>房间标题<input v-model.trim="voice.title" maxlength="120" required /></label
       ><label
         >房间地址<input
@@ -1307,7 +1307,7 @@ onBeforeUnmount(() => {
       ><label>话题<textarea v-model.trim="voice.topic" maxlength="300"></textarea></label
       ><label>人数上限<input v-model.number="voice.maxParticipants" type="number" min="2" max="100" required /></label
       ><p class="hint">创建操作会实时调用自建 LiveKit；媒体服务不可用时不会返回假成功。</p>
-      <p v-if="voice.controlled" class="hint">受控房间仅开放成员/麦位持久状态，媒体授权尚未接入，不签发旧发布凭据。</p
+      <p v-if="voice.controlled" class="hint">入房默认静音；上麦并解除闭麦后，点击开启麦克风。语音需要 HTTPS 和浏览器麦克风权限，连接状态以实际结果为准。</p
       ><p v-if="formError" class="form-error">{{ formError }}</p
       ><button class="primary wide" :disabled="submitting">创建语音房</button></form
     >

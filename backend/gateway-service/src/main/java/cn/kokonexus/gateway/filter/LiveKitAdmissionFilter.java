@@ -111,7 +111,6 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
             request.getHeaders().containsKey(HttpHeaders.AUTHORIZATION) ||
             request.getQueryParams().containsKey(sessionTokenName)
         ) return reject(exchange, 400, "MEDIA_ADMISSION_INVALID");
-        var command = new MediaAdmissionCommand(user, values.getFirst());
         var siteHeaders = request.getHeaders().getOrEmpty(sessionTokenName);
         var siteCookies = request.getCookies().get(sessionTokenName);
         if (siteHeaders.size() > 1 || (siteCookies != null && siteCookies.size() > 1)) return reject(
@@ -127,6 +126,11 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
             "MEDIA_ADMISSION_REQUIRED"
         );
         if (cookie != null && !cookie.equals(websiteToken)) return reject(exchange, 400, "MEDIA_ADMISSION_INVALID");
+        var command = new MediaAdmissionCommand(
+            user,
+            values.getFirst(),
+            cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(websiteToken)
+        );
         // 只捕获本次鉴权的故障；下游传输错误不伪装为鉴权成功或改写已升级响应。
         return Mono.fromCallable(() -> client.admit(command))
             .subscribeOn(worker)
@@ -144,6 +148,7 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
                         headers.remove(sessionTokenName);
                         headers.remove(TrustedUserHeaderFilter.USER_ID_HEADER);
                         headers.remove(TrustedUserHeaderFilter.INTERNAL_KEY_HEADER);
+                        headers.remove(TrustedUserHeaderFilter.WEBSITE_SCOPE_HEADER);
                     })
                     .build();
                 return chain.filter(exchange.mutate().request(upstream).build()).thenReturn(true);

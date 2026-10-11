@@ -19,6 +19,9 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
 /** 固定独立MySQL、生产XML/事务与隔离JWT签名；不访问项目库或物理SFU，不输出凭据。 */
 public class VoiceMediaPlanMysqlCheck {
 
+    /** 合成高熵网站会话摘要，不是生产Cookie。 */ private static final String SCOPE =
+        cn.kokonexus.api.voice.WebsiteSessionScope.fromToken("synthetic-website-token");
+
     /** 固定合成房间。 */ private static final long ROOM = 9301;
     /** 真实当前核心事务代理。 */ private static VoiceInteractionService core;
     /** 合成成员服务器会话，不打印值。 */ private static final Map<Long, String> sessions = new HashMap<>();
@@ -29,12 +32,15 @@ public class VoiceMediaPlanMysqlCheck {
             user = System.getenv("VOICE_MEDIA_USER");
         check(
             url != null &&
-                url.matches("jdbc:mysql://127\\.0\\.0\\.1:33079/koko_voice_media_check_202610(?:06|10)\\?.+"),
+                url.matches("jdbc:mysql://127\\.0\\.0\\.1:33079/koko_voice_media_check_202610(?:06|10|11)\\?.+"),
             "Fixed local isolated schema required"
         );
         check(
-            List.of("koko_voice_media_check_20261006", "koko_voice_media_check_20261010").contains(user) &&
-                url.startsWith("jdbc:mysql://127.0.0.1:33079/" + user + "?"),
+            List.of(
+                "koko_voice_media_check_20261006",
+                "koko_voice_media_check_20261010",
+                "koko_voice_media_check_20261011"
+            ).contains(user) && url.startsWith("jdbc:mysql://127.0.0.1:33079/" + user + "?"),
             "Exact schema-only lab account required"
         );
         var source = new DriverManagerDataSource(url, user, System.getenv("VOICE_MEDIA_PASSWORD"));
@@ -53,7 +59,7 @@ public class VoiceMediaPlanMysqlCheck {
             .table("voice_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 5, "Fresh V1-V5 required");
+        check(flyway.migrate().migrationsExecuted == 6, "Fresh V1-V6 required");
         flyway.validate();
         var factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(source);
@@ -674,10 +680,11 @@ public class VoiceMediaPlanMysqlCheck {
             "SELECT media_identity FROM voice_media_binding WHERE room_id=9303 AND user_id=6",
             String.class
         );
+        jdbc.update("UPDATE voice_media_binding SET website_session_hash=? WHERE room_id=9303 AND user_id=6", SCOPE);
         var bound = verify.verify(boundJwt(boundIdentity, false), "6");
         check(bound != null && bound.binding(), "Actual SDK opaque token did not verify");
         check(
-            !admission.allows(bound, 6, true) && admission.allows(bound, 6, false),
+            !admission.allows(bound, 6, true, SCOPE) && admission.allows(bound, 6, false, SCOPE),
             "Entry barrier confused with existing binding retention"
         );
         for (
@@ -689,8 +696,8 @@ public class VoiceMediaPlanMysqlCheck {
                 retirement.confirmed(done.getId(), done.getLeaseToken()),
                 "Explicit lab retirement confirmation failed"
             );
-        check(admission.allows(bound, 6, true), "Current bound audience admission denied");
-        check(!admission.allows(bound, 7, true), "Opaque token accepted by other website user");
+        check(admission.allows(bound, 6, true, SCOPE), "Current bound audience admission denied");
+        check(!admission.allows(bound, 7, true, SCOPE), "Opaque token accepted by other website user");
         core.command(
             6,
             roleRoom,
@@ -703,28 +710,30 @@ public class VoiceMediaPlanMysqlCheck {
             null,
             false
         );
-        check(!admission.allows(bound, 6, false), "Old epoch retained after publish permission change");
+        check(!admission.allows(bound, 6, false, SCOPE), "Old epoch retained after publish permission change");
         String freshIdentity = jdbc.queryForObject(
             "SELECT media_identity FROM voice_media_binding WHERE room_id=9303 AND user_id=6",
             String.class
         );
+        jdbc.update("UPDATE voice_media_binding SET website_session_hash=? WHERE room_id=9303 AND user_id=6", SCOPE);
         var fresh = verify.verify(boundJwt(freshIdentity, true), "6");
         check(
-            admission.allows(fresh, 6, false) && !admission.allows(fresh, 6, true),
+            admission.allows(fresh, 6, false, SCOPE) && !admission.allows(fresh, 6, true, SCOPE),
             "Fresh identity ignored pending old retire barrier"
         );
         var mismatched = verify.verify(boundJwt(freshIdentity, false), "6");
-        check(!admission.allows(mismatched, 6, false), "Publish claim disagreed with current binding");
+        check(!admission.allows(mismatched, 6, false, SCOPE), "Publish claim disagreed with current binding");
         var credentials = proxy(
             new VoiceMediaCredentialState(
                 sql.getMapper(VoiceRoomMapper.class),
                 sql.getMapper(VoiceInteractionMapper.class),
-                media
+                media,
+                recorder
             ),
             manager
         );
         expect(
-            () -> credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom)),
+            () -> credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom), SCOPE),
             cn.kokonexus.common.api.ExternalDependencyUnavailableException.class
         );
         for (
@@ -733,16 +742,16 @@ public class VoiceMediaPlanMysqlCheck {
             batch = retirement.claim(UUID.randomUUID().toString())
         ) for (var done : batch)
             check(retirement.confirmed(done.getId(), done.getLeaseToken()), "Lab retirement confirmation failed");
-        var grant = credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom));
+        var grant = credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom), SCOPE);
         check(
             grant.publish() && grant.seatNo() == 2 && freshIdentity.equals(grant.identity()),
             "SQL credential projection disagreed with seat/epoch"
         );
         expect(
-            () -> credentials.current(roleRoom, 6, UUID.randomUUID().toString(), roomVersion(roleRoom)),
+            () -> credentials.current(roleRoom, 6, UUID.randomUUID().toString(), roomVersion(roleRoom), SCOPE),
             cn.kokonexus.common.api.ForbiddenOperationException.class
         );
-        expect(() -> credentials.current(roleRoom, 6, owner.sessionId(), "0"), IllegalStateException.class);
+        expect(() -> credentials.current(roleRoom, 6, owner.sessionId(), "0", SCOPE), IllegalStateException.class);
         var signer = new cn.kokonexus.voice.infrastructure.media.LiveKitVoiceMediaGateway(
             "http://127.0.0.1:1",
             "wss://app.example.invalid/api/media/livekit",
@@ -754,19 +763,19 @@ public class VoiceMediaPlanMysqlCheck {
             "6"
         );
         check(
-            signed != null && signed.publish() && admission.allows(signed, 6, true),
+            signed != null && signed.publish() && admission.allows(signed, 6, true, SCOPE),
             "Actual SQL grant + SDK signature not admitted"
         );
-        check(!admission.allows(signed, 7, true), "Current signed grant used by different website user");
+        check(!admission.allows(signed, 7, true, SCOPE), "Current signed grant used by different website user");
         System.out.println(
             "PASS MEDIA_SQL_10 current SQL/transaction grant + actual SDK JWT, pending retirement/session/version/cross-user refusal; no SFU assertion"
         );
         jdbc.update(
             "UPDATE voice_room_member SET lease_until=TIMESTAMPADD(SECOND,-1,CURRENT_TIMESTAMP(3)) WHERE room_id=9303 AND user_id=6"
         );
-        check(!admission.allows(fresh, 6, false), "Expired member retained binding");
+        check(!admission.allows(fresh, 6, false, SCOPE), "Expired member retained binding");
         expect(
-            () -> credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom)),
+            () -> credentials.current(roleRoom, 6, owner.sessionId(), roomVersion(roleRoom), SCOPE),
             cn.kokonexus.common.api.ForbiddenOperationException.class
         );
         check(
@@ -776,15 +785,252 @@ public class VoiceMediaPlanMysqlCheck {
                     "koko-voice-9303"
                 ),
                 6,
-                true
+                true,
+                SCOPE
             ),
             "Legacy identity bypassed controlled binding"
         );
         System.out.println(
             "PASS MEDIA_SQL_9 actual SDK signed UUID/current binding/cross-user denial/changed epoch/claim mismatch/expiry/entry-versus-retain barrier"
         );
+        websiteSessionChecks(sql, manager, media, recorder, retirement, admission, credentials, verify);
+        crossRoomGapChecks(sql, manager, media, recorder);
         System.out.println(
             "PASS VOICE_MEDIA_PLAN_MYSQL_ALL SQL/transaction only; no production/Gateway/LiveKit/RTC acceptance"
+        );
+    }
+
+    /** 真MySQL当前行锁/事务及SDK签名：网站切换、迟到注销、回滚与双worker，不以桩证明清退。 */
+    private static void websiteSessionChecks(
+        SqlSessionTemplate sql,
+        DataSourceTransactionManager manager,
+        VoiceMediaPlanMapper media,
+        VoiceMediaPlanRecorder recorder,
+        VoiceMediaRetirementState retirement,
+        VoiceMediaAdmissionState admission,
+        VoiceMediaCredentialState credentials,
+        cn.kokonexus.voice.infrastructure.media.LiveKitJoinTokenVerifier verify
+    ) throws Exception {
+        long room = 9304;
+        jdbc.update(
+            "INSERT INTO voice_room(id,owner_id,owner_name,slug,title,status,max_participants,control_mode,provider_room_name) VALUES(9304,8,'合成房主8','synthetic-website-lab','合成网站媒体','OPEN',10,'CONTROLLED','koko-voice-9304')"
+        );
+        var joined = core.join(8, room, UUID.randomUUID().toString(), "0", "合成网站主体8");
+        core.command(
+            8,
+            room,
+            UUID.randomUUID().toString(),
+            joined.sessionId(),
+            roomVersion(room),
+            CommandType.PULL,
+            1,
+            8L,
+            null,
+            null
+        );
+        core.command(
+            8,
+            room,
+            UUID.randomUUID().toString(),
+            joined.sessionId(),
+            roomVersion(room),
+            CommandType.MUTE,
+            1,
+            null,
+            null,
+            false
+        );
+        drainSyntheticRetirements(retirement);
+        var first = credentials.current(room, 8, joined.sessionId(), roomVersion(room), SCOPE);
+        check(first.ready(), "First website scope did not claim current binding");
+        var old = verify.verify(boundJwt(first.identity(), true, room), "8");
+        check(admission.allows(old, 8, true, SCOPE), "Current website proof denied");
+        String nextScope = cn.kokonexus.api.voice.WebsiteSessionScope.fromToken("synthetic-next-website-token");
+        check(!admission.allows(old, 8, true, nextScope), "Different website reused same user's JWT");
+        check(!admission.allows(old, 8, true, null), "Unscoped consumer bypassed website binding");
+        long generation = Long.parseLong(first.generation());
+        jdbc.execute(
+            "CREATE TRIGGER synthetic_fail_website_retire BEFORE INSERT ON voice_media_retirement FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic website rollback'"
+        );
+        try {
+            expect(
+                () -> credentials.current(room, 8, joined.sessionId(), roomVersion(room), nextScope),
+                org.springframework.dao.DataAccessException.class
+            );
+            check(
+                media.binding(room, 8).getGeneration() == generation &&
+                    SCOPE.equals(media.binding(room, 8).getWebsiteSessionHash()),
+                "Failed website rotation did not roll back"
+            );
+        } finally {
+            jdbc.execute("DROP TRIGGER synthetic_fail_website_retire");
+        }
+        var switched = credentials.current(room, 8, joined.sessionId(), roomVersion(room), nextScope);
+        check(
+            !switched.ready() && !first.identity().equals(switched.identity()),
+            "Website switch did not fence old identity before signing"
+        );
+        check(!admission.allows(old, 8, false, SCOPE), "Old website proof retained after new scope");
+        var service = new VoiceWebsiteSessionRetirement(media, core);
+        check(
+            service.retire(new cn.kokonexus.api.voice.MediaWebsiteSessionCommand("8", SCOPE)),
+            "Old logout registration incomplete"
+        );
+        check(
+            "ACTIVE".equals(sql.getMapper(VoiceInteractionMapper.class).member(room, 8).getMemberState()) &&
+                media.binding(room, 8).getMediaIdentity().equals(switched.identity()),
+            "Late old logout touched new member/binding"
+        );
+        drainSyntheticRetirements(retirement);
+        var current = credentials.current(room, 8, joined.sessionId(), roomVersion(room), nextScope);
+        check(
+            current.ready() && current.identity().equals(switched.identity()),
+            "Retry unnecessarily rotated same website again"
+        );
+        var fresh = verify.verify(boundJwt(current.identity(), true, room), "8");
+        check(admission.allows(fresh, 8, true, nextScope), "New website current proof denied");
+        check(
+            jdbc
+                .queryForList(
+                    "EXPLAIN SELECT room_id FROM voice_media_binding FORCE INDEX(idx_voice_website_binding) WHERE user_id=8 AND website_session_hash=? AND binding_state='ACTIVE' ORDER BY room_id LIMIT 16",
+                    nextScope
+                )
+                .stream()
+                .anyMatch(row -> "idx_voice_website_binding".equals(row.get("key"))),
+            "Website discovery index missing"
+        );
+        System.out.println(
+            "PASS MEDIA_SQL_WEBSITE_12 V6/current scope/cross-website denial/rotation rollback/immutable old target/late logout cannot remove new identity/retry/index"
+        );
+        jdbc.execute(
+            "CREATE TRIGGER synthetic_fail_website_audit BEFORE INSERT ON voice_room_action FOR EACH ROW BEGIN IF NEW.command_type='WEBSITE_LOGOUT' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic website audit rollback'; END IF; END"
+        );
+        try {
+            expect(
+                () -> service.retire(new cn.kokonexus.api.voice.MediaWebsiteSessionCommand("8", nextScope)),
+                org.springframework.dao.DataAccessException.class
+            );
+            check(
+                "ACTIVE".equals(sql.getMapper(VoiceInteractionMapper.class).member(room, 8).getMemberState()) &&
+                    "ON_MIC".equals(
+                        sql.getMapper(VoiceInteractionMapper.class).seats(room).getFirst().getSeatState()
+                    ) &&
+                    admission.allows(fresh, 8, true, nextScope),
+                "Website logout failure did not roll back member/seat/binding"
+            );
+        } finally {
+            jdbc.execute("DROP TRIGGER synthetic_fail_website_audit");
+        }
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var start = new CountDownLatch(1);
+            var a = pool.submit(() -> {
+                start.await();
+                return service.retire(new cn.kokonexus.api.voice.MediaWebsiteSessionCommand("8", nextScope));
+            });
+            var b = pool.submit(() -> {
+                start.await();
+                return service.retire(new cn.kokonexus.api.voice.MediaWebsiteSessionCommand("8", nextScope));
+            });
+            start.countDown();
+            check(
+                a.get(5, TimeUnit.SECONDS) && b.get(5, TimeUnit.SECONDS),
+                "Concurrent website retirement did not complete"
+            );
+        }
+        check(
+            "LEFT".equals(sql.getMapper(VoiceInteractionMapper.class).member(room, 8).getMemberState()) &&
+                "EMPTY".equals(sql.getMapper(VoiceInteractionMapper.class).seats(room).getFirst().getSeatState()),
+            "Website logout left member/seat active"
+        );
+        check(!admission.allows(fresh, 8, false, nextScope), "Website logout retained revoked JWT");
+        check(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM voice_media_retirement WHERE room_id=9304 AND media_identity=?",
+                Integer.class,
+                current.identity()
+            ) == 1,
+            "Duplicate website logout created duplicate old target"
+        );
+        check(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM voice_room_action WHERE room_id=9304 AND command_type='WEBSITE_LOGOUT'",
+                Integer.class
+            ) == 1,
+            "Website logout audit not idempotent"
+        );
+        System.out.println(
+            "PASS MEDIA_SQL_WEBSITE_13 logout audit failure rolls back whole member/seat/binding/job transaction; two workers register once; no physical SFU assertion"
+        );
+    }
+
+    /** 明确的SQL任务确认夹具，不调用物理SFU、不用于公网清退结论。 */
+    private static void drainSyntheticRetirements(VoiceMediaRetirementState retirement) {
+        for (
+            var batch = retirement.claim(UUID.randomUUID().toString());
+            !batch.isEmpty();
+            batch = retirement.claim(UUID.randomUUID().toString())
+        ) for (var job : batch)
+            check(retirement.confirmed(job.getId(), job.getLeaseToken()), "Synthetic retirement confirmation failed");
+    }
+
+    /** 两真实事务均读完不存在的成员后同时插入，覆盖不同房间空范围间隙锁互等。 */
+    private static void crossRoomGapChecks(
+        SqlSessionTemplate sql,
+        DataSourceTransactionManager manager,
+        VoiceMediaPlanMapper media,
+        VoiceMediaPlanRecorder recorder
+    ) throws Exception {
+        for (long room : new long[] { 9305, 9306 }) {
+            jdbc.update(
+                "INSERT INTO voice_room(id,owner_id,owner_name,slug,title,status,max_participants,control_mode,provider_room_name) VALUES(?,10,'合成并发房主',?,'合成并发入房','OPEN',10,'CONTROLLED',?)",
+                room,
+                "synthetic-gap-" + room,
+                "koko-voice-" + room
+            );
+            for (int seat = 1; seat <= 8; seat++) jdbc.update(
+                "INSERT INTO voice_seat(room_id,seat_no) VALUES(?,?)",
+                room,
+                seat
+            );
+        }
+        var bothRead = new CountDownLatch(2);
+        var delegate = sql.getMapper(VoiceInteractionMapper.class);
+        var synchronizedMapper = (VoiceInteractionMapper) java.lang.reflect.Proxy.newProxyInstance(
+            VoiceInteractionMapper.class.getClassLoader(),
+            new Class[] { VoiceInteractionMapper.class },
+            (object, method, args) -> {
+                if (method.getName().equals("saveMember")) {
+                    bothRead.countDown();
+                    check(bothRead.await(2, TimeUnit.SECONDS), "Other room blocked before empty-member barrier");
+                }
+                try {
+                    return method.invoke(delegate, args);
+                } catch (java.lang.reflect.InvocationTargetException failure) {
+                    throw failure.getCause();
+                }
+            }
+        );
+        var concurrent = proxy(new VoiceInteractionService(synchronizedMapper, true, recorder), manager);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> concurrent.join(10, 9305, UUID.randomUUID().toString(), "0", "合成并发主体"));
+            var second = pool.submit(() ->
+                concurrent.join(10, 9306, UUID.randomUUID().toString(), "0", "合成并发主体")
+            );
+            check(
+                first.get(5, TimeUnit.SECONDS).sessionId() != null &&
+                    second.get(5, TimeUnit.SECONDS).sessionId() != null,
+                "Cross-room insertion failed"
+            );
+        }
+        check(
+            "ACTIVE".equals(delegate.member(9305, 10).getMemberState()) &&
+                "ACTIVE".equals(delegate.member(9306, 10).getMemberState()) &&
+                media.binding(9305, 10) != null &&
+                media.binding(9306, 10) != null,
+            "Cross-room member/binding commits not confirmed"
+        );
+        System.out.println(
+            "PASS MEDIA_SQL_GAP_14 actual two-transaction empty-member barrier; RC with per-room mutex commits both members/media plans without cross-room gap deadlock"
         );
     }
 
@@ -811,6 +1057,10 @@ public class VoiceMediaPlanMysqlCheck {
     }
 
     private static String boundJwt(String identity, boolean publish) {
+        return boundJwt(identity, publish, 9303);
+    }
+
+    private static String boundJwt(String identity, boolean publish, long roomId) {
         var token = new io.livekit.server.AccessToken(
             "isolated-binding-admission-key",
             "synthetic-binding-admission-secret-key-private"
@@ -819,7 +1069,7 @@ public class VoiceMediaPlanMysqlCheck {
         token.setTtl(60000);
         token.addGrants(
             new io.livekit.server.RoomJoin(true),
-            new io.livekit.server.RoomName("koko-voice-9303"),
+            new io.livekit.server.RoomName("koko-voice-" + roomId),
             new io.livekit.server.CanSubscribe(true),
             new io.livekit.server.CanPublish(publish),
             new io.livekit.server.CanPublishData(false),

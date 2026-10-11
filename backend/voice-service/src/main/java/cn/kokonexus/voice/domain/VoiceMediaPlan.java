@@ -21,6 +21,7 @@ public final class VoiceMediaPlan {
         /** ACTIVE/INACTIVE，希望接入状态。 */ private String bindingState;
         /** 当前SQL席位事实希望是否允许发声，非SFU确认。 */ private Boolean publishDesired;
         /** 仅ON_MIC的本人授权麦位号；未在麦为null，变更也推进轮次。 */ private Integer seatNo;
+        /** 可信签发时绑定的网站会话摘要；历史或换轮次未签发时为null，不能作为登录凭据。 */ private String websiteSessionHash;
     }
 
     @Getter

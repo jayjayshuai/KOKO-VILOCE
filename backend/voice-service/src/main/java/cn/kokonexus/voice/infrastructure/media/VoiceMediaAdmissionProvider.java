@@ -13,17 +13,30 @@ public class VoiceMediaAdmissionProvider implements MediaAdmissionRpcService {
     /** 当前Active身份目录，在SQL事务之外调用。 */ private final MediaIdentityClient directory;
     /** 当前锁定房间状态的事务代理。 */ private final VoiceMediaAdmissionState state;
     /** 新信令入口需分批配置并复验，默认不开放。 */ private final boolean enabled;
+    /** 已结束网站会话的持久退场登记，不访问SFU。 */ private final cn.kokonexus.voice.application.VoiceWebsiteSessionRetirement retirement;
 
     public VoiceMediaAdmissionProvider(
         LiveKitJoinTokenVerifier verifier,
         MediaIdentityClient directory,
         VoiceMediaAdmissionState state,
+        cn.kokonexus.voice.application.VoiceWebsiteSessionRetirement retirement,
         @Value("${koko.voice.signal-admission-enabled:false}") boolean enabled
     ) {
         this.verifier = verifier;
         this.directory = directory;
         this.state = state;
+        this.retirement = retirement;
         this.enabled = enabled;
+    }
+
+    @Override
+    public boolean retireWebsiteSession(MediaWebsiteSessionCommand command) {
+        if (!enabled) throw new MediaAdmissionUnavailableException();
+        try {
+            return retirement.retire(command);
+        } catch (RuntimeException unavailable) {
+            throw new MediaAdmissionUnavailableException();
+        }
     }
 
     @Override
@@ -44,8 +57,13 @@ public class VoiceMediaAdmissionProvider implements MediaAdmissionRpcService {
             : verifier.verifyRetained(command.token(), command.userId());
         if (join == null) return false;
         try {
-            if (!directory.active(Long.parseLong(command.userId()))) return false;
-            return state.allows(join, Long.parseLong(command.userId()), entry);
+            if (!directory.active(Long.parseLong(command.userId()))) {
+                if (join.binding()) retirement.retire(
+                    new MediaWebsiteSessionCommand(command.userId(), command.websiteScope())
+                );
+                return false;
+            }
+            return state.allows(join, Long.parseLong(command.userId()), entry, command.websiteScope());
         } catch (RuntimeException unavailable) {
             throw new MediaAdmissionUnavailableException();
         }

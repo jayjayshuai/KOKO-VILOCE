@@ -31,6 +31,14 @@ public class AuthController {
     @DubboReference(version = "1.0.0", check = false, timeout = 10000, retries = 0)
     private IdentityRpcService identityRpcService;
 
+    /** 注销媒体的持久登记适配器；不在Netty事件线程调用。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    private cn.kokonexus.gateway.infrastructure.MediaAdmissionClient mediaAdmission;
+
+    /** 已启用媒体时退出不能仅撤销网站Cookie。 */
+    @org.springframework.beans.factory.annotation.Value("${koko.gateway.media-admission.enabled:false}")
+    private boolean mediaEnabled;
+
     @PostMapping("/register")
     @io.swagger.v3.oas.annotations.Operation(summary = "注册账号")
     public Mono<AuthResponse> register(@Valid @RequestBody RegisterRequest request, ServerWebExchange exchange) {
@@ -71,7 +79,17 @@ public class AuthController {
     public Mono<Void> logout(ServerWebExchange exchange) {
         return Mono.fromRunnable(() ->
             SaReactorSyncHolder.setContext(exchange, () -> {
+                String user = StpUtil.getLoginIdAsString();
+                String scope = cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(StpUtil.getTokenValue());
                 StpUtil.logout();
+                if (
+                    mediaEnabled &&
+                    !mediaAdmission.retireWebsiteSession(
+                        new cn.kokonexus.api.voice.MediaWebsiteSessionCommand(user, scope)
+                    )
+                ) {
+                    throw new cn.kokonexus.api.voice.MediaAdmissionUnavailableException();
+                }
                 return null;
             })
         )

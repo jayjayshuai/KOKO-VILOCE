@@ -24,6 +24,8 @@ test('明文媒体模板直接拒绝且不记录令牌，不重定向或转发',
   assert.match(media, /error_log \/dev\/null crit;/)
   assert.doesNotMatch(media, /proxy_pass|rewrite|https:\/\/|return 30[1278]/)
   assert.match(source, /location \/koko-api\/ \{/)
+  assert.match(source, /return 308 https:\/\/\$host\$request_uri;/)
+  assert.doesNotMatch(source, /proxy_pass/)
   assert.match(location(source, '/rtc'), /return 404;/)
 })
 

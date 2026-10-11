@@ -95,21 +95,18 @@ watch(
       <button type="button" class="secondary" :disabled="loading || !!closing" @click="load()"
         ><RefreshCw :size="16" />刷新</button
       >
-      <button type="button" class="primary" :disabled="!!closing" @click="emit('create')"
+      <button
+        type="button"
+        class="primary"
+        :disabled="!!closing || interactionBusy || !features?.enabled"
+        @click="emit('create', true)"
         ><Plus :size="17" />创建语音房</button
       >
     </div>
   </div>
   <p v-if="writeError" class="form-error" role="alert">{{ writeError }}</p>
   <p v-if="featureError" class="form-error" role="alert">互动能力读取失败：{{ featureError }}，不开放受控创建。</p>
-  <button
-    v-if="features?.enabled"
-    type="button"
-    class="secondary"
-    :disabled="!!closing || interactionBusy"
-    @click="emit('create', true)"
-    >创建受控房间（媒体待接入）</button
-  >
+  <p v-if="features && !features.enabled" role="status">语音房创建暂未开放，请稍后刷新。</p>
   <p v-if="success" role="status">{{ success }}</p>
   <VoiceAuditHistory
     v-if="historyRoom && userId"

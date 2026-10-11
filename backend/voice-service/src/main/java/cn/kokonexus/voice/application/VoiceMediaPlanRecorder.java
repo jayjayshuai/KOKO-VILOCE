@@ -14,6 +14,41 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Component
 public class VoiceMediaPlanRecorder {
 
+    /** 锁后仅返回当前匹配的旧网站绑定，迟到注销不能选择新轮次。 */
+    public Binding websiteBinding(long room, long user, String scope) {
+        requireTransaction();
+        if (!enabled || !cn.kokonexus.api.voice.WebsiteSessionScope.valid(scope)) return null;
+        var binding = media.binding(room, user);
+        return binding != null &&
+            "ACTIVE".equals(binding.getBindingState()) &&
+            scope.equals(binding.getWebsiteSessionHash())
+            ? binding
+            : null;
+    }
+
+    /** 换网站会话推进UUID并写不可变旧目标；后续签发须等待退场屏障。 */
+    public void rotateWebsite(VoiceRoom room, Binding binding, String scope) {
+        requireTransaction();
+        if (!enabled || !cn.kokonexus.api.voice.WebsiteSessionScope.valid(scope)) throw new IllegalStateException(
+            "网站媒体绑定不可用"
+        );
+        rotate(
+            room,
+            binding,
+            binding.getSessionId(),
+            true,
+            Boolean.TRUE.equals(binding.getPublishDesired()),
+            binding.getSeatNo(),
+            scope
+        );
+    }
+
+    /** 当前旧摘要已核对；登记旧目标并失效，SQL事务内不调用SFU。 */
+    public void revokeWebsite(VoiceRoom room, Binding binding) {
+        requireTransaction();
+        rotate(room, binding, binding.getSessionId(), false, false, null);
+    }
+
     /** 当前成员/麦位，调用者已持房间锁。 */ private final VoiceInteractionMapper core;
     /** 媒体绑定/不可变退场目标。 */ private final VoiceMediaPlanMapper media;
     /** SQL计划候选默认关闭，不等于媒体接入开关。 */ private final boolean enabled;
@@ -104,6 +139,18 @@ public class VoiceMediaPlanRecorder {
         boolean publish,
         Integer seat
     ) {
+        rotate(room, binding, session, active, publish, seat, null);
+    }
+
+    private void rotate(
+        VoiceRoom room,
+        Binding binding,
+        String session,
+        boolean active,
+        boolean publish,
+        Integer seat,
+        String scope
+    ) {
         long old = binding.getGeneration(),
             next = Math.addExact(old, 1);
         if ("ACTIVE".equals(binding.getBindingState())) {
@@ -122,6 +169,7 @@ public class VoiceMediaPlanRecorder {
         binding.setBindingState(active ? "ACTIVE" : "INACTIVE");
         binding.setPublishDesired(active && publish);
         binding.setSeatNo(active ? seat : null);
+        binding.setWebsiteSessionHash(scope);
         one(media.rotateBinding(binding, old));
     }
 

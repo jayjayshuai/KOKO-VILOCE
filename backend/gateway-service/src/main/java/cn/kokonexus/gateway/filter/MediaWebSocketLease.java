@@ -9,7 +9,7 @@ import org.springframework.web.reactive.socket.*;
 import reactor.core.publisher.*;
 import reactor.core.scheduler.*;
 
-/** 媒体WS持续网站/房间/绑定核验；仅信令关闭，不伪称直接撤销已建立RTP音轨。 */
+/** 媒体WS持续网站/房间/绑定核验；确定网站失效时补登记持久退场，不把信令关闭当作SFU确认。 */
 @Component
 public class MediaWebSocketLease implements AutoCloseable {
 
@@ -50,10 +50,19 @@ public class MediaWebSocketLease implements AutoCloseable {
             if (proof == null) return session.close(new CloseStatus(1008, "MEDIA_PROOF_REQUIRED"));
             if (!slots.tryAcquire()) return session.close(new CloseStatus(1013, "MEDIA_LEASE_BUSY"));
             var ended = Sinks.<Boolean>one();
-            var denied = Mono.fromCallable(
-                () ->
-                    website.active(proof.websiteToken(), proof.admission().userId()) && media.retain(proof.admission())
-            )
+            var denied = Mono.fromCallable(() -> {
+                if (!website.active(proof.websiteToken(), proof.admission().userId())) {
+                    // 仅确定失效才登记撤权；Redis故障抛异常时不将未知状态当作注销。
+                    media.retireWebsiteSession(
+                        new cn.kokonexus.api.voice.MediaWebsiteSessionCommand(
+                            proof.admission().userId(),
+                            cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(proof.websiteToken())
+                        )
+                    );
+                    return false;
+                }
+                return media.retain(proof.admission());
+            })
                 .subscribeOn(workers)
                 .timeout(Duration.ofSeconds(3))
                 .onErrorReturn(false)

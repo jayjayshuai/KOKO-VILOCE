@@ -31,10 +31,11 @@ public class VoiceMediaCredentialController {
     )
     public VoiceMediaCredentialIssuer.Credential credential(
         @Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long user,
+        @Parameter(hidden = true) @RequestHeader("X-Koko-Website-Scope") String scope,
         @PathVariable long id,
         @Valid @RequestBody Request request
     ) {
-        return issuer.issue(user, id, request.sessionId(), request.expectedVersion());
+        return issuer.issue(user, id, request.sessionId(), request.expectedVersion(), scope);
     }
 
     public record Request(

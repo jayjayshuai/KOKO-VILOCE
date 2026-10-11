@@ -18,6 +18,10 @@ public class TrustedUserHeaderFilter implements GlobalFilter, Ordered {
     public static final String INTERNAL_KEY_HEADER = "X-Koko-Gateway-Key";
     /** LOGIN_ID_ATTRIBUTE 服务端协议常量，不接受客户端覆盖。 */
     public static final String LOGIN_ID_ATTRIBUTE = "koko-nexus.login-id";
+    /** 当前已认证网站会话摘要的内部属性，不来自HTTP身份头。 */
+    public static final String WEBSITE_SCOPE_ATTRIBUTE = "koko-nexus.website-scope";
+    /** 仅凭据签发下游接收的可信摘要头，所有客户端同名头先删除。 */
+    public static final String WEBSITE_SCOPE_HEADER = "X-Koko-Website-Scope";
     /** 网关到下游的内部密钥，禁止日志输出。 */
     private final String internalKey;
 
@@ -33,12 +37,21 @@ public class TrustedUserHeaderFilter implements GlobalFilter, Ordered {
             .headers(headers -> {
                 headers.remove(USER_ID_HEADER);
                 headers.remove(INTERNAL_KEY_HEADER);
+                headers.remove(WEBSITE_SCOPE_HEADER);
             });
         String loginId = exchange.getAttribute(LOGIN_ID_ATTRIBUTE);
         if (loginId != null) {
             requestBuilder.header(USER_ID_HEADER, loginId);
         }
         String path = exchange.getRequest().getURI().getPath();
+        String scope = exchange.getAttribute(WEBSITE_SCOPE_ATTRIBUTE);
+        if (
+            loginId != null &&
+            path.matches("/api/voice/rooms/[1-9][0-9]{0,18}/interaction/media-credentials") &&
+            cn.kokonexus.api.voice.WebsiteSessionScope.valid(scope)
+        ) {
+            requestBuilder.header(WEBSITE_SCOPE_HEADER, scope);
+        }
         if (
             !internalKey.isBlank() &&
             (path.startsWith("/api/assets/") ||
