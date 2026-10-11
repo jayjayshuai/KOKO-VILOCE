@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { VoiceActionPage } from '../services/voice-interaction'
 import {
   interactionUuid,
@@ -22,7 +22,10 @@ type Attempt =
 export function useVoiceInteractionWorkspace(context: InteractionContext, network = voiceInteractionApi) {
   /** 真实能力，不以失败伪装关闭开关。 */ const capabilities = ref<InteractionCapabilities | null>(null)
   /** 本人授权快照，读取失败保留旧快照并标记故障。 */ const snapshot = ref<InteractionSnapshot | null>(null)
-  /** 读取进行中。 */ const loading = ref(false)
+  /** 首次/手动/明确操作前置读取，不被后台轮询复用。 */ const loading = ref(false)
+  /** 静默后台读取，不改变按钮、布局或前台aria-busy。 */ const refreshing = ref(false)
+  /** 单次后台续约，可被明确新操作抢占等待；取消不能撤销服务器已续的租约。 */ const renewing = ref(false)
+  /** 续约故障独立于未知业务写入，迟到反馈不得覆盖命令结果。 */ const renewalError = ref('')
   /** 单写/心跳互斥，防乱序刷新。 */ const busy = ref(false)
   /** 能力或快照错误。 */ const readError = ref('')
   /** 写入/心跳未确认，不自动重试管理命令。 */ const writeError = ref('')
@@ -93,7 +96,9 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     }
   }
   /** 页面取消不撤销后台已提交事实。 */ let read = new AbortController(),
-    write = new AbortController()
+    write = new AbortController(),
+    renewal = new AbortController()
+  /** 续约有独立轮次，抢占后旧finally不能清除新操作busy。 */ let renewalRevision = 0
   /** 生命周期与读取分离轮次。 */ let epoch = 0,
     readRevision = 0,
     disposed = false
@@ -122,7 +127,15 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     fresh.value = false
     clearActions()
   }
+  function cancelRenewal() {
+    if (!renewing.value) return
+    renewalRevision++
+    renewal.abort()
+    busy.value = false
+    renewing.value = false
+  }
   async function load(force = true, preparingRead = false) {
+    if (force) cancelRenewal()
     if (
       disposed ||
       busy.value ||
@@ -130,6 +143,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       !context.userId ||
       !online.value ||
       !visible() ||
+      (!force && (loading.value || refreshing.value)) ||
       (!force && Date.now() < nextReadAt)
     )
       return
@@ -137,8 +151,9 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     read = new AbortController()
     const saved = capture(),
       revision = ++readRevision
-    loading.value = true
-    readError.value = ''
+    loading.value = force
+    refreshing.value = !force
+    if (force) readError.value = ''
     try {
       if (!force && capabilities.value?.enabled && snapshot.value) {
         const known = snapshot.value.version
@@ -149,7 +164,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
             throw new Error('房间同步响应不一致，请重新读取')
           snapshot.value = update.snapshot
         } else if (update.version !== known) throw new Error('房间版本变化但缺少快照，请重新读取')
-        capabilities.value = { ...capabilities.value, version: update.version, canInspect: true }
+        if (capabilities.value.version !== update.version || !capabilities.value.canInspect)
+          capabilities.value = { ...capabilities.value, version: update.version, canInspect: true }
       } else {
         const cap = await network.capabilities(saved.roomId, read.signal)
         if (!current(saved) || revision !== readRevision) return
@@ -164,6 +180,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
         }
       }
       fresh.value = true
+      readError.value = ''
+      if (!snapshot.value?.mySessionId) renewalError.value = ''
       lastVerifiedAt.value = Date.now()
       readFailures = 0
       nextReadAt = 0
@@ -180,11 +198,15 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
         }
       }
     } finally {
-      if (current(saved) && revision === readRevision) loading.value = false
+      if (current(saved) && revision === readRevision) {
+        loading.value = false
+        refreshing.value = false
+      }
     }
   }
   /** 仅准备一次用户新操作；核验失败、取消、换身份后false，不写入也不重试旧请求。 */
   async function prepareAction() {
+    cancelRenewal()
     if (
       disposed ||
       actionPreparing.value ||
@@ -217,6 +239,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     read.abort()
     ++readRevision
     loading.value = false
+    refreshing.value = false
     try {
       const ack =
         attempt.kind === 'JOIN'
@@ -293,6 +316,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     read.abort()
     ++readRevision
     loading.value = false
+    refreshing.value = false
     try {
       const result = await network.receipt(saved.roomId, attempt.input.requestId, write.signal)
       if (!current(saved)) return
@@ -341,18 +365,33 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     )
       return
     const saved = capture()
+    renewal.abort()
+    renewal = new AbortController()
+    const revision = ++renewalRevision
+    renewing.value = true
     busy.value = true
-    read.abort()
-    ++readRevision
-    loading.value = false
     try {
-      await network.heartbeat(saved.roomId, sessionId, write.signal)
+      await network.heartbeat(saved.roomId, sessionId, renewal.signal)
+      if (current(saved) && revision === renewalRevision) renewalError.value = ''
     } catch (cause) {
-      if (current(saved)) writeError.value = `成员续约未确认：${failure(cause)}；刷新状态后可重新加入。`
+      if (current(saved) && revision === renewalRevision) {
+        renewalError.value = `成员续约未确认：${failure(cause)}；请核验当前房间状态。`
+        const status = (cause as { status?: number })?.status
+        if (status === 401 || status === 403 || status === 404 || status === 409) {
+          invalidate()
+          read.abort()
+          ++readRevision
+          loading.value = false
+          refreshing.value = false
+          snapshot.value = null
+          capabilities.value = null
+        }
+      }
     } finally {
-      if (current(saved)) {
+      if (current(saved) && revision === renewalRevision) {
         busy.value = false
-        await load()
+        renewing.value = false
+        await load(false)
       }
     }
   }
@@ -362,6 +401,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     readRevision++
     read.abort()
     write.abort()
+    renewalRevision++
+    renewal.abort()
     read = new AbortController()
     write = new AbortController()
     if (poll) clearInterval(poll)
@@ -370,7 +411,10 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     snapshot.value = null
     pending.value = null
     loading.value = false
+    refreshing.value = false
     busy.value = false
+    renewing.value = false
+    renewalError.value = ''
     actionPreparing.value = false
     readError.value = ''
     writeError.value = ''
@@ -382,10 +426,12 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
   }
   /** 恢复不自动加入或重试写入；取消旧读取，重新核验当前权限。 */
   function suspend() {
+    cancelRenewal()
     invalidate()
     read.abort()
     ++readRevision
     loading.value = false
+    refreshing.value = false
   }
   function onOffline() {
     online.value = false
@@ -420,7 +466,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       void load()
       poll = setInterval(() => {
         if (lastVerifiedAt.value !== null && Date.now() - lastVerifiedAt.value >= 15000) invalidate()
-        if (!loading.value && !busy.value) void load(false)
+        if (!loading.value && !refreshing.value && !busy.value) void load(false)
       }, 5000)
       heartbeat = setInterval(() => {
         void pulse()
@@ -448,7 +494,10 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     capabilities,
     snapshot,
     loading,
-    busy,
+    refreshing,
+    renewing,
+    renewalError,
+    busy: computed(() => busy.value && !renewing.value),
     readError,
     writeError,
     pending,

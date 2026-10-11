@@ -212,3 +212,39 @@ test('同账号新登录轮次废弃旧能力请求，不回填旧enabled状态'
   assert.equal(h.state.enabled.value, false)
   h.dispose()
 })
+test('连接点击先显示前置核验，核验新版本后只进入SDK一次，不自动开设备', async () => {
+  const ready = deferred(),
+    h = await setup()
+  h.props.prepareConnection = () => ready.promise
+  const connecting = h.state.connect()
+  assert.equal(h.state.connectionPreparing.value, true)
+  await h.state.connect()
+  assert.equal(h.calls.includes('connect'), false)
+  h.props.snapshot.version = '4'
+  ready.resolve(true)
+  await connecting
+  assert.equal(h.calls.filter((call) => call === 'connect').length, 1)
+  assert.equal(h.calls.find((call) => Array.isArray(call))[2], '4')
+  assert.equal(h.state.connectionPreparing.value, false)
+  assert.equal(h.calls.includes('device'), false)
+  h.dispose()
+})
+test('取消或前置核验拒绝时不入SDK，点击不能静默吞掉失败', async () => {
+  const ready = deferred(),
+    h = await setup()
+  h.props.prepareConnection = () => ready.promise
+  const connecting = h.state.connect()
+  await h.state.disconnect()
+  ready.resolve(true)
+  await connecting
+  assert.equal(h.calls.includes('connect'), false)
+  assert.equal(h.state.connectionPreparing.value, false)
+  h.props.prepareConnection = async () => false
+  await h.state.connect()
+  assert.match(h.voice.voiceError.value, /核验未通过/)
+  assert.equal(h.calls.includes('connect'), false)
+  h.props.reading = true
+  await h.state.connect()
+  assert.match(h.voice.voiceError.value, /正在读取/)
+  h.dispose()
+})

@@ -23,6 +23,7 @@ const {
   busy,
   readError,
   writeError,
+  renewalError,
   pending,
   success,
   load,
@@ -134,10 +135,9 @@ function canReview(request: SeatRequest) {
     <p v-else-if="snapshot && !fresh" class="form-error" role="status"
       >以下为旧快照，当前权限未确认，已暂停新操作；请刷新房间状态。</p
     >
-    <p v-if="lastVerifiedAt" class="hint"
-      >最近核验：{{ new Date(lastVerifiedAt).toLocaleTimeString() }}（本机时间，非租约期限）</p
-    >
+    <p class="hint">成员状态在后台同步，不会重新加载页面。点击操作时才核验最新权限。</p>
     <p v-if="writeError" class="form-error" role="alert">{{ writeError }}</p>
+    <p v-if="renewalError" class="form-error" role="alert">{{ renewalError }}</p>
     <p v-if="success" role="status">{{ success }}</p>
     <div v-if="pending" class="workspace-error"
       ><p>原请求结果未确认。重试保持原 UUID、会话及版本，放弃只停止本地等待，不取消后台操作。</p
@@ -234,6 +234,7 @@ function canReview(request: SeatRequest) {
         :snapshot="snapshot"
         :fresh="fresh && online && !pending"
         :reading="loading"
+        :prepare-connection="prepareAction"
       />
       <details @toggle="showMediaPlan = ($event.target as HTMLDetailsElement).open">
         <summary>高级：媒体授权和退场进度</summary>
@@ -278,6 +279,9 @@ function canReview(request: SeatRequest) {
         </section>
         <details class="voice-management">
           <summary>高级：麦位、预约和房间管理</summary>
+          <p v-if="lastVerifiedAt" class="hint"
+            >最近核验：{{ new Date(lastVerifiedAt).toLocaleTimeString() }}（本机时间，非租约期限）</p
+          >
           <p class="hint"
             >房间版本 {{ snapshot.version }} · 有效成员 {{ snapshot.members.length }} ·
             90秒租约，面板关闭后停止续约。</p

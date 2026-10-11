@@ -142,7 +142,7 @@ test('用户可见说明区分连接和发声，技术进度默认折叠且不�
   assert.match(panel, /<details[\s\S]*?<VoiceMediaPlanPanel\s+v-if="showMediaPlan"/)
   assert.doesNotMatch(panel + plan, /媒体仍未开放/)
   assert.match(panel, /:reading="loading"/)
-  assert.match(connection, /:disabled="reading \|\| !contextCurrent\(\)/)
+  assert.match(connection, /:disabled="connectionPreparing \|\| reading \|\| !contextCurrent\(\)/)
   assert.doesNotMatch(
     connection,
     /!props\.reading.*contextCurrent|contextCurrent.*!props\.reading/,

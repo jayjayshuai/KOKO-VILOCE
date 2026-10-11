@@ -190,6 +190,106 @@ test('关闭核心不是假快照，不请求成员或媒体API', async () => {
     h.dispose()
   }
 })
+test('静默同版本同步不切前台loading/busy，不重建名单或能力对象；新操作可抢占在途同步', async () => {
+  const slow = deferred()
+  const h = await setup({ sync: () => slow.promise })
+  try {
+    await until(() => h.state.fresh.value)
+    const oldSnapshot = h.state.snapshot.value,
+      oldCapability = h.state.capabilities.value
+    const syncing = h.state.load(false)
+    assert.equal(h.state.refreshing.value, true)
+    assert.equal(h.state.loading.value, false)
+    assert.equal(h.state.busy.value, false)
+    assert.equal(h.state.fresh.value, true)
+    slow.resolve({ version: oldSnapshot.version, snapshot: null })
+    await syncing
+    assert.equal(h.state.snapshot.value, oldSnapshot)
+    assert.equal(h.state.capabilities.value, oldCapability)
+    assert.equal(h.state.refreshing.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+test('新操作抢占后台续约等待，旧续约反馈不能清新命令busy或覆盖结果', async () => {
+  const heartbeat = deferred(),
+    write = deferred()
+  const h = await setup({ heartbeat: () => heartbeat.promise, command: () => write.promise })
+  try {
+    await until(() => h.state.fresh.value)
+    const renewing = h.state.pulse()
+    assert.equal(h.state.renewing.value, true)
+    assert.equal(h.state.busy.value, false)
+    assert.equal(await h.state.prepareAction(), true)
+    assert.equal(h.calls.find((call) => call.name === 'heartbeat').args[2].aborted, true)
+    const writing = h.state.command('LOCK', { seatNo: 1, value: true })
+    assert.equal(h.state.busy.value, true)
+    heartbeat.reject(new Error('旧续约迟到'))
+    await renewing
+    assert.equal(h.state.busy.value, true)
+    assert.equal(h.state.renewalError.value, '')
+    assert.equal(h.state.writeError.value, '')
+    write.resolve({ type: 'LOCK', version: '9007199254741002' })
+    await writing
+    assert.equal(h.state.busy.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+test('当前续约403立即失效旧权限，后台复查不能保留旧成员会话或自动入房', async () => {
+  const cap = deferred()
+  let denied = false
+  const h = await setup({
+    capabilities: () =>
+      denied
+        ? cap.promise
+        : Promise.resolve({ enabled: true, mediaReady: false, version: '9007199254741001', canInspect: true }),
+    heartbeat: async () => {
+      denied = true
+      throw Object.assign(new Error('当前会话拒绝'), { status: 403 })
+    },
+  })
+  try {
+    await until(() => h.state.fresh.value)
+    const renewing = h.state.pulse()
+    await until(() => h.state.renewalError.value.includes('续约未确认'))
+    assert.equal(h.state.fresh.value, false)
+    assert.equal(h.state.snapshot.value, null)
+    assert.equal(h.state.busy.value, false)
+    assert.equal(h.state.loading.value, false)
+    await h.state.join()
+    await h.state.command('LOCK', { seatNo: 1, value: true })
+    assert.equal(
+      h.calls.some((call) => ['join', 'command'].includes(call.name)),
+      false,
+    )
+    cap.resolve({ enabled: true, mediaReady: false, version: '9007199254741003', canInspect: false })
+    await renewing
+    assert.equal(h.state.snapshot.value, null)
+    assert.equal(h.state.refreshing.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+test('前置核验取消旧同步，晚到旧名单不能覆盖新快照', async () => {
+  const late = deferred()
+  let version = '9007199254741001'
+  const h = await setup({ sync: () => late.promise, snapshot: async () => snapshot(version) })
+  try {
+    await until(() => h.state.fresh.value)
+    const syncing = h.state.load(false)
+    version = '9007199254741003'
+    assert.equal(await h.state.prepareAction(), true)
+    assert.equal(h.calls.find((call) => call.name === 'sync').args[2].aborted, true)
+    late.resolve({ version: '9007199254741002', snapshot: snapshot('9007199254741002') })
+    await syncing
+    assert.equal(h.state.snapshot.value.version, version)
+    assert.equal(h.state.loading.value, false)
+    assert.equal(h.state.refreshing.value, false)
+  } finally {
+    h.dispose()
+  }
+})
 test('能力读取故障不伪装关闭开关或空态成功', async () => {
   const h = await setup({ capabilities: () => Promise.reject(new Error('真实网络不可用')) })
   try {
@@ -319,7 +419,8 @@ test('未确认原命令阻止心跳乱序，续约失败不假装媒体在线',
     assert.equal(h.calls.filter((c) => c.name === 'heartbeat').length, 0)
     await h.state.discard()
     await h.state.pulse()
-    assert.match(h.state.writeError.value, /续约未确认/)
+    assert.match(h.state.renewalError.value, /续约未确认/)
+    assert.equal(h.state.writeError.value.includes('续约未确认'), false)
     assert.equal(h.state.capabilities.value.mediaReady, false)
   } finally {
     h.dispose()

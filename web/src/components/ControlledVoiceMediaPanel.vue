@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useVoiceConnection } from '../composables/voice-connection';
 import { voiceMediaCredentialsApi, type ControlledMediaCredential } from '../services/voice-media-credentials';
 import type { InteractionSnapshot } from '../services/voice-interaction';
@@ -13,6 +13,7 @@ const props = defineProps<{
   /** 当前本人授权快照，失权/过期为空。 */ snapshot: InteractionSnapshot | null;
   /** 当前读取成功且页面在线可见，未知写入期间false。 */ fresh: boolean;
   /** 只阻止新连接，不使已有通话因定期读取而断开。 */ reading?: boolean;
+  /** 用户点击后核验最新快照，可抢占静默同步；不发送业务命令。 */ prepareConnection?: () => Promise<boolean>;
 }>();
 /** 仅在内存持有当前授权投影，断开后清除JWT引用。 */
 const credential = shallowRef<ControlledMediaCredential | null>(null);
@@ -27,6 +28,10 @@ const enabled = ref(false),
 let disposed = false,
   capabilityRevision = 0,
   read = new AbortController();
+/** 用户明确连接操作的独立轮次，取消或换身份后旧读取不得重新连接。 */
+let connectRevision = 0;
+/** 前置核验也必须显示反馈，不能静默吞掉用户点击。 */
+const connectionPreparing = ref(false);
 const mySeat = computed(() =>
   props.snapshot?.seats.find((seat) => seat.state === 'ON_MIC' && seat.userId === props.userId),
 );
@@ -108,6 +113,8 @@ const {
   audioPlaybackError,
 } = voice;
 async function disconnect() {
+  connectRevision++;
+  connectionPreparing.value = false;
   credential.value = null;
   await voice.leaveVoiceRoom();
 }
@@ -132,17 +139,48 @@ async function loadCapability() {
     if (!disposed && revision === capabilityRevision) loading.value = false;
   }
 }
-function connect() {
-  if (!enabled.value || props.reading || !contextCurrent()) return;
-  void voice.joinVoiceRoom({
-    id: props.roomId,
-    title: props.roomTitle || '当前房间',
-    slug: '',
-    owner: '',
-    maxParticipants: 100,
-    status: 'OPEN',
-    controlled: true,
-  });
+async function connect() {
+  if (disposed || connectionPreparing.value || phase.value !== 'idle') return;
+  if (!enabled.value || props.reading || !contextCurrent()) {
+    voiceError.value = props.reading
+      ? '房间状态正在读取，请待核验结束后连接。'
+      : '请先加入房间并核验当前权限，再连接语音。';
+    return;
+  }
+  const revision = ++connectRevision,
+    room = props.roomId,
+    user = props.userId,
+    session = props.sessionRevision;
+  const current = () =>
+    !disposed &&
+    revision === connectRevision &&
+    room === props.roomId &&
+    user === props.userId &&
+    session === props.sessionRevision;
+  connectionPreparing.value = true;
+  voiceError.value = '';
+  try {
+    const verified = props.prepareConnection ? await props.prepareConnection() : true;
+    await nextTick();
+    if (!current()) return;
+    if (!verified || !contextCurrent()) {
+      voiceError.value = '本次入房权限核验未通过，请查看房间提示后重新连接。';
+      return;
+    }
+    await voice.joinVoiceRoom({
+      id: props.roomId,
+      title: props.roomTitle || '当前房间',
+      slug: '',
+      owner: '',
+      maxParticipants: 100,
+      status: 'OPEN',
+      controlled: true,
+    });
+  } catch {
+    if (current()) voiceError.value = '本次声音连接未确认，请检查房间状态和网络后重新连接。';
+  } finally {
+    if (current()) connectionPreparing.value = false;
+  }
 }
 watch(
   () => [
@@ -156,13 +194,18 @@ watch(
     mySeat.value?.muted,
   ],
   () => {
-    if (!grantCurrent()) void disconnect();
+    if (!grantCurrent()) {
+      if (connectionPreparing.value) voiceError.value = '房间权限在核验期间变化，已取消本次声音连接。';
+      void disconnect();
+    }
   },
   { flush: 'sync' },
 );
 watch(
   () => [props.roomId, props.userId, props.sessionRevision],
   () => {
+    connectRevision++;
+    connectionPreparing.value = false;
     capabilityRevision++;
     read.abort();
     loading.value = false;
@@ -181,6 +224,7 @@ watch(
 );
 onBeforeUnmount(() => {
   disposed = true;
+  connectRevision++;
   capabilityRevision++;
   read.abort();
   credential.value = null;
@@ -196,13 +240,15 @@ onBeforeUnmount(() => {
     <p v-if="!enabled" role="status">受控语音连接尚未开放，成员和麦位操作不会自动开启麦克风。</p>
     <template v-else>
       <p role="status">{{
-        phase === 'connected'
-          ? `已连接 · 当前媒体成员 ${participantCount}`
-          : phase === 'joining'
-            ? '正在准备并连接声音…'
-            : phase === 'reconnecting'
-              ? '正在恢复连接…'
-              : '未连接'
+        connectionPreparing && phase === 'idle'
+          ? '正在核验入房权限…'
+          : phase === 'connected'
+            ? `已连接 · 当前媒体成员 ${participantCount}`
+            : phase === 'joining'
+              ? '正在准备并连接声音…'
+              : phase === 'reconnecting'
+                ? '正在恢复连接…'
+                : '未连接'
       }}</p>
       <p v-if="!snapshot?.mySessionId" class="hint">请先点击第 1 步的“加入房间”，才能连接声音。</p>
       <p v-else-if="phase === 'idle'" class="hint"
@@ -232,11 +278,17 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="primary"
-        :disabled="reading || !contextCurrent() || phase !== 'idle'"
+        :disabled="connectionPreparing || reading || !contextCurrent() || phase !== 'idle'"
         @click="connect"
         >连接语音</button
       >
-      <button type="button" class="secondary" :disabled="phase === 'idle'" @click="disconnect">断开语音</button>
+      <button
+        type="button"
+        class="secondary"
+        :disabled="phase === 'idle' && !connectionPreparing"
+        @click="disconnect"
+        >{{ connectionPreparing && phase === 'idle' ? '取消连接' : '断开语音' }}</button
+      >
       <button
         type="button"
         class="secondary"
