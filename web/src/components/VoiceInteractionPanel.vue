@@ -432,6 +432,7 @@ function canReview(request: SeatRequest) {
 /** 常驻条只代理本面板，不创建额外SDK。 */
 defineExpose({
   startSpeaking,
+  listenOnly,
   leave: leaveRoomPage,
   connect: async () => {
     await mediaPanel.value?.connect();

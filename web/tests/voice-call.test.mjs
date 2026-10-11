@@ -82,7 +82,7 @@ async function view() {
     '../services/voice-room-entry': {
       validVoiceRoomId: (id) => /^[1-9][0-9]*$/.test(id),
       consumeVoiceRoomEntry: () => {
-        const value = intent ? { enter: true, title: '房间A' } : null
+        const value = typeof intent === 'object' ? intent : intent ? { enter: true, title: '房间A' } : null
         intent = false
         return value
       },
@@ -91,7 +91,10 @@ async function view() {
   const scope = vue.effectScope()
   const state = scope.run(() => module.default.setup({}, { expose() {} }))
   state.panel.value = Object.fromEntries(
-    ['connect', 'disconnect', 'leave', 'toggleMicrophone'].map((name) => [name, async () => calls.push(name)]),
+    ['connect', 'disconnect', 'leave', 'toggleMicrophone', 'startSpeaking', 'listenOnly'].map((name) => [
+      name,
+      async () => calls.push(name),
+    ]),
   )
   return {
     state,
@@ -99,6 +102,9 @@ async function view() {
     auth,
     route,
     calls,
+    nextEntry(mode) {
+      intent = { enter: true, title: '房间A', mode }
+    },
     dispose() {
       hooks.forEach((fn) => fn())
       scope.stop()
@@ -126,6 +132,36 @@ test('缓存房间切页/返回保留同一注册与房间，入口不重放且�
     h.state.mediaState({ ...status, roomId: '9', userId: '1', sessionRevision: 1 })
     assert.equal(h.s.call.registration, next)
     assert.equal(h.s.call.status.phase, 'idle')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('断线后目录明确点击只收听会恢复缓存房间，普通返回不重放，发言入口单独消费', async () => {
+  const h = await view()
+  try {
+    const registration = h.s.call.registration
+    h.route.name = 'voice'
+    h.route.params = {}
+    h.nextEntry('listen')
+    h.route.params = { roomId: '9' }
+    h.route.name = 'voice-room'
+    await vue.nextTick()
+    assert.deepEqual(h.calls, ['listenOnly'])
+    assert.equal(h.s.call.registration, registration)
+    h.route.name = 'voice'
+    h.route.params = {}
+    h.route.params = { roomId: '9' }
+    h.route.name = 'voice-room'
+    await vue.nextTick()
+    assert.deepEqual(h.calls, ['listenOnly'])
+    h.route.name = 'voice'
+    h.route.params = {}
+    h.nextEntry('speak')
+    h.route.params = { roomId: '9' }
+    h.route.name = 'voice-room'
+    await vue.nextTick()
+    assert.deepEqual(h.calls, ['listenOnly', 'startSpeaking'])
   } finally {
     h.dispose()
   }

@@ -42,10 +42,11 @@ watch(
       callStore.call?.registration === registration &&
       callStore.call.sessionRevision === auth.sessionRevision
     ) {
-      if (intent?.mode === 'speak') {
+      if (intent) {
         const saved = registration;
         void nextTick().then(() => {
-          if (callStore.call?.registration === saved) return panel.value?.startSpeaking();
+          if (callStore.call?.registration !== saved) return;
+          return intent.mode === 'speak' ? panel.value?.startSpeaking() : panel.value?.listenOnly();
         });
       }
       return;
