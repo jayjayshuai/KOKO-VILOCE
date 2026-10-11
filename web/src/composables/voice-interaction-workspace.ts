@@ -275,6 +275,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       if (!current(saved)) return
       pending.value = null
       success.value = `已确认提交 ${ack.type}；席位不是媒体发声权限。`
+      return ack
     } catch (cause) {
       if (current(saved)) {
         if (!uncertainAttempt && rejected(cause)) {

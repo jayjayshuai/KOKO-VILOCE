@@ -4,7 +4,7 @@ import { useVoiceInteractionWorkspace } from '../composables/voice-interaction-w
 import VoiceMediaPlanPanel from './VoiceMediaPlanPanel.vue';
 import ControlledVoiceMediaPanel from './ControlledVoiceMediaPanel.vue';
 import type { VoiceCommandType, VoiceCommand, SeatRequest } from '../services/voice-interaction';
-import { arriveInVoiceRoom } from '../services/voice-room-entry';
+import { arriveInVoiceRoom, ensureVoiceRoomMembership, runVoiceSpeakingFlow } from '../services/voice-room-entry';
 import type { ScopedVoiceCallStatus } from '../stores/voice-call';
 const props = defineProps<{
   /** 仅展示用名称快照，权限仍绑定roomId。 */ roomTitle?: string;
@@ -13,6 +13,8 @@ const props = defineProps<{
   /** 本次登录轮次。 */ sessionRevision: number;
   /** 参数化房间页布局；旧管理入口保留原布局。 */ presentation?: 'room';
   /** 同身份、同轮次的一次明确导航点击，刷新默认false。 */ automaticEntry?: boolean;
+  /** 仅本次明确入口的设备意图，刷新/重新登录不能继承。 */ entryMode?: 'listen' | 'speak';
+  /** 缓存切页时禁止首次自动开启设备，回到房间页才继续等待中的意图。 */ active?: boolean;
 }>();
 const emit = defineEmits<{
   /** 不撤销后台未知写入。 */ close: [];
@@ -41,6 +43,9 @@ function mediaState(value: ScopedVoiceCallStatus) {
   if (value.roomId !== props.roomId || value.userId !== props.userId || value.sessionRevision !== props.sessionRevision)
     return;
   mediaConnected.value = value.phase === 'connected' || value.phase === 'reconnecting';
+  if (lastMediaMic && !value.microphoneEnabled && !speechBusy.value)
+    speechNotice.value = '麦克风已关闭，可选择只收听或重新开始发言。';
+  lastMediaMic = value.microphoneEnabled;
   emit('media-state', value);
 }
 const { actions, actionLoading, actionError, loadActions } = state;
@@ -100,6 +105,18 @@ const mediaPanel = ref<InstanceType<typeof ControlledVoiceMediaPanel> | null>(nu
 /** 入房串行且保留真实失败。 */
 const arrivalBusy = ref(false),
   arrivalError = ref('');
+/** 一次显式发言意图及串行编排，不等于服务器发布授权。 */
+const speechConsent = ref(false),
+  speechBusy = ref(false),
+  /** 只收听取消与设备释放在途时，不能并行重新开启设备。 */
+  listenBusy = ref(false),
+  speechNotice = ref('');
+/** 取消/离房令在途编排失效，不能恢复旧设备意图。 */
+let speechRevision = 0;
+/** 仅消除失效的成功提示，不作为权限事实。 */
+let lastMediaMic = false;
+const foreground = () =>
+  props.active !== false && (typeof document === 'undefined' || document.visibilityState !== 'hidden');
 /** 成功恢复连接后清除旧入房失败，不清除业务未知请求或当前设备错误。 */
 watch(
   () => mediaPanel.value?.connected(),
@@ -139,10 +156,17 @@ async function enterAndListen() {
   }
 }
 onMounted(() => {
-  if (props.presentation === 'room' && props.automaticEntry) void enterAndListen();
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', resumeSpeakingWhenAllowed);
+  if (props.presentation === 'room' && props.automaticEntry) {
+    if (props.entryMode === 'speak') void startSpeaking();
+    else void enterAndListen();
+  }
 });
 onBeforeUnmount(() => {
   disposed = true;
+  speechConsent.value = false;
+  speechRevision++;
+  if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', resumeSpeakingWhenAllowed);
 });
 /** 本人麦位与空位均来自已核验快照，不从界面选择推断权限。 */
 const mySeat = computed(() =>
@@ -195,6 +219,9 @@ async function execute(
   return command(type, input);
 }
 async function leaveRoomPage() {
+  speechConsent.value = false;
+  speechRevision++;
+  speechBusy.value = false;
   // 先停止本人媒体，不把等待HTTP回包当成继续采集/播放的理由。
   await mediaPanel.value?.disconnect();
   await execute('LEAVE');
@@ -257,11 +284,154 @@ async function requestSpeaking() {
     ...(manager.value ? { targetUserId: props.userId } : {}),
   });
 }
+/** 一个点击完成入房/申请/连接；普通成员只等待房主，不自动批准自己。 */
+async function startSpeaking() {
+  if (
+    disposed ||
+    speechBusy.value ||
+    listenBusy.value ||
+    arrivalBusy.value ||
+    busy.value ||
+    pending.value ||
+    !foreground()
+  )
+    return;
+  intent.value = 'speak';
+  speechConsent.value = true;
+  const revision = ++speechRevision;
+  await speakingFlow(revision);
+}
+async function speakingFlow(revision: number) {
+  if (speechBusy.value) return;
+  const scope = [props.roomId, props.userId, props.sessionRevision] as const;
+  const current = () =>
+    !disposed &&
+    revision === speechRevision &&
+    foreground() &&
+    scope[0] === props.roomId &&
+    scope[1] === props.userId &&
+    scope[2] === props.sessionRevision;
+  const ready = () =>
+    fresh.value && online.value && !loading.value && !busy.value && !pending.value && !!snapshot.value?.mySessionId;
+  speechBusy.value = true;
+  speechNotice.value = '正在加入房间并准备发言…';
+  try {
+    const result = await runVoiceSpeakingFlow({
+      current,
+      ready,
+      join: () =>
+        ensureVoiceRoomMembership({
+          load,
+          current,
+          ready: () => fresh.value && online.value && !!capabilities.value?.enabled,
+          joined: () => !!snapshot.value?.mySessionId,
+          pending: () => !!pending.value,
+          prepare: prepareAction,
+          join,
+        }),
+      hasSeat: () => !!mySeat.value,
+      hasRequest: () => !!myApplication.value,
+      owner: () => owner.value,
+      muted: () => !!mySeat.value?.muted,
+      takeSeat: async () => {
+        speechNotice.value = '正在申请发言…';
+        await requestSpeaking();
+      },
+      permit: async () => {
+        if (mySeat.value) await execute('MUTE', { seatNo: mySeat.value.seatNo, value: false });
+      },
+      connect: async () => {
+        speechNotice.value = '正在连接语音…';
+        await nextTick();
+        if (current()) await mediaPanel.value?.connect();
+      },
+      connected: () => mediaPanel.value?.connected() === true,
+      consumeConsent: () => {
+        speechConsent.value = false;
+      },
+      enableMicrophone: async () => {
+        speechNotice.value = '请允许浏览器访问麦克风…';
+        if (!current()) return false;
+        return (await mediaPanel.value?.enableMicrophone()) === true;
+      },
+    });
+    if (current()) {
+      speechNotice.value =
+        result === 'speaking'
+          ? '麦克风已开启，可以直接说话。'
+          : result === 'waiting'
+            ? mySeat.value || myApplication.value
+              ? '已连接收听，等待房主允许后会自动开始发言。'
+              : '已连接收听，暂无空麦位；有空位后请再次点击开始发言。'
+            : '尚未完成发言，请查看连接或麦克风提示，再点击开始发言重试。';
+      if (result !== 'waiting' || (!mySeat.value && !myApplication.value)) speechConsent.value = false;
+    }
+  } catch {
+    if (current()) {
+      speechConsent.value = false;
+      speechNotice.value = '发言准备未完成，请核验房间状态后重试。';
+    }
+  } finally {
+    if (revision === speechRevision) speechBusy.value = false;
+  }
+}
+/** 等待审批不重复申请；只有仍在前台、当前快照已允许时消费一次设备意图。 */
+function resumeSpeakingWhenAllowed() {
+  if (
+    !disposed &&
+    speechConsent.value &&
+    !speechBusy.value &&
+    !listenBusy.value &&
+    !disabled.value &&
+    foreground() &&
+    mySeat.value &&
+    !mySeat.value.muted
+  )
+    void speakingFlow(speechRevision);
+}
+watch(
+  () => [
+    speechConsent.value,
+    speechBusy.value,
+    fresh.value,
+    loading.value,
+    busy.value,
+    pending.value,
+    mySeat.value?.muted,
+    props.active,
+    listenBusy.value,
+  ],
+  resumeSpeakingWhenAllowed,
+);
+async function listenOnly() {
+  if (disposed || listenBusy.value) return;
+  const revision = ++speechRevision;
+  listenBusy.value = true;
+  intent.value = 'listen';
+  speechConsent.value = false;
+  speechBusy.value = false;
+  speechNotice.value = '仅收听，不会自动打开麦克风。';
+  try {
+    await mediaPanel.value?.disableMicrophone();
+    if (disposed || revision !== speechRevision) return;
+    if (myApplication.value && !disabled.value) await execute('CANCEL', { seatRequestId: myApplication.value.id });
+    if (!disposed && revision === speechRevision && !pending.value && !busy.value) await enterAndListen();
+  } finally {
+    if (revision === speechRevision) listenBusy.value = false;
+  }
+}
+/** 房主一次同意完成安排麦位和许可；部分失败仍保留真实状态/未知请求。 */
+async function approveSpeaking(request: SeatRequest) {
+  const ack = await execute('ACCEPT', { seatRequestId: request.id });
+  if (ack?.type === 'ACCEPT' && !disposed && owner.value && !disabled.value)
+    await setMemberSpeaking(request.userId, true);
+}
 function canReview(request: SeatRequest) {
   return request.type === 'APPLY' ? manager.value : request.userId === props.userId;
 }
 /** 常驻条只代理本面板，不创建额外SDK。 */
 defineExpose({
+  startSpeaking,
   leave: leaveRoomPage,
   connect: async () => {
     await mediaPanel.value?.connect();
@@ -289,7 +459,7 @@ defineExpose({
     >
     <p class="hint">{{ roomTitle || '当前房间' }}</p>
     <p class="hint" role="note"
-      >手机与电脑请用不同账号；建议戴耳机，避免回声。支持八个麦位同时发言，加入不会自动打开麦克风。</p
+      >手机与电脑请用不同账号；建议戴耳机，避免回声。支持八人同时发言；“只收听”不采集麦克风，“加入并发言”会请求授权。</p
     >
     <div class="voice-sync-status" role="status" aria-live="polite" aria-atomic="true">
       <span v-if="!online">网络已离线，声音连接及新操作已暂停；恢复后请核验房间状态。</span>
@@ -309,6 +479,7 @@ defineExpose({
     <p v-if="success && presentation !== 'room'" role="status">{{ success }}</p>
     <p v-if="arrivalBusy" role="status">正在进入房间并准备声音，请稍候…</p>
     <p v-if="arrivalError" role="alert" class="form-error">{{ arrivalError }}</p>
+    <p v-if="speechNotice" class="voice-speech-notice" role="status">{{ speechNotice }}</p>
     <ControlledVoiceMediaPanel
       v-if="presentation === 'room' && capabilities?.enabled"
       ref="mediaPanel"
@@ -321,6 +492,10 @@ defineExpose({
       :fresh="fresh && online && !pendingAffectsMedia"
       :reading="loading"
       :prepare-connection="prepareAction"
+      :quick-start="startSpeaking"
+      :listen-only="listenOnly"
+      :quick-busy="speechBusy || listenBusy || arrivalBusy || busy || actionPreparing"
+      :listen-busy="listenBusy"
       @state="mediaState"
     />
     <section v-if="presentation === 'room'" class="room-overview" aria-label="房间成员">
@@ -397,7 +572,7 @@ defineExpose({
         >
         <button v-else type="button" class="secondary" :disabled="disabled" @click="execute('LEAVE')">离开房间</button>
       </section>
-      <section class="voice-guide-step" aria-label="选择语音方式">
+      <section v-if="presentation !== 'room'" class="voice-guide-step" aria-label="选择语音方式">
         <h3>{{ presentation === 'room' ? '发言控制' : '2 · 你想做什么？' }}</h3>
         <p class="hint">这里选择收听或发言，不会自动开麦。停止发声请点击声音连接区的“关闭麦克风”。</p>
         <div class="page-actions">
@@ -495,11 +670,7 @@ defineExpose({
               >{{ snapshot.members.find((member) => member.userId === request.userId)?.displayName || '成员' }} · 麦位
               {{ request.seatNo }}</span
             >
-            <button
-              type="button"
-              class="primary"
-              :disabled="disabled"
-              @click="execute('ACCEPT', { seatRequestId: request.id })"
+            <button type="button" class="primary" :disabled="disabled" @click="approveSpeaking(request)"
               >同意发言</button
             >
             <button
@@ -614,7 +785,11 @@ defineExpose({
                   type="button"
                   class="secondary"
                   :disabled="disabled"
-                  @click="execute('ACCEPT', { seatRequestId: request.id })"
+                  @click="
+                    request.type === 'APPLY'
+                      ? approveSpeaking(request)
+                      : execute('ACCEPT', { seatRequestId: request.id })
+                  "
                   >同意</button
                 ><button
                   v-if="manager"

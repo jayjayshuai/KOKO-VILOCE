@@ -17,6 +17,10 @@ const props = defineProps<{
   /** 只阻止新连接，不使已有通话因定期读取而断开。 */ reading?: boolean;
   /** 用户点击后核验最新快照，可抢占静默同步；不发送业务命令。 */ prepareConnection?: () => Promise<boolean>;
   /** 独立房间页使用声音控件标题，不再提示弹窗步骤。 */ inRoom?: boolean;
+  /** 明确一键发言，父级编排入房/申请，不能绕过当前授权。 */ quickStart?: () => Promise<void>;
+  /** 明确仅收听，取消未消费的设备意图。 */ listenOnly?: () => Promise<void>;
+  /** 串行编排反馈，后台轮询不复用。 */ quickBusy?: boolean;
+  /** 仅取消释放过程互斥；发言准备不能阻止用户取消设备意图。 */ listenBusy?: boolean;
 }>();
 /** 仅在内存持有当前授权投影，断开后清除JWT引用。 */
 const credential = shallowRef<ControlledMediaCredential | null>(null);
@@ -135,6 +139,17 @@ async function disconnect() {
   connectionPreparing.value = false;
   credential.value = null;
   await voice.leaveVoiceRoom();
+}
+/** 已有明确发言意图才能调用；幂等开启而非翻转，不绕过设备或房主权限。 */
+async function enableMicrophone() {
+  if (disposed || phase.value !== 'connected' || !credential.value?.canPublish || !grantCurrent()) return false;
+  if (!microphoneEnabled.value) await voice.toggleMicrophone();
+  return microphoneEnabled.value;
+}
+/** 用户选择只收听，设备许可在途时取消整轮连接，防止迟到采集复活。 */
+async function disableMicrophone() {
+  if (microphoneBusy.value) await disconnect();
+  else if (microphoneEnabled.value) await voice.toggleMicrophone();
 }
 async function loadCapability() {
   if (disposed || loading.value) return;
@@ -270,6 +285,8 @@ onBeforeUnmount(() => {
 defineExpose({
   connect,
   disconnect,
+  enableMicrophone,
+  disableMicrophone,
   toggleMicrophone: voice.toggleMicrophone,
   connected: () => phase.value === 'connected',
 });
@@ -296,15 +313,21 @@ defineExpose({
                 : '未连接'
       }}</p>
       <p v-if="!snapshot?.mySessionId" class="hint">请先加入房间，才能连接声音。</p>
-      <p v-else-if="phase === 'idle'" class="hint"
-        >点击“连接语音”开始收听。只有麦位已授权且解除闭麦后，才能开启麦克风。</p
-      >
-      <p v-else-if="phase === 'connected' && !credential?.canPublish" class="hint"
-        >已连接，当前仅收听。要发声，请在发言控制区选择“我要发言”，取得麦位并解除闭麦，然后重新连接。</p
-      >
-      <p v-else-if="phase === 'connected' && !microphoneEnabled" class="hint"
-        >发言权限已就绪，但麦克风还没开启。点击“开启麦克风”，并允许浏览器访问麦克风。</p
-      >
+      <p v-else-if="phase === 'idle'" class="hint">{{
+        inRoom && quickStart
+          ? '点击“开始发言”，系统会自动入房、申请并连接；选择“只收听”不会开启麦克风。'
+          : '点击“连接语音”开始收听。只有麦位已授权且解除闭麦后，才能开启麦克风。'
+      }}</p>
+      <p v-else-if="phase === 'connected' && !credential?.canPublish" class="hint">{{
+        inRoom && quickStart
+          ? '当前仅收听。点击“开始发言”会申请麦位；房主允许后自动接通，首次需要浏览器麦克风授权。'
+          : '已连接，当前仅收听。要发声，请在发言控制区选择“我要发言”，取得麦位并解除闭麦，然后重新连接。'
+      }}</p>
+      <p v-else-if="phase === 'connected' && !microphoneEnabled" class="hint">{{
+        inRoom && quickStart
+          ? '房主已允许发言。点击“开始发言”，并允许浏览器使用麦克风即可。'
+          : '发言权限已就绪，但麦克风还没开启。点击“开启麦克风”，并允许浏览器访问麦克风。'
+      }}</p>
       <p v-else-if="microphoneEnabled" role="status"
         >麦克风已开启，正在向房间发布音轨。对方还需要连接语音并允许声音播放。</p
       >
@@ -322,27 +345,40 @@ defineExpose({
       <p class="hint"
         >切换站内页面会保留通话。下麦、房主禁麦或授权失效会断开；手机锁屏可能被系统冻结，需要回到页面重新核验。</p
       >
-      <button
-        type="button"
-        class="primary"
-        :disabled="connectionPreparing || reading || !contextCurrent() || phase !== 'idle'"
-        @click="connect"
-        >连接语音</button
-      >
-      <button
-        type="button"
-        class="secondary"
-        :disabled="phase === 'idle' && !connectionPreparing"
-        @click="disconnect"
-        >{{ connectionPreparing && phase === 'idle' ? '取消连接' : '断开语音' }}</button
-      >
-      <button
-        type="button"
-        class="secondary"
-        :disabled="phase !== 'connected' || microphoneBusy || !credential?.canPublish || !grantCurrent()"
-        @click="voice.toggleMicrophone"
-        >{{ microphoneEnabled ? '关闭麦克风' : '开启麦克风' }}</button
-      >
+      <div v-if="inRoom && quickStart && listenOnly" class="voice-quick-controls">
+        <button
+          class="primary"
+          :disabled="quickBusy || microphoneBusy || connectionPreparing"
+          @click="microphoneEnabled ? voice.toggleMicrophone() : quickStart()"
+          >{{ microphoneEnabled ? '关闭麦克风' : quickBusy ? '正在准备发言…' : '开始发言' }}</button
+        >
+        <button class="secondary" :disabled="listenBusy" @click="listenOnly()">{{
+          quickBusy && !microphoneEnabled ? '取消发言并收听' : '只收听'
+        }}</button>
+      </div>
+      <template v-else
+        ><button
+          type="button"
+          class="primary"
+          :disabled="connectionPreparing || reading || !contextCurrent() || phase !== 'idle'"
+          @click="connect"
+          >连接语音</button
+        >
+        <button
+          type="button"
+          class="secondary"
+          :disabled="phase === 'idle' && !connectionPreparing"
+          @click="disconnect"
+          >{{ connectionPreparing && phase === 'idle' ? '取消连接' : '断开语音' }}</button
+        >
+        <button
+          type="button"
+          class="secondary"
+          :disabled="phase !== 'connected' || microphoneBusy || !credential?.canPublish || !grantCurrent()"
+          @click="voice.toggleMicrophone"
+          >{{ microphoneEnabled ? '关闭麦克风' : '开启麦克风' }}</button
+        >
+      </template>
       <p v-if="credential" class="hint"
         >当前授权轮次 {{ credential.generation }} · {{ credential.canPublish ? '允许本人麦克风发布' : '仅收听' }}</p
       >
@@ -358,3 +394,11 @@ defineExpose({
     </template>
   </section>
 </template>
+<style scoped>
+.voice-quick-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+</style>

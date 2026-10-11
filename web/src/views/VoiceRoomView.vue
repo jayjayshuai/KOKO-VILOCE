@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import VoiceInteractionPanel from '../components/VoiceInteractionPanel.vue';
@@ -41,8 +41,15 @@ watch(
       roomId.value === next &&
       callStore.call?.registration === registration &&
       callStore.call.sessionRevision === auth.sessionRevision
-    )
+    ) {
+      if (intent?.mode === 'speak') {
+        const saved = registration;
+        void nextTick().then(() => {
+          if (callStore.call?.registration === saved) return panel.value?.startSpeaking();
+        });
+      }
       return;
+    }
     callStore.clear(registration);
     roomId.value = next;
     entry.value = intent;
@@ -69,6 +76,13 @@ watch(
       },
       disconnect: async () => {
         if (current()) await panel.value?.disconnect();
+      },
+      startSpeaking: async () => {
+        if (!current()) return;
+        if (route.name !== 'voice-room' || route.params.roomId !== scope.roomId)
+          await router.push({ name: 'voice-room', params: { roomId: scope.roomId } });
+        await nextTick();
+        if (current()) await panel.value?.startSpeaking();
       },
       leave: async () => {
         if (current()) await panel.value?.leave();
@@ -97,7 +111,7 @@ onBeforeUnmount(() => {
     <div class="workspace-page-heading">
       <div
         ><p class="workspace-eyebrow">VOICE ROOM</p><h1>{{ entry?.title || '语音房间' }}</h1
-        ><p>切换站内页面仍保留通话；点击“离开房间”才结束。麦克风必须由你明确开启。</p></div
+        ><p>“加入并发言”会申请麦克风权限，“只收听”不采集麦克风。切页保留通话，离房才结束。</p></div
       >
       <RouterLink class="secondary" to="/voice">返回语音空间</RouterLink>
     </div>
@@ -114,6 +128,8 @@ onBeforeUnmount(() => {
       :session-revision="auth.sessionRevision"
       presentation="room"
       :automatic-entry="!!entry?.enter"
+      :entry-mode="entry?.mode || 'listen'"
+      :active="route.name === 'voice-room' && route.params.roomId === roomId"
       @media-state="mediaState"
       @left="left"
       @close="router.push('/voice')"

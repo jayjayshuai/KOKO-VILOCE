@@ -807,6 +807,7 @@ async function submitAuth() {
   try {
     if (authMode.value === 'login') await auth.login(credentials.email, credentials.password);
     else await auth.register(credentials.email, credentials.password, credentials.handle, credentials.displayName);
+    credentials.password = '';
     dialog.value = null;
     await syncFollowStates(creators.value);
   } catch (cause) {
@@ -924,7 +925,7 @@ watch(
   { flush: 'sync' },
 );
 
-async function joinVoiceRoom(target: VoiceRoom) {
+async function joinVoiceRoom(target: VoiceRoom, mode: 'listen' | 'speak' = 'listen') {
   if (!auth.user) {
     dialog.value = 'auth';
     formError.value = '请先登录，再加入语音房。';
@@ -941,6 +942,7 @@ async function joinVoiceRoom(target: VoiceRoom) {
           userId: auth.user.id,
           revision: auth.sessionRevision,
           documentOrigin: globalThis.performance?.timeOrigin,
+          mode,
         },
       },
     });
@@ -1216,7 +1218,12 @@ onBeforeUnmount(() => {
     tabindex="-1"
     @click.self="closeDialog"
   >
-    <form v-if="dialog === 'auth'" class="modal" @submit.prevent="submitAuth"
+    <form
+      v-if="dialog === 'auth'"
+      class="modal"
+      :aria-busy="submitting"
+      @submit.prevent="submitAuth"
+      @invalid.capture.prevent="formError = '请检查邮箱格式；用户名需 3–32 位字母、数字或下划线，密码需 10–72 位。'"
       ><button
         type="button"
         class="close"
@@ -1225,11 +1232,21 @@ onBeforeUnmount(() => {
         @click="closeDialog"
         >×</button
       ><p class="eyebrow">ACCOUNT</p><h2>{{ authMode === 'login' ? '登录 KOKO Nexus' : '创建正式账号' }}</h2
-      ><label>邮箱<input v-model.trim="credentials.email" type="email" required autocomplete="email" /></label
+      ><label
+        >邮箱<input
+          v-model.trim="credentials.email"
+          type="email"
+          required
+          autocomplete="email"
+          :disabled="submitting" /></label
       ><label v-if="authMode === 'register'"
-        >用户名<input v-model.trim="credentials.handle" pattern="[a-zA-Z0-9_]{3,32}" required /></label
+        >用户名<input
+          v-model.trim="credentials.handle"
+          pattern="[a-zA-Z0-9_]{3,32}"
+          required
+          :disabled="submitting" /></label
       ><label v-if="authMode === 'register'"
-        >显示名称<input v-model.trim="credentials.displayName" maxlength="80" required /></label
+        >显示名称<input v-model.trim="credentials.displayName" maxlength="80" required :disabled="submitting" /></label
       ><label
         >密码<input
           v-model="credentials.password"
@@ -1237,14 +1254,17 @@ onBeforeUnmount(() => {
           minlength="10"
           maxlength="72"
           required
-          autocomplete="current-password" /></label
-      ><p v-if="formError" class="form-error">{{ formError }}</p
-      ><button class="primary wide" :disabled="submitting">{{
+          :disabled="submitting"
+          :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'" /></label
+      ><p class="hint">密码需 10–72 位；提交后请等待结果，不会自动重复注册。</p
+      ><p v-if="formError" class="form-error" role="alert">{{ formError }}</p
+      ><button type="submit" class="primary wide" :disabled="submitting">{{
         submitting ? '正在提交…' : authMode === 'login' ? '登录' : '注册并登录'
       }}</button
       ><button
         type="button"
         class="text-button"
+        :disabled="submitting"
         @click="
           authMode = authMode === 'login' ? 'register' : 'login';
           formError = '';

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import { useVoiceCallStore } from '../stores/voice-call';
@@ -22,6 +22,39 @@ const call = computed(() => callStore.call);
 const minimized = computed(
   () => !!call.value && !(route.name === 'voice-room' && route.params.roomId === call.value.roomId),
 );
+/** 多行移动通话条按实际高度留出内容空间，不能遮挡页面底部按钮。 */
+const bar = ref<HTMLElement | null>(null);
+let layoutRevision = 0,
+  layoutDisposed = false,
+  sizeObserver: ResizeObserver | undefined;
+function reserveContentSpace() {
+  if (layoutDisposed || !minimized.value || !bar.value) return;
+  const space = Math.ceil(bar.value.getBoundingClientRect().height) + 32;
+  document.documentElement.style.setProperty('--koko-voice-call-space', `${space}px`);
+}
+watch(
+  () => [minimized.value, call.value?.registration, bar.value],
+  async () => {
+    const revision = ++layoutRevision;
+    sizeObserver?.disconnect();
+    sizeObserver = undefined;
+    document.documentElement.style.removeProperty('--koko-voice-call-space');
+    await nextTick();
+    if (layoutDisposed || revision !== layoutRevision || !minimized.value || !bar.value) return;
+    reserveContentSpace();
+    if (typeof ResizeObserver !== 'undefined') {
+      sizeObserver = new ResizeObserver(reserveContentSpace);
+      sizeObserver.observe(bar.value);
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  layoutDisposed = true;
+  layoutRevision++;
+  sizeObserver?.disconnect();
+  document.documentElement.style.removeProperty('--koko-voice-call-space');
+});
 const label = computed(() =>
   call.value?.status.phase === 'connected'
     ? '通话中'
@@ -33,7 +66,7 @@ const label = computed(() =>
 );
 </script>
 <template>
-  <aside v-if="minimized && call" class="persistent-voice-call" aria-label="常驻语音通话">
+  <aside v-if="minimized && call" ref="bar" class="persistent-voice-call" aria-label="常驻语音通话">
     <div
       ><strong>{{ call.title }}</strong
       ><span role="status"
@@ -42,18 +75,21 @@ const label = computed(() =>
       ></div
     >
     <RouterLink class="secondary" :to="`/voice/rooms/${call.roomId}`">返回通话</RouterLink>
-    <button v-if="call.status.phase === 'idle'" class="primary" @click="call.controls.connect()">连接声音</button>
+    <button v-if="call.status.phase === 'idle'" class="primary" @click="call.controls.startSpeaking()">开始发言</button>
     <button
       v-else
       class="secondary"
-      :disabled="!call.status.canToggleMicrophone || call.status.microphoneBusy"
-      @click="call.controls.toggleMicrophone()"
-      >{{ call.status.microphoneEnabled ? '关闭麦克风' : '开启麦克风' }}</button
+      :disabled="call.status.microphoneBusy || call.status.phase !== 'connected'"
+      @click="call.status.microphoneEnabled ? call.controls.toggleMicrophone() : call.controls.startSpeaking()"
+      >{{ call.status.microphoneEnabled ? '关闭麦克风' : '开始发言' }}</button
     >
     <button class="secondary" @click="call.controls.leave()">离开通话</button>
   </aside>
 </template>
 <style scoped>
+:global(.workspace-shell .workspace-content) {
+  padding-bottom: calc(32px + var(--koko-voice-call-space, 0px));
+}
 .persistent-voice-call {
   position: fixed;
   bottom: 20px;

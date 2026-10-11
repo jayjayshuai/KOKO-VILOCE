@@ -13,7 +13,7 @@ await module.link(() => {
   throw new Error('Unexpected import')
 })
 await module.evaluate()
-const { consumeVoiceRoomEntry, arriveInVoiceRoom, validVoiceRoomId } = module.namespace
+const { consumeVoiceRoomEntry, arriveInVoiceRoom, validVoiceRoomId, runVoiceSpeakingFlow } = module.namespace
 test('房间ID严格保持64位字符串，一次导航意图消费后不在刷新/返回复活', () => {
   assert.equal(validVoiceRoomId('9223372036854775807'), true)
   for (const value of ['0', '01', '9223372036854775808', '../1', 1]) assert.equal(validVoiceRoomId(value), false)
@@ -48,6 +48,109 @@ test('换房/账号/登录轮次/文档不能消费旧点击，也不从网址�
     assert.equal(consumeVoiceRoomEntry(args[0], args[1], args[2], history, args[3]), null)
     assert.equal(history.state.kokoVoiceEntry, null)
   }
+})
+test('明确发言模式只消费一次，不接受非法模式或刷新文档的旧设备意图', () => {
+  const history = {
+    state: { kokoVoiceEntry: { roomId: '9', userId: '1', revision: 1, documentOrigin: 100, mode: 'speak' } },
+    replaceState(value) {
+      this.state = value
+    },
+  }
+  assert.equal(consumeVoiceRoomEntry('9', '1', 1, history, 100).mode, 'speak')
+  assert.equal(consumeVoiceRoomEntry('9', '1', 1, history, 100), null)
+  history.state.kokoVoiceEntry = { roomId: '9', userId: '1', revision: 1, documentOrigin: 100, mode: 'invalid' }
+  assert.equal(consumeVoiceRoomEntry('9', '1', 1, history, 100), null)
+  history.state.kokoVoiceEntry = { roomId: '9', userId: '1', revision: 1, documentOrigin: 100, mode: 'speak' }
+  assert.equal(consumeVoiceRoomEntry('9', '1', 1, history, 101), null)
+})
+
+function speakingFixture(owner = true) {
+  const calls = [],
+    state = { current: true, ready: true, seat: false, request: false, owner, muted: true, connected: false, mic: true }
+  const actions = {
+    current: () => state.current,
+    ready: () => state.ready,
+    hasSeat: () => state.seat,
+    hasRequest: () => state.request,
+    owner: () => state.owner,
+    muted: () => state.muted,
+    connected: () => state.connected,
+    join: async () => {
+      calls.push('join')
+      return true
+    },
+    takeSeat: async () => {
+      calls.push('seat')
+      if (state.owner) state.seat = true
+      else state.request = true
+    },
+    permit: async () => {
+      calls.push('permit')
+      state.muted = false
+    },
+    connect: async () => {
+      calls.push('connect')
+      state.connected = true
+    },
+    consumeConsent: () => calls.push('consume'),
+    enableMicrophone: async () => {
+      calls.push('device')
+      return state.mic
+    },
+  }
+  return { calls, state, actions }
+}
+
+test('房主一键入房上麦许可连接设备串行，无中间听众连接；普通成员等待房主而非自批', async () => {
+  const owner = speakingFixture()
+  assert.equal(await runVoiceSpeakingFlow(owner.actions), 'speaking')
+  assert.deepEqual(owner.calls, ['join', 'seat', 'permit', 'consume', 'connect', 'device'])
+  const member = speakingFixture(false)
+  assert.equal(await runVoiceSpeakingFlow(member.actions), 'waiting')
+  assert.deepEqual(member.calls, ['join', 'seat', 'connect'])
+  member.calls.length = 0
+  member.state.seat = true
+  member.state.muted = false
+  assert.equal(await runVoiceSpeakingFlow(member.actions), 'speaking')
+  assert.deepEqual(member.calls, ['join', 'consume', 'connect', 'device'])
+})
+
+test('未知提交、取消、连接失败、失权及设备拒绝不会循环重试或越权开麦', async () => {
+  for (const stage of ['join', 'seat', 'permit', 'connect']) {
+    const h = speakingFixture(),
+      key = stage === 'seat' ? 'takeSeat' : stage
+    const original = h.actions[key]
+    h.actions[key] = async () => {
+      const result = await original()
+      h.state.current = false
+      return result
+    }
+    assert.equal(await runVoiceSpeakingFlow(h.actions), 'canceled')
+    assert.equal(h.calls.includes('device'), false)
+  }
+  const unknown = speakingFixture()
+  unknown.actions.takeSeat = async () => {
+    unknown.calls.push('unknown-write')
+    unknown.state.ready = false
+  }
+  assert.equal(await runVoiceSpeakingFlow(unknown.actions), 'failed')
+  assert.equal(unknown.calls.includes('connect'), false)
+  const broken = speakingFixture()
+  broken.actions.connect = async () => broken.calls.push('connect-failed')
+  assert.equal(await runVoiceSpeakingFlow(broken.actions), 'failed')
+  assert.equal(broken.calls.filter((name) => name === 'consume').length, 1)
+  assert.equal(broken.calls.includes('device'), false)
+  const revoked = speakingFixture()
+  revoked.actions.connect = async () => {
+    revoked.state.connected = true
+    revoked.state.muted = true
+  }
+  assert.equal(await runVoiceSpeakingFlow(revoked.actions), 'failed')
+  assert.equal(revoked.calls.includes('device'), false)
+  const denied = speakingFixture()
+  denied.state.mic = false
+  assert.equal(await runVoiceSpeakingFlow(denied.actions), 'failed')
+  assert.equal(denied.calls.filter((name) => name === 'device').length, 1)
 })
 function flow() {
   const calls = [],

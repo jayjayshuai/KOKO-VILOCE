@@ -16,6 +16,7 @@ export interface ScopedVoiceCallStatus extends VoiceCallStatus {
   /** 原登录轮次。 */ sessionRevision: number
 }
 export interface VoiceCallControls {
+  /** 明确一键发言，不在后台自动索取设备。 */ startSpeaking(): Promise<void>
   /** 明确用户连接，不自动开设备。 */ connect(): Promise<void>
   /** 明确设备切换，仍核验当前权限。 */ toggleMicrophone(): Promise<void>
   /** 本机释放，不假装服务端已离房。 */ disconnect(): Promise<void>

@@ -49,7 +49,7 @@ const emit = defineEmits<{
   readPost: [post: CreatorPost];
   follow: [creator: CreatorProfile];
   community: [id?: string];
-  joinVoice: [room: VoiceRoom];
+  joinVoice: [room: VoiceRoom, mode?: 'listen' | 'speak'];
 }>();
 const headings = {
   explore: { title: '你的创作，与社区连接。', copy: '发现值得关注的内容，在社区里交流，让新的想法发生。' },
@@ -260,13 +260,21 @@ const actionLabels: Record<WorkspaceAction, string> = {
                 ><h3>{{ room.title }}</h3
                 ><p>{{ room.topic || '自由交流' }}</p
                 ><small>{{ room.owner }} · 上限 {{ room.maxParticipants }} 人</small></div
-              ><button
-                class="secondary compact-button"
-                @click="emit('joinVoice', room)"
-                :disabled="!room.controlled || voiceJoining === room.id"
-                >{{
-                  !room.controlled ? '旧版房间暂不可连麦' : voiceJoining === room.id ? '连接中…' : '进入房间'
-                }}</button
+              ><div class="voice-entry-actions"
+                ><button
+                  class="primary compact-button"
+                  @click="emit('joinVoice', room, 'speak')"
+                  :disabled="!room.controlled || voiceJoining === room.id"
+                  >{{
+                    !room.controlled ? '旧版房间暂不可连麦' : voiceJoining === room.id ? '连接中…' : '加入并发言'
+                  }}</button
+                ><button
+                  v-if="room.controlled"
+                  class="secondary compact-button"
+                  :disabled="voiceJoining === room.id"
+                  @click="emit('joinVoice', room, 'listen')"
+                  >只收听</button
+                ><small>发言会申请麦克风权限，普通成员需房主允许。</small></div
               ></article
             ></div
           ><div v-else class="workspace-empty"
@@ -318,3 +326,16 @@ const actionLabels: Record<WorkspaceAction, string> = {
           >账户与连接<ArrowRight :size="14" /></RouterLink></section></aside
   ></div>
 </template>
+<style scoped>
+.voice-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.voice-entry-actions small {
+  flex-basis: 100%;
+  max-width: 250px;
+  line-height: 1.5;
+}
+</style>
