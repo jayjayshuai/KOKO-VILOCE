@@ -20,7 +20,11 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
       'loading',
       'busy',
       'readError',
+      'readTransient',
       'writeError',
+      'rejectionNotice',
+      'renewalError',
+      'renewalTransient',
       'pending',
       'success',
       'fresh',
@@ -50,7 +54,8 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
   const context = vm.createContext({ defineProps: () => props, defineEmits: () => () => {}, confirm: () => true })
   const module = new vm.SourceTextModule(
     ts.transpileModule(
-      script + '\nexport { target, showMediaPlan, intent, mySeat, freeSeat, myApplication, execute };',
+      script +
+        '\nexport { target, showMediaPlan, intent, mySeat, freeSeat, myApplication, execute, requestSpeaking, mediaPanel, arrivalError };',
       {
         compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
       },
@@ -69,7 +74,18 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
     )
   })
   await module.evaluate()
-  const { target, showMediaPlan, intent, mySeat, freeSeat, myApplication, execute } = module.namespace
+  const {
+    target,
+    showMediaPlan,
+    intent,
+    mySeat,
+    freeSeat,
+    myApplication,
+    execute,
+    requestSpeaking,
+    mediaPanel,
+    arrivalError,
+  } = module.namespace
   state.snapshot.value = {
     mySessionId: 'synthetic-session',
     myRole: 'OWNER',
@@ -126,6 +142,49 @@ test('房主默认选本人但不自动写入，换成员/角色不能残留旧�
   await execute('DOWN', { seatNo: 1 })
   assert.equal(writes.length, 1, '核验成功后只发一次明确操作')
   assert.equal(writes[0][0], 'DOWN')
+  state.snapshot.value = {
+    ...state.snapshot.value,
+    myRole: 'OWNER',
+    seats: [{ seatNo: 1, state: 'EMPTY' }],
+    requests: [],
+  }
+  preflight = async () => {
+    state.snapshot.value = {
+      ...state.snapshot.value,
+      seats: [
+        { seatNo: 1, state: 'EMPTY' },
+        { seatNo: 2, state: 'ON_MIC', userId: props.userId, muted: false },
+      ],
+    }
+  }
+  await requestSpeaking()
+  assert.equal(writes.length, 1, '核验时已经有麦位，不重复PULL而触发成员已有麦位冲突')
+  state.snapshot.value = { ...state.snapshot.value, seats: [{ seatNo: 1, state: 'EMPTY' }] }
+  preflight = async () => {
+    state.snapshot.value = {
+      ...state.snapshot.value,
+      seats: [
+        { seatNo: 1, state: 'ON_MIC', userId: '99' },
+        { seatNo: 2, state: 'EMPTY' },
+      ],
+      myRole: 'LISTENER',
+    }
+  }
+  await requestSpeaking()
+  assert.equal(writes.length, 2)
+  assert.equal(writes[1][0], 'APPLY', '使用核验后的角色，不能保留旧房主PULL权限')
+  assert.equal(writes[1][1].seatNo, 2, '使用核验后的空席位')
+  assert.equal(writes[1][1].targetUserId, undefined)
+  const connected = vue.ref(false)
+  mediaPanel.value = { connected: () => connected.value }
+  arrivalError.value = '旧入房失败'
+  state.writeError.value = '真实未知写入'
+  await vue.nextTick()
+  assert.equal(arrivalError.value, '旧入房失败')
+  connected.value = true
+  await vue.nextTick()
+  assert.equal(arrivalError.value, '', '只在实际连接成功后清旧入房失败')
+  assert.equal(state.writeError.value, '真实未知写入', '成功连接不能隐去真实未知提交')
 })
 
 test('用户可见说明区分连接和发声，技术进度默认折叠且不宣称媒体未开放', async () => {

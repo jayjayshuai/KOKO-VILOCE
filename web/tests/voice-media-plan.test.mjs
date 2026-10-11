@@ -171,6 +171,52 @@ test('父面板授权未确认时不读取，确认后计划关闭不是零任�
     h.dispose()
   }
 })
+test('后台诊断静默、同值保留引用、前台焦点不清空进度，手动可抢占旧等待', async () => {
+  let pending = null
+  const h = await setup(() => (pending ? pending.promise : Promise.resolve(data())))
+  try {
+    await until(() => !h.state.loading.value)
+    const original = h.state.plan.value
+    await h.state.load(false)
+    assert.equal(h.state.plan.value, original)
+    pending = deferred()
+    const quiet = h.state.load(false)
+    assert.equal(h.state.loading.value, false)
+    assert.equal(h.state.refreshing.value, true)
+    h.dispatch('focus')
+    assert.equal(h.state.plan.value, original)
+    assert.equal(h.calls.length, 3)
+    const oldSignal = h.calls[2][1]
+    const stale = pending
+    pending = null
+    await h.state.load()
+    assert.equal(oldSignal.aborted, true)
+    stale.resolve(data('99'))
+    await quiet
+    assert.equal(h.state.plan.value, original)
+    assert.equal(h.state.loading.value, false)
+    assert.equal(h.state.refreshing.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('重读等待期间不清错误导致红字闪烁，仅真实成功后消除', async () => {
+  let waiting = null
+  const h = await setup(() => (waiting ? waiting.promise : Promise.reject(new Error('诊断读取故障'))))
+  try {
+    await until(() => !h.state.loading.value)
+    waiting = deferred()
+    const read = h.state.load()
+    assert.equal(h.state.error.value, '诊断读取故障')
+    waiting.resolve(data())
+    await read
+    assert.equal(h.state.error.value, '')
+  } finally {
+    h.dispose()
+  }
+})
+
 test('网络失败清旧进度而非展示清退完成，手工重取恢复真实队列', async () => {
   let broken = false
   const h = await setup(() => (broken ? Promise.reject(new Error('真实读取故障')) : Promise.resolve(data())))

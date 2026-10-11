@@ -4,6 +4,13 @@ import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
 import * as vue from 'vue'
+class ApiRequestError extends Error {
+  constructor(message, status, code = null) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
+}
 const source = await readFile(new URL('../src/composables/voice-interaction-workspace.ts', import.meta.url), 'utf8')
 const snapshot = (version = '9007199254741001') => ({
   roomId: '1',
@@ -92,7 +99,9 @@ async function setup(overrides = {}) {
     const values =
       name === 'vue'
         ? { ...vue, onBeforeUnmount: (callback) => hooks.push(callback) }
-        : { voiceInteractionApi: network, interactionUuid: () => '00000000-0000-0000-0000-000000000042' }
+        : name === '../services/http'
+          ? { ApiRequestError }
+          : { voiceInteractionApi: network, interactionUuid: () => '00000000-0000-0000-0000-000000000042' }
     return new vm.SyntheticModule(
       Object.keys(values),
       function () {
@@ -321,6 +330,133 @@ test('未加入者只读能力，JOIN确认后重新读取成员事实', async (
     h.dispose()
   }
 })
+test('首次本站业务拒绝不冒充未知提交，刷新后解锁且不自动重发', async () => {
+  for (const [status, code] of [
+    [400, 'BAD_REQUEST'],
+    [403, 'FORBIDDEN'],
+    [404, 'NOT_FOUND'],
+    [409, 'CONFLICT'],
+  ]) {
+    const h = await setup({
+      command: async () => {
+        throw new ApiRequestError('麦位冲突', status, code)
+      },
+    })
+    try {
+      await until(() => h.state.fresh.value)
+      await h.state.command('PULL', { seatNo: 1, targetUserId: '42' })
+      assert.equal(h.state.pending.value, null)
+      assert.equal(h.state.writeError.value, '')
+      assert.match(h.state.rejectionNotice.value, /麦位冲突/)
+      assert.equal(h.state.fresh.value, true)
+      assert.equal(h.calls.filter((c) => c.name === 'command').length, 1)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('裸409、错误码不匹配、5xx及超时仍保留未知请求，不能只凭状态清除', async () => {
+  for (const error of [
+    new ApiRequestError('代理409', 409),
+    new ApiRequestError('错误契约', 409, 'OTHER'),
+    new ApiRequestError('服务故障', 503, 'CONFLICT'),
+    new ApiRequestError('超时', 0, 'CONFLICT'),
+  ]) {
+    const h = await setup({
+      command: async () => {
+        throw error
+      },
+    })
+    try {
+      await until(() => h.state.fresh.value)
+      await h.state.command('PULL', { seatNo: 1, targetUserId: '42' })
+      assert.ok(h.state.pending.value)
+      assert.match(h.state.writeError.value, /结果未确认/)
+      assert.equal(h.state.rejectionNotice.value, '')
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('未知请求的原UUID重试被业务拒绝不能证明之前未提交', async () => {
+  let count = 0
+  const h = await setup({
+    command: async () => {
+      throw ++count === 1 ? new ApiRequestError('超时', 0) : new ApiRequestError('原会话已失效', 409, 'CONFLICT')
+    },
+  })
+  try {
+    await until(() => h.state.fresh.value)
+    await h.state.command('LOCK', { seatNo: 1, value: true })
+    const original = JSON.stringify(h.state.pending.value)
+    await h.state.transmit()
+    assert.equal(JSON.stringify(h.state.pending.value), original)
+    assert.match(h.state.writeError.value, /结果未确认/)
+    assert.equal(h.state.rejectionNotice.value, '')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('短暂同步失败采用中性状态但不放宽权限，重读等待期间保留提示直到成功', async () => {
+  let failure = true,
+    waiting = null
+  const h = await setup({
+    sync: async (_room, version) => {
+      if (failure) throw new ApiRequestError('网络暂时不可用', 503)
+      return { version, snapshot: null }
+    },
+    capabilities: () =>
+      waiting
+        ? waiting.promise
+        : Promise.resolve({ enabled: true, mediaReady: false, version: '9007199254741001', canInspect: true }),
+  })
+  try {
+    await until(() => h.state.fresh.value)
+    await h.state.load(false)
+    assert.equal(h.state.readTransient.value, true)
+    assert.equal(h.state.fresh.value, false)
+    await h.state.command('LOCK', { seatNo: 1, value: true })
+    assert.equal(h.calls.filter((c) => c.name === 'command').length, 0)
+    waiting = deferred()
+    const read = h.state.load()
+    assert.match(h.state.readError.value, /暂时不可用/)
+    waiting.resolve({ enabled: true, mediaReady: false, version: '9007199254741001', canInspect: true })
+    await read
+    assert.equal(h.state.readError.value, '')
+    assert.equal(h.state.readTransient.value, false)
+    assert.equal(h.state.fresh.value, true)
+    failure = false
+  } finally {
+    h.dispose()
+  }
+})
+
+test('暂时续约失败不假装成功，403仍立即失权而非中性重试', async () => {
+  for (const status of [503, 403]) {
+    const h = await setup({
+      heartbeat: async () => {
+        throw new ApiRequestError('续约未确认', status)
+      },
+      capabilities: async () => ({ enabled: true, mediaReady: false, version: '9007199254741001', canInspect: true }),
+    })
+    try {
+      await until(() => h.state.fresh.value)
+      const observed = []
+      const stop = vue.watch(h.state.snapshot, (value) => observed.push(value), { flush: 'sync' })
+      await h.state.pulse()
+      stop()
+      assert.equal(h.state.renewalTransient.value, status === 503)
+      assert.match(h.state.renewalError.value, /未确认/)
+      assert.equal(observed.includes(null), status === 403)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
 test('未知写结果保留原UUID会话版本，刷新不能换参，重试才确认', async () => {
   let fails = true
   const h = await setup({

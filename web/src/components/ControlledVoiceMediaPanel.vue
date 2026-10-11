@@ -273,12 +273,12 @@ defineExpose({ connect, disconnect, connected: () => phase.value === 'connected'
                 ? '正在恢复连接…'
                 : '未连接'
       }}</p>
-      <p v-if="!snapshot?.mySessionId" class="hint">请先点击第 1 步的“加入房间”，才能连接声音。</p>
+      <p v-if="!snapshot?.mySessionId" class="hint">请先加入房间，才能连接声音。</p>
       <p v-else-if="phase === 'idle'" class="hint"
         >点击“连接语音”开始收听。只有麦位已授权且解除闭麦后，才能开启麦克风。</p
       >
       <p v-else-if="phase === 'connected' && !credential?.canPublish" class="hint"
-        >已连接，当前仅收听。要发声，请在第 2 步选择“我要发言”，取得麦位并解除闭麦，然后重新连接。</p
+        >已连接，当前仅收听。要发声，请在发言控制区选择“我要发言”，取得麦位并解除闭麦，然后重新连接。</p
       >
       <p v-else-if="phase === 'connected' && !microphoneEnabled" class="hint"
         >发言权限已就绪，但麦克风还没开启。点击“开启麦克风”，并允许浏览器访问麦克风。</p
@@ -288,7 +288,7 @@ defineExpose({ connect, disconnect, connected: () => phase.value === 'connected'
       >
       <p v-if="reading" class="hint">正在核验房间状态，请稍候再连接；定期读取不会主动中断已有通话。</p>
       <p v-if="phase === 'connected' && participantCount <= 1" role="status"
-        >目前只有你连接了声音，请让对方也完成第 3 步。</p
+        >目前只有你连接了声音，请让对方也进入房间并连接语音。</p
       >
       <p v-else-if="phase === 'connected' && receivedAudioTracks === 0" role="status"
         >对方已连接，但尚未收到对方音轨。请让对方取得发言权限并开启麦克风。</p

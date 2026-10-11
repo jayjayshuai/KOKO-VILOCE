@@ -25,8 +25,11 @@ const {
   loading,
   busy,
   readError,
+  readTransient,
   writeError,
+  rejectionNotice,
   renewalError,
+  renewalTransient,
   pending,
   success,
   load,
@@ -55,6 +58,13 @@ const mediaPanel = ref<InstanceType<typeof ControlledVoiceMediaPanel> | null>(nu
 /** 入房串行且保留真实失败。 */
 const arrivalBusy = ref(false),
   arrivalError = ref('');
+/** 成功恢复连接后清除旧入房失败，不清除业务未知请求或当前设备错误。 */
+watch(
+  () => mediaPanel.value?.connected(),
+  (connected) => {
+    if (connected) arrivalError.value = '';
+  },
+);
 let disposed = false;
 async function enterAndListen() {
   if (disposed || arrivalBusy.value || pending.value || busy.value) return;
@@ -161,6 +171,27 @@ async function joinRoom() {
     return;
   void join();
 }
+/** 新手上麦在核验后重新选择席位/角色，不能提交点击前已过时的空位。 */
+async function requestSpeaking() {
+  if (disabled.value) return;
+  const scope = [props.roomId, props.userId, props.sessionRevision] as const;
+  if (!(await prepareAction())) return;
+  if (
+    disabled.value ||
+    scope[0] !== props.roomId ||
+    scope[1] !== props.userId ||
+    scope[2] !== props.sessionRevision ||
+    !snapshot.value?.mySessionId ||
+    mySeat.value ||
+    myApplication.value ||
+    !freeSeat.value
+  )
+    return;
+  return command(manager.value ? 'PULL' : 'APPLY', {
+    seatNo: freeSeat.value.seatNo,
+    ...(manager.value ? { targetUserId: props.userId } : {}),
+  });
+}
 function canReview(request: SeatRequest) {
   return request.type === 'APPLY' ? manager.value : request.userId === props.userId;
 }
@@ -182,16 +213,21 @@ function canReview(request: SeatRequest) {
     <p class="hint" role="note"
       >手机与电脑请用不同账号，保持本页在前台；一端戴耳机，避免回声。加入不会自动打开麦克风。</p
     >
-    <p v-if="readError" class="form-error" role="alert">{{ readError }}</p>
-    <p v-if="!online" class="form-error" role="status"
-      >网络已离线，停止同步与续约；恢复后先核验当前房间状态，不自动重试操作。</p
-    >
-    <p v-else-if="snapshot && !fresh" class="form-error" role="status"
-      >以下为旧快照，当前权限未确认，已暂停新操作；请刷新房间状态。</p
-    >
-    <p class="hint">成员状态在后台同步，不会重新加载页面。点击操作时才核验最新权限。</p>
+    <div class="voice-sync-status" role="status" aria-live="polite" aria-atomic="true">
+      <span v-if="!online">网络已离线，声音连接及新操作已暂停；恢复后请核验房间状态。</span>
+      <span v-else-if="readError && readTransient"
+        >房间同步暂时失败，正在退避重试；当前权限未确认，新操作和声音连接已暂停。</span
+      >
+      <span v-else-if="snapshot && !fresh">房间状态需要重新核验，已暂停新操作；请刷新房间状态。</span>
+      <span v-else-if="renewalError && renewalTransient"
+        >成员续约暂未确认，下一轮会重试；若连接中断，请重新核验房间状态。</span
+      >
+      <span v-else>成员状态在后台同步，不会重新加载页面。点击操作时才核验最新权限。</span>
+    </div>
+    <p v-if="readError && !readTransient" class="form-error" role="alert">{{ readError }}</p>
     <p v-if="writeError" class="form-error" role="alert">{{ writeError }}</p>
-    <p v-if="renewalError" class="form-error" role="alert">{{ renewalError }}</p>
+    <p v-if="rejectionNotice" class="hint" role="status">{{ rejectionNotice }}</p>
+    <p v-if="renewalError && !renewalTransient" class="form-error" role="alert">{{ renewalError }}</p>
     <p v-if="success && presentation !== 'room'" role="status">{{ success }}</p>
     <p v-if="arrivalBusy" role="status">正在进入房间并准备声音，请稍候…</p>
     <p v-if="arrivalError" role="alert" class="form-error">{{ arrivalError }}</p>
@@ -261,7 +297,7 @@ function canReview(request: SeatRequest) {
       </section>
       <section class="voice-guide-step" aria-label="选择语音方式">
         <h3>{{ presentation === 'room' ? '发言控制' : '2 · 你想做什么？' }}</h3>
-        <p class="hint">这里切换操作指引，不会开关麦克风。停止发声请点击第 3 步的“关闭麦克风”。</p>
+        <p class="hint">这里选择收听或发言，不会自动开麦。停止发声请点击声音连接区的“关闭麦克风”。</p>
         <div class="page-actions">
           <button
             type="button"
@@ -278,12 +314,14 @@ function canReview(request: SeatRequest) {
             >我要发言</button
           >
         </div>
-        <p v-if="intent === 'listen'">不用申请麦位，直接点击下方“连接语音”。若听不到，检查手机音量和“恢复声音播放”。</p>
+        <p v-if="intent === 'listen'"
+          >不用申请麦位，在声音连接区点击“连接语音”。若听不到，检查手机音量和“恢复声音播放”。</p
+        >
         <template v-else>
           <p v-if="!snapshot?.mySessionId">请先完成第 1 步，加入房间。</p>
           <template v-else-if="mySeat">
             <p v-if="mySeat.muted">你在麦位 {{ mySeat.seatNo }}，但房间发言权限仍关闭。先解除闭麦。</p>
-            <p v-else role="status">发言权限已就绪。下一步连接语音，再点击“开启麦克风”。</p>
+            <p v-else role="status">发言权限已就绪。在声音连接区连接语音，再点击“开启麦克风”。</p>
             <button
               v-if="mySeat.muted"
               type="button"
@@ -306,18 +344,9 @@ function canReview(request: SeatRequest) {
           <p v-else-if="!freeSeat">暂无空麦位，可以先连接语音收听。</p>
           <template v-else>
             <p>{{ manager ? '你是房主或房管，可以直接上麦。' : '申请后需要房主或房管同意，不能自动开启麦克风。' }}</p>
-            <button
-              type="button"
-              class="primary"
-              :disabled="disabled"
-              @click="
-                execute(manager ? 'PULL' : 'APPLY', {
-                  seatNo: freeSeat.seatNo,
-                  ...(manager ? { targetUserId: userId } : {}),
-                })
-              "
-              >{{ manager ? '自己上麦' : '申请发言' }}</button
-            >
+            <button type="button" class="primary" :disabled="disabled" @click="requestSpeaking">{{
+              manager ? '自己上麦' : '申请发言'
+            }}</button>
           </template>
         </template>
       </section>
@@ -412,13 +441,21 @@ function canReview(request: SeatRequest) {
                   ><button
                     type="button"
                     class="secondary"
-                    :disabled="disabled || !target"
+                    :disabled="
+                      disabled ||
+                      !target ||
+                      snapshot.seats.some((occupied) => occupied.state === 'ON_MIC' && occupied.userId === target)
+                    "
                     @click="execute('INVITE', { seatNo: seat.seatNo, targetUserId: target })"
                     >邀请</button
                   ><button
                     type="button"
                     class="secondary"
-                    :disabled="disabled || !target"
+                    :disabled="
+                      disabled ||
+                      !target ||
+                      snapshot.seats.some((occupied) => occupied.state === 'ON_MIC' && occupied.userId === target)
+                    "
                     @click="execute('PULL', { seatNo: seat.seatNo, targetUserId: target })"
                     >{{ target === userId ? '自己上麦' : '抱麦' }}</button
                   ></template
@@ -567,6 +604,19 @@ function canReview(request: SeatRequest) {
 }
 .room-layout {
   margin-top: 0;
+}
+/* 同步状态有固定最小空间，短暂网络提示不推动声音按钮上下跳动。 */
+.voice-sync-status {
+  min-height: 3.5rem;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  margin: 12px 0;
+  border-radius: 8px;
+  background: var(--surface-subtle, #11151e);
+  color: var(--text-muted, #a8aabc);
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 .room-overview {
   padding: 20px 0;

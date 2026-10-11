@@ -14,6 +14,8 @@ export function useVoiceMediaPlan(
   const paused = ref('')
   const plan = ref<VoiceMediaPlanView | null>(null),
     loading = ref(false),
+    /** 后台读取不反复禁用按钮或切换aria-busy，与前台手动核验分开。 */
+    refreshing = ref(false),
     error = ref('')
   let controller = new AbortController(),
     revision = 0,
@@ -34,10 +36,12 @@ export function useVoiceMediaPlan(
     controller.abort()
     plan.value = null
     loading.value = false
+    refreshing.value = false
   }
   async function load(manual = true) {
     paused.value = pauseReason()
-    if (!usable() || loading.value || (!manual && Date.now() < nextAt)) return
+    if (!usable() || loading.value || (!manual && (refreshing.value || Date.now() < nextAt))) return
+    controller.abort()
     controller = new AbortController()
     const stamp = ++revision,
       room = context.roomId,
@@ -50,12 +54,20 @@ export function useVoiceMediaPlan(
       user === context.userId &&
       session === context.sessionRevision &&
       context.allowed
-    loading.value = true
-    error.value = ''
+    loading.value = manual
+    refreshing.value = !manual
     try {
       const value = await network.get(room, controller.signal)
       if (current()) {
-        plan.value = value
+        // 相同诊断保留引用；真实进度变化仍展示，不以“静默”掩盖退场故障。
+        if (
+          !plan.value ||
+          Object.keys(value).some(
+            (key) => value[key as keyof VoiceMediaPlanView] !== plan.value?.[key as keyof VoiceMediaPlanView],
+          )
+        )
+          plan.value = value
+        error.value = ''
         failures = 0
         nextAt = 0
       }
@@ -67,7 +79,10 @@ export function useVoiceMediaPlan(
         nextAt = Date.now() + Math.min(60000, 5000 * 2 ** Math.min(failures - 1, 4))
       }
     } finally {
-      if (current()) loading.value = false
+      if (current()) {
+        loading.value = false
+        refreshing.value = false
+      }
     }
   }
   const stop = watch(
@@ -89,6 +104,8 @@ export function useVoiceMediaPlan(
     { immediate: true, flush: 'sync' },
   )
   function changed() {
+    // 普通前台焦点变化不清空仍在轮询的进度，离线/后台仍立即丢弃私有诊断。
+    if (usable() && (loading.value || refreshing.value || (plan.value && !error.value))) return
     invalidate()
     paused.value = pauseReason()
     if (usable()) void load()
@@ -105,5 +122,5 @@ export function useVoiceMediaPlan(
       for (const event of ['offline', 'online', 'focus']) window.removeEventListener(event, changed)
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', changed)
   })
-  return { plan, loading, error, load, paused }
+  return { plan, loading, refreshing, error, load, paused }
 }

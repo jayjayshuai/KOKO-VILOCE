@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { ApiRequestError } from '../services/http'
 import type { VoiceActionPage } from '../services/voice-interaction'
 import {
   interactionUuid,
@@ -26,10 +27,14 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
   /** 静默后台读取，不改变按钮、布局或前台aria-busy。 */ const refreshing = ref(false)
   /** 单次后台续约，可被明确新操作抢占等待；取消不能撤销服务器已续的租约。 */ const renewing = ref(false)
   /** 续约故障独立于未知业务写入，迟到反馈不得覆盖命令结果。 */ const renewalError = ref('')
+  /** 已知网络/服务抖动只显示稳定状态提示，不冒充续约成功或权限拒绝。 */ const renewalTransient = ref(false)
   /** 单写/心跳互斥，防乱序刷新。 */ const busy = ref(false)
   /** 能力或快照错误。 */ const readError = ref('')
+  /** 暂时同步故障与明确失权分开呈现；两者都停止新操作。 */ const readTransient = ref(false)
   /** 写入/心跳未确认，不自动重试管理命令。 */ const writeError = ref('')
   /** 原写入待重试，必须维持UUID和参数。 */ const pending = ref<Attempt | null>(null)
+  /** 首次请求被本站业务契约明确拒绝，不等于网络超时后的结果未知。 */ const rejectionNotice = ref('')
+  /** 原请求曾经结果未知时，随后拒绝不能排除早先提交，仍需保留原UUID。 */ let uncertainAttempt = false
   /** SQL提交反馈，不当实际发声状态。 */ const success = ref('')
   /** 当前授权核验成功；读取失败、离线或隐藏后不能发起新命令。 */ const fresh = ref(false)
   /** 本机确认时刻仅供显示，不作为数据库租约时钟。 */ const lastVerifiedAt = ref<number | null>(null)
@@ -122,6 +127,22 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     saved.userId === context.userId &&
     saved.sessionRevision === context.sessionRevision
   const failure = (cause: unknown) => (cause instanceof Error ? cause.message : '房间互动暂不可用')
+  const transient = (cause: unknown) => {
+    const status = (cause as { status?: number })?.status
+    return (
+      status === 0 ||
+      status === 429 ||
+      (typeof status === 'number' && status >= 500) ||
+      (cause instanceof Error && cause.name === 'TypeError')
+    )
+  }
+  /** 仅识别本站确定拒绝契约；裸HTTP状态、超时、5xx及未知请求的重试均不推断未提交。 */
+  const rejected = (cause: unknown) =>
+    cause instanceof ApiRequestError &&
+    ((cause.status === 400 && ['BAD_REQUEST', 'VALIDATION_ERROR'].includes(cause.code || '')) ||
+      (cause.status === 403 && cause.code === 'FORBIDDEN') ||
+      (cause.status === 404 && cause.code === 'NOT_FOUND') ||
+      (cause.status === 409 && cause.code === 'CONFLICT'))
 
   function invalidate() {
     fresh.value = false
@@ -153,7 +174,6 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       revision = ++readRevision
     loading.value = force
     refreshing.value = !force
-    if (force) readError.value = ''
     try {
       if (!force && capabilities.value?.enabled && snapshot.value) {
         const known = snapshot.value.version
@@ -181,7 +201,11 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       }
       fresh.value = true
       readError.value = ''
-      if (!snapshot.value?.mySessionId) renewalError.value = ''
+      readTransient.value = false
+      if (!snapshot.value?.mySessionId) {
+        renewalError.value = ''
+        renewalTransient.value = false
+      }
       lastVerifiedAt.value = Date.now()
       readFailures = 0
       nextReadAt = 0
@@ -189,6 +213,7 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       if (current(saved) && revision === readRevision) {
         invalidate()
         readError.value = failure(cause)
+        readTransient.value = transient(cause)
         readFailures++
         nextReadAt = Date.now() + Math.min(60000, 5000 * 2 ** Math.min(readFailures - 1, 4))
         const status = (cause as { status?: number })?.status
@@ -249,7 +274,15 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       pending.value = null
       success.value = `已确认提交 ${ack.type}；席位不是媒体发声权限。`
     } catch (cause) {
-      if (current(saved)) writeError.value = `${failure(cause)}；结果未确认，可用原请求重试，或刷新后明确放弃旧请求。`
+      if (current(saved)) {
+        if (!uncertainAttempt && rejected(cause)) {
+          pending.value = null
+          rejectionNotice.value = `${failure(cause)}。已停止本次操作，请以最新房间状态为准；不会自动重试。`
+        } else {
+          uncertainAttempt = true
+          writeError.value = `${failure(cause)}；结果未确认，可用原请求重试，或刷新后明确放弃旧请求。`
+        }
+      }
     } finally {
       if (current(saved)) {
         busy.value = false
@@ -271,6 +304,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       !capabilities.value.version
     )
       return
+    rejectionNotice.value = ''
+    uncertainAttempt = false
     pending.value = {
       kind: 'JOIN',
       input: { requestId: interactionUuid(), expectedVersion: capabilities.value.version },
@@ -295,6 +330,8 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
       !capabilities.value?.enabled
     )
       return
+    rejectionNotice.value = ''
+    uncertainAttempt = false
     pending.value = {
       kind: 'COMMAND',
       input: {
@@ -372,10 +409,14 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     busy.value = true
     try {
       await network.heartbeat(saved.roomId, sessionId, renewal.signal)
-      if (current(saved) && revision === renewalRevision) renewalError.value = ''
+      if (current(saved) && revision === renewalRevision) {
+        renewalError.value = ''
+        renewalTransient.value = false
+      }
     } catch (cause) {
       if (current(saved) && revision === renewalRevision) {
         renewalError.value = `成员续约未确认：${failure(cause)}；请核验当前房间状态。`
+        renewalTransient.value = transient(cause)
         const status = (cause as { status?: number })?.status
         if (status === 401 || status === 403 || status === 404 || status === 409) {
           invalidate()
@@ -415,9 +456,13 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     busy.value = false
     renewing.value = false
     renewalError.value = ''
+    renewalTransient.value = false
     actionPreparing.value = false
     readError.value = ''
+    readTransient.value = false
     writeError.value = ''
+    rejectionNotice.value = ''
+    uncertainAttempt = false
     success.value = ''
     fresh.value = false
     lastVerifiedAt.value = null
@@ -497,9 +542,12 @@ export function useVoiceInteractionWorkspace(context: InteractionContext, networ
     refreshing,
     renewing,
     renewalError,
+    renewalTransient,
     busy: computed(() => busy.value && !renewing.value),
     readError,
+    readTransient,
     writeError,
+    rejectionNotice,
     pending,
     success,
     load,

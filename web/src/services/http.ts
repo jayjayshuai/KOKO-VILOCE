@@ -9,6 +9,8 @@ export class ApiRequestError extends Error {
     message: string,
     /** HTTP 状态；网络超时为 0，不应被当成 401 清除会话。 */
     public readonly status: number,
+    /** 本站业务错误码；无契约的代理/网络错误保持null，不能据状态码认定写入未提交。 */
+    public readonly code: string | null = null,
   ) {
     super(message)
     this.name = 'ApiRequestError'
@@ -69,7 +71,11 @@ export async function request<T>(path: string, options: ApiRequestOptions = {}):
     if (!response.ok) {
       if (response.status === 401 && observer === sessionObserver) observer?.unauthorized(sessionSnapshot)
       const body = await response.json().catch(() => undefined)
-      throw new ApiRequestError(body?.message || `请求失败（${response.status}）`, response.status)
+      throw new ApiRequestError(
+        body?.message || `请求失败（${response.status}）`,
+        response.status,
+        typeof body?.code === 'string' ? body.code : null,
+      )
     }
     if (response.status === 204 || response.headers.get('content-length') === '0') return undefined as T
     const content = await response.text()

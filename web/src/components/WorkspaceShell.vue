@@ -40,6 +40,8 @@ const emit = defineEmits<{
   create: [];
 }>();
 const route = useRoute();
+/** 房间详情归属语音空间，不能因为隐藏详情路由而丢失导航位置。 */
+const navigationName = computed(() => (route.name === 'voice-room' ? 'voice' : route.name));
 const drawer = ref(false),
   accountMenu = ref(false);
 const sidebar = ref<HTMLElement>(),
@@ -166,8 +168,8 @@ watch(
             :key="item.name"
             :to="item.path"
             class="workspace-nav-item"
-            :class="{ active: route.name === item.name }"
-            :aria-current="route.name === item.name ? 'page' : undefined"
+            :class="{ active: navigationName === item.name }"
+            :aria-current="navigationName === item.name ? 'page' : undefined"
           >
             <component :is="icons[item.name as keyof typeof icons]" :size="18" /><span>{{ item.title }}</span>
           </RouterLink>
