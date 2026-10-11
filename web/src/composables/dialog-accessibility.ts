@@ -10,7 +10,8 @@ export function useDialogAccessibility(open: Ref<boolean>, close: () => void, bu
       ...root.querySelectorAll<HTMLElement>(
         'a[href], button, input, textarea, select, [tabindex]:not([tabindex="-1"])',
       ),
-    ].filter((element) => !element.hasAttribute('disabled') && element.getClientRects().length > 0)
+      // fieldset禁用会传递到子控件，但子控件本身没有disabled属性，不能把它们选为焦点目标。
+    ].filter((element) => !element.matches(':disabled') && element.getClientRects().length > 0)
   function keydown(event: KeyboardEvent) {
     if (!open.value) return
     const root = visibleDialog()

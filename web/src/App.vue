@@ -50,7 +50,12 @@ import type { DiscoveryDomain, DiscoveryDomainState, DiscoverySnapshot, Workspac
 import { useDialogAccessibility } from './composables/dialog-accessibility';
 import { useVoiceConnection } from './composables/voice-connection';
 import VoiceInteractionPanel from './components/VoiceInteractionPanel.vue';
+import VoicePlaybackControls from './components/VoicePlaybackControls.vue';
 import PersistentVoiceCallBar from './components/PersistentVoiceCallBar.vue';
+import CreatorSaveStatus from './components/CreatorSaveStatus.vue';
+import { useCreatorEditorWrites } from './composables/creator-editor-writes';
+import { useUnsavedEditorGuard } from './composables/unsaved-editor-guard';
+import { useCreatorContentActions } from './composables/creator-content-actions';
 
 const auth = useAuthStore();
 const route = useRoute(),
@@ -138,6 +143,18 @@ const pageError = ref('');
 const followSubmitting = ref<string | null>(null);
 const commentBody = ref('');
 const interactionSubmitting = ref(false);
+/** 文章详情/身份切换独立轮次，不因评论翻页废弃在途写入。 */
+const postReaderRevision = ref(0),
+  /** 本人点赞/收藏已实际核验，未核验不能基于默认false反向切换。 */
+  readerRelationsReady = ref(false),
+  readerRelationsLoading = ref(false),
+  readerRelationsError = ref(''),
+  /** 评论POST回复丢失不能用同文字的列表记录充当提交收据。 */
+  commentWriteUnconfirmed = ref(false),
+  readerCommentsRefreshing = ref(false);
+/** 本人关系读取可取消且有独立轮次，旧finally不能解锁新读取。 */
+let readerRelationRead = new AbortController(),
+  readerRelationReadRevision = 0;
 const loading = computed(() => discoveryDomains.some((domain) => discoveryStates[domain].status === 'loading'));
 const dialog = ref<
   | 'auth'
@@ -203,6 +220,73 @@ const postEdit = reactive({
   status: 'DRAFT' as 'DRAFT' | 'PUBLISHED',
   version: 0,
 });
+/** 同类型编辑器切换也独立于旧保存/读取轮次。 */
+const editorFormRevision = ref(0),
+  /** 主页首次读取未完成时不能把默认版本零当成已确认新建。 */
+  creatorProfileLoading = ref(false),
+  creatorProfileLoaded = ref(false);
+const creatorEditor = useCreatorEditorWrites(
+  () => ({
+    userId: auth.user?.id,
+    sessionRevision: auth.sessionRevision,
+    kind: dialog.value,
+    formRevision: editorFormRevision.value,
+  }),
+  {
+    postConfirmed: applyConfirmedPost,
+    profileConfirmed: applyConfirmedProfile,
+    busyChanged: (value) => {
+      submitting.value = value;
+    },
+  },
+);
+const { recovery: editorRecovery, success: editorSuccess, error: editorError } = creatorEditor;
+/** 编辑器未保存保护只保留内存基线，不持久化正文或令牌。 */
+const editorGuard = useUnsavedEditorGuard(
+  () => ({
+    userId: auth.user?.id,
+    sessionRevision: auth.sessionRevision,
+    kind: dialog.value,
+    formRevision: editorFormRevision.value,
+  }),
+  (): Record<string, string> =>
+    dialog.value === 'post'
+      ? {
+          slug: postEdit.slug,
+          title: postEdit.title,
+          excerpt: postEdit.excerpt,
+          body: postEdit.body,
+          coverUrl: postEdit.coverUrl,
+          coverAssetId: postEdit.coverAssetId,
+        }
+      : {
+          slug: creatorProfile.slug,
+          displayName: creatorProfile.displayName,
+          headline: creatorProfile.headline,
+          bio: creatorProfile.bio,
+          avatarUrl: creatorProfile.avatarUrl ?? '',
+          bannerUrl: creatorProfile.bannerUrl ?? '',
+          avatarAssetId: creatorProfile.avatarAssetId ?? '',
+          bannerAssetId: creatorProfile.bannerAssetId ?? '',
+        },
+  () => dialog.value === 'post' || creatorProfileLoaded.value,
+  () => submitting.value || imageUploading.value,
+  () => !!editorRecovery.value,
+  router,
+  () => {
+    dialog.value = null;
+  },
+);
+const { dirty: editorDirty } = editorGuard;
+/** 归档独立于编辑器保存；仅应用当前身份确认的列表变化。 */
+const contentActions = useCreatorContentActions(
+  () => ({ userId: auth.user?.id, sessionRevision: auth.sessionRevision }),
+  (id) => {
+    ownedPosts.value = ownedPosts.value.filter((item) => item.id !== id);
+    posts.value = posts.value.filter((item) => item.id !== id);
+  },
+);
+const { busy: archiveBusy, error: archiveError, success: archiveSuccess, pending: archivePending } = contentActions;
 const remoteAudioRoot = ref<HTMLElement | null>(null);
 const voiceState = useVoiceConnection(auth, api.joinVoiceRoom, remoteAudioRoot);
 const {
@@ -211,9 +295,13 @@ const {
   voiceError,
   microphoneEnabled,
   microphoneBusy,
+  audioPlaybackBlocked,
+  audioPlaybackBusy,
+  audioPlaybackError,
   participantCount,
   phase: voicePhase,
   toggleMicrophone,
+  resumeVoiceAudio,
   leaveVoiceRoom,
 } = voiceState;
 const initials = computed(() => auth.user?.displayName.slice(0, 1).toUpperCase() || '访');
@@ -467,6 +555,10 @@ function requireLogin(next: 'community' | 'live' | 'voice') {
 }
 
 function newPostDraft() {
+  if (submitting.value || imageUploading.value || !auth.user) return;
+  if (!editorGuard.requestLeave()) return;
+  editorFormRevision.value++;
+  dialogReadRevision++;
   Object.assign(postEdit, {
     id: '',
     slug: '',
@@ -480,9 +572,26 @@ function newPostDraft() {
   });
   formError.value = '';
   dialog.value = 'post';
+  editorGuard.markConfirmed();
 }
 
 function editPost(item: CreatorPost) {
+  if (submitting.value || imageUploading.value || archiveBusy.value || !auth.user) return;
+  if (archivePending.value?.id === item.id) {
+    workspaceError.value = '这篇内容的归档结果未确认，请先在工作台核实。';
+    return;
+  }
+  if (!editorGuard.requestLeave()) return;
+  if (
+    item.ownerId !== auth.user.id ||
+    typeof item.body !== 'string' ||
+    !['DRAFT', 'PUBLISHED'].includes(item.status || '')
+  ) {
+    formError.value = '请从本人工作台读取可编辑的完整内容。';
+    return;
+  }
+  editorFormRevision.value++;
+  dialogReadRevision++;
   Object.assign(postEdit, {
     id: item.id,
     slug: item.slug,
@@ -496,6 +605,7 @@ function editPost(item: CreatorPost) {
   });
   formError.value = '';
   dialog.value = 'post';
+  editorGuard.markConfirmed();
 }
 
 async function openPostStudio() {
@@ -517,55 +627,36 @@ async function openPostStudio() {
 
 async function savePost(publish: boolean) {
   if (imageUploading.value || submitting.value) return;
-  submitting.value = true;
   formError.value = '';
-  try {
-    const payload = {
-      slug: postEdit.slug,
-      title: postEdit.title,
-      excerpt: postEdit.excerpt,
-      body: postEdit.body,
-      coverUrl: postEdit.coverUrl,
-      coverAssetId: postEdit.coverAssetId,
-    };
-    let saved = postEdit.id
-      ? await api.updatePost(postEdit.id, { ...payload, version: postEdit.version })
-      : await api.createPost(payload);
-    if (publish && saved.status === 'DRAFT') saved = await api.publishPost(saved.id, saved.version || 0);
-    Object.assign(postEdit, saved);
-    const ownedIndex = ownedPosts.value.findIndex((item) => item.id === saved.id);
-    if (ownedIndex >= 0) ownedPosts.value[ownedIndex] = saved;
-    else ownedPosts.value.unshift(saved);
-    const publicIndex = posts.value.findIndex((item) => item.id === saved.id);
-    if (saved.status === 'PUBLISHED') {
-      if (publicIndex >= 0) posts.value[publicIndex] = saved;
-      else posts.value.unshift(saved);
-      await loadDiscovery();
-    }
-  } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '内容保存失败';
-  } finally {
-    submitting.value = false;
+  if (await creatorEditor.savePost(postEdit, publish)) {
+    if (postEdit.status === 'PUBLISHED') void loadDiscovery();
   }
+}
+
+/** 每个已确认步骤立即保存ID/版本；下一步发布失败也不回退为未创建表单。 */
+function applyConfirmedPost(saved: CreatorPost) {
+  Object.assign(postEdit, saved);
+  editorGuard.markConfirmed();
+  const ownedIndex = ownedPosts.value.findIndex((item) => item.id === saved.id);
+  if (ownedIndex >= 0) ownedPosts.value[ownedIndex] = saved;
+  else ownedPosts.value.unshift(saved);
+  const publicIndex = posts.value.findIndex((item) => item.id === saved.id);
+  if (saved.status === 'PUBLISHED') {
+    if (publicIndex >= 0) posts.value[publicIndex] = saved;
+    else posts.value.unshift(saved);
+  } else if (publicIndex >= 0) posts.value.splice(publicIndex, 1);
 }
 
 async function archivePost(item: CreatorPost) {
+  if (submitting.value || imageUploading.value || archiveBusy.value || archivePending.value) return;
   if (!window.confirm(`确认归档“${item.title}”？归档后将立即停止公开展示。`)) return;
-  submitting.value = true;
-  formError.value = '';
-  try {
-    await api.archivePost(item.id, item.version || 0);
-    ownedPosts.value = ownedPosts.value.filter((current) => current.id !== item.id);
-    posts.value = posts.value.filter((current) => current.id !== item.id);
-    await loadDiscovery();
-  } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '归档失败';
-  } finally {
-    submitting.value = false;
-  }
+  await contentActions.archive(item);
+  if (archiveSuccess.value) void loadDiscovery();
 }
 
 async function readPost(item: CreatorPost) {
+  if (!editorGuard.requestLeave()) return;
+  resetPostReaderOperations();
   formError.value = '';
   selectedPost.value = null;
   postComments.value = [];
@@ -576,28 +667,144 @@ async function readPost(item: CreatorPost) {
     const [detail, comments] = await Promise.all([api.post(item.slug), api.postCommentsPage(item.slug, 1)]);
     if (!currentDialog(context)) return;
     selectedPost.value = detail;
+    postEngagement.value = { likeCount: detail.likeCount, commentCount: detail.commentCount, likedByMe: false };
+    postFavorite.value = { favoriteCount: detail.favoriteCount, favoritedByMe: false };
     postComments.value = comments.items;
     commentPage.value = comments.page;
     commentTotal.value = comments.total;
-    if (auth.user) {
-      const [engagement, favorite] = await Promise.all([
-        api.postEngagement(detail.id),
-        api.postFavoriteState(detail.id),
-      ]);
-      if (!currentDialog(context)) return;
-      postEngagement.value = engagement;
-      postFavorite.value = favorite;
-    } else {
-      postEngagement.value = { likeCount: detail.likeCount, commentCount: detail.commentCount, likedByMe: false };
-      postFavorite.value = { favoriteCount: detail.favoriteCount, favoritedByMe: false };
-    }
+    await refreshPostRelations();
   } catch (cause) {
     if (currentDialog(context)) formError.value = cause instanceof Error ? cause.message : '内容加载失败';
   }
 }
 
+/** 公开正文可以保留，旧账号互动关系、输入、在途标记不能跨身份保留。 */
+function resetPostReaderOperations() {
+  postReaderRevision.value++;
+  readerRelationReadRevision++;
+  readerRelationRead.abort();
+  readerRelationsReady.value = !auth.user;
+  readerRelationsLoading.value = false;
+  readerRelationsError.value = '';
+  readerCommentsRefreshing.value = false;
+  commentLoading.value = false;
+  commentWriteUnconfirmed.value = false;
+  commentBody.value = '';
+  interactionSubmitting.value = false;
+  postEngagement.value = {
+    likeCount: selectedPost.value?.likeCount ?? 0,
+    commentCount: selectedPost.value?.commentCount ?? 0,
+    likedByMe: false,
+  };
+  postFavorite.value = { favoriteCount: selectedPost.value?.favoriteCount ?? 0, favoritedByMe: false };
+}
+
+/** 固定请求的文章/账号/登录轮次，即使新页仍是同一文章也不认可旧账号回复。 */
+function readerContext() {
+  const revision = postReaderRevision.value,
+    userId = auth.user?.id,
+    sessionRevision = auth.sessionRevision,
+    postId = selectedPost.value?.id;
+  return {
+    postId,
+    userId,
+    current: () =>
+      !disposed &&
+      dialog.value === 'postReader' &&
+      postReaderRevision.value === revision &&
+      auth.user?.id === userId &&
+      auth.sessionRevision === sessionRevision &&
+      selectedPost.value?.id === postId,
+  };
+}
+const validReaderCount = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+/** 读取双方事实后一起应用，失败保留公开计数但不假装本人尚未点赞/收藏。 */
+async function refreshPostRelations() {
+  const context = readerContext();
+  if (!context.postId || !context.current() || interactionSubmitting.value) return;
+  if (!auth.user) {
+    readerRelationsReady.value = true;
+    return;
+  }
+  readerRelationRead.abort();
+  readerRelationRead = new AbortController();
+  const revision = ++readerRelationReadRevision;
+  readerRelationsReady.value = false;
+  readerRelationsLoading.value = true;
+  readerRelationsError.value = '';
+  try {
+    const [engagement, favorite] = await Promise.all([
+      api.postEngagement(context.postId, readerRelationRead.signal),
+      api.postFavoriteState(context.postId, readerRelationRead.signal),
+    ]);
+    if (!context.current() || revision !== readerRelationReadRevision) return;
+    if (
+      !engagement ||
+      !favorite ||
+      typeof engagement.likedByMe !== 'boolean' ||
+      typeof favorite.favoritedByMe !== 'boolean' ||
+      !validReaderCount(engagement.likeCount) ||
+      !validReaderCount(engagement.commentCount) ||
+      !validReaderCount(favorite.favoriteCount)
+    )
+      throw new Error('互动状态响应未确认。');
+    postEngagement.value = engagement;
+    postFavorite.value = favorite;
+    Object.assign(selectedPost.value!, {
+      likeCount: engagement.likeCount,
+      commentCount: engagement.commentCount,
+      favoriteCount: favorite.favoriteCount,
+    });
+    readerRelationsReady.value = true;
+  } catch (cause) {
+    if (context.current() && revision === readerRelationReadRevision)
+      readerRelationsError.value = cause instanceof Error ? cause.message : '互动状态读取失败';
+  } finally {
+    if (context.current() && revision === readerRelationReadRevision) readerRelationsLoading.value = false;
+  }
+}
+
+/** 评论未知结果只刷新可见列表，不清除未知标记或重发原POST。 */
+async function refreshReaderComments() {
+  const context = readerContext(),
+    slug = selectedPost.value?.slug;
+  if (
+    !context.current() ||
+    !slug ||
+    interactionSubmitting.value ||
+    commentLoading.value ||
+    readerCommentsRefreshing.value
+  )
+    return;
+  readerCommentsRefreshing.value = true;
+  try {
+    const result = await api.postCommentsPage(slug, 1);
+    if (!context.current()) return;
+    if (
+      !result ||
+      result.page !== 1 ||
+      !validReaderCount(result.total) ||
+      !Array.isArray(result.items) ||
+      result.items.length > 20 ||
+      result.items.some((value) => value.postId !== context.postId || typeof value.body !== 'string')
+    )
+      throw new Error('评论分页响应未确认。');
+    postComments.value = result.items;
+    commentPage.value = result.page;
+    commentTotal.value = result.total;
+    postEngagement.value.commentCount = result.total;
+    selectedPost.value!.commentCount = result.total;
+  } catch (cause) {
+    if (context.current()) formError.value = cause instanceof Error ? cause.message : '评论读取失败';
+  } finally {
+    if (context.current()) readerCommentsRefreshing.value = false;
+  }
+}
+
 async function loadMoreComments() {
-  if (!selectedPost.value || commentLoading.value) return;
+  if (!selectedPost.value || commentLoading.value || interactionSubmitting.value || readerCommentsRefreshing.value)
+    return;
   const context = dialogContext();
   commentLoading.value = true;
   formError.value = '';
@@ -617,18 +824,30 @@ async function loadMoreComments() {
 }
 
 async function togglePostFavorite() {
-  if (!selectedPost.value) return;
+  if (
+    !selectedPost.value ||
+    dialog.value !== 'postReader' ||
+    interactionSubmitting.value ||
+    commentLoading.value ||
+    readerCommentsRefreshing.value
+  )
+    return;
   if (!auth.user) {
     dialog.value = 'auth';
     formError.value = '请先登录，再收藏内容。';
     return;
   }
+  if (!readerRelationsReady.value || readerRelationsLoading.value) return;
+  const context = readerContext();
   interactionSubmitting.value = true;
   formError.value = '';
   try {
     const result = postFavorite.value.favoritedByMe
-      ? await api.unfavoritePost(selectedPost.value.id)
-      : await api.favoritePost(selectedPost.value.id);
+      ? await api.unfavoritePost(context.postId!)
+      : await api.favoritePost(context.postId!);
+    if (!context.current()) return;
+    if (!result || typeof result.favoritedByMe !== 'boolean' || !validReaderCount(result.favoriteCount))
+      throw new Error('收藏状态响应未确认。');
     postFavorite.value = result;
     selectedPost.value.favoriteCount = result.favoriteCount;
     const listed = posts.value.find((item) => item.id === selectedPost.value?.id);
@@ -638,73 +857,142 @@ async function togglePostFavorite() {
       collectionTotal.value = Math.max(collectionTotal.value - 1, 0);
     }
   } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '收藏操作失败';
+    if (context.current()) {
+      readerRelationsReady.value = false;
+      readerRelationsError.value = `收藏结果未确认，请先核验互动状态。${cause instanceof Error ? cause.message : '收藏操作失败'}`;
+    }
   } finally {
-    interactionSubmitting.value = false;
+    if (context.current()) interactionSubmitting.value = false;
   }
 }
 
 async function togglePostLike() {
-  if (!selectedPost.value) return;
+  if (
+    !selectedPost.value ||
+    dialog.value !== 'postReader' ||
+    interactionSubmitting.value ||
+    commentLoading.value ||
+    readerCommentsRefreshing.value
+  )
+    return;
   if (!auth.user) {
     dialog.value = 'auth';
     formError.value = '请先登录，再点赞内容。';
     return;
   }
+  if (!readerRelationsReady.value || readerRelationsLoading.value) return;
+  const context = readerContext();
   interactionSubmitting.value = true;
   formError.value = '';
   try {
-    postEngagement.value = postEngagement.value.likedByMe
-      ? await api.unlikePost(selectedPost.value.id)
-      : await api.likePost(selectedPost.value.id);
+    const result = postEngagement.value.likedByMe
+      ? await api.unlikePost(context.postId!)
+      : await api.likePost(context.postId!);
+    if (!context.current()) return;
+    if (
+      !result ||
+      typeof result.likedByMe !== 'boolean' ||
+      !validReaderCount(result.likeCount) ||
+      !validReaderCount(result.commentCount)
+    )
+      throw new Error('点赞状态响应未确认。');
+    postEngagement.value = result;
     selectedPost.value.likeCount = postEngagement.value.likeCount;
     const index = posts.value.findIndex((item) => item.id === selectedPost.value?.id);
     if (index >= 0) posts.value[index].likeCount = postEngagement.value.likeCount;
   } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '点赞操作失败';
+    if (context.current()) {
+      readerRelationsReady.value = false;
+      readerRelationsError.value = `点赞结果未确认，请先核验互动状态。${cause instanceof Error ? cause.message : '点赞操作失败'}`;
+    }
   } finally {
-    interactionSubmitting.value = false;
+    if (context.current()) interactionSubmitting.value = false;
   }
 }
 
 async function submitComment() {
-  if (!selectedPost.value || !commentBody.value.trim()) return;
+  if (
+    !selectedPost.value ||
+    dialog.value !== 'postReader' ||
+    !commentBody.value.trim() ||
+    interactionSubmitting.value ||
+    commentLoading.value ||
+    readerCommentsRefreshing.value ||
+    commentWriteUnconfirmed.value
+  )
+    return;
   if (!auth.user) {
     dialog.value = 'auth';
     formError.value = '请先登录，再发表评论。';
     return;
   }
+  const context = readerContext(),
+    body = commentBody.value.trim();
   interactionSubmitting.value = true;
   formError.value = '';
   try {
-    postComments.value.unshift(await api.commentPost(selectedPost.value.id, commentBody.value));
+    const result = await api.commentPost(context.postId!, body);
+    if (!context.current()) return;
+    if (
+      !result ||
+      result.postId !== context.postId ||
+      result.userId !== context.userId ||
+      typeof result.id !== 'string' ||
+      !/^[1-9][0-9]{0,18}$/.test(result.id) ||
+      BigInt(result.id) > 9223372036854775807n ||
+      result.body !== body ||
+      !validReaderCount(result.version)
+    )
+      throw new Error('评论回复的归属或正文未确认。');
+    postComments.value.unshift(result);
     commentTotal.value += 1;
-    commentBody.value = '';
+    if (commentBody.value.trim() === body) commentBody.value = '';
     postEngagement.value.commentCount += 1;
     selectedPost.value.commentCount = postEngagement.value.commentCount;
     const index = posts.value.findIndex((item) => item.id === selectedPost.value?.id);
     if (index >= 0) posts.value[index].commentCount = postEngagement.value.commentCount;
   } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '评论发布失败';
+    if (context.current()) {
+      commentWriteUnconfirmed.value = !(cause instanceof ApiRequestError && [400, 422].includes(cause.status));
+      formError.value = `${commentWriteUnconfirmed.value ? '评论提交结果未确认，服务端可能已执行，请勿重复发送。' : '评论被拒绝，请检查正文。'}${cause instanceof Error ? cause.message : '评论发布失败'}`;
+    }
   } finally {
-    interactionSubmitting.value = false;
+    if (context.current()) interactionSubmitting.value = false;
   }
 }
 
 async function deleteComment(item: PostComment) {
-  if (!selectedPost.value || !window.confirm('确认删除这条评论？')) return;
+  if (
+    !selectedPost.value ||
+    !auth.user ||
+    dialog.value !== 'postReader' ||
+    interactionSubmitting.value ||
+    commentLoading.value ||
+    readerCommentsRefreshing.value
+  )
+    return;
+  const row = postComments.value.find((value) => value.id === item.id);
+  if (
+    !row ||
+    (row.userId !== auth.user.id && selectedPost.value.ownerId !== auth.user.id) ||
+    !window.confirm('确认删除这条评论？')
+  )
+    return;
+  const context = readerContext();
   interactionSubmitting.value = true;
   formError.value = '';
   try {
-    await api.deletePostComment(selectedPost.value.id, item.id, item.version);
+    await api.deletePostComment(context.postId!, row.id, row.version);
+    if (!context.current()) return;
     postComments.value = postComments.value.filter((comment) => comment.id !== item.id);
     commentTotal.value = Math.max(commentTotal.value - 1, 0);
     postEngagement.value.commentCount = Math.max(postEngagement.value.commentCount - 1, 0);
     selectedPost.value.commentCount = postEngagement.value.commentCount;
   } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '评论删除失败';
+    if (context.current())
+      formError.value = `删除结果未确认，请先刷新评论。${cause instanceof Error ? cause.message : '评论删除失败'}`;
   } finally {
-    interactionSubmitting.value = false;
+    if (context.current()) interactionSubmitting.value = false;
   }
 }
 
@@ -725,6 +1013,8 @@ function newCreatorDraft() {
 }
 
 async function openCreatorStudio() {
+  if (submitting.value || imageUploading.value) return;
+  if (!editorGuard.requestLeave()) return;
   formError.value = '';
   if (!auth.user) {
     dialog.value = 'auth';
@@ -732,38 +1022,63 @@ async function openCreatorStudio() {
     return;
   }
   dialog.value = 'creator';
+  editorFormRevision.value++;
+  creatorProfileLoaded.value = false;
+  creatorProfileLoading.value = true;
   newCreatorDraft();
   const context = dialogContext();
   try {
     const result = await api.myCreatorProfile();
-    if (currentDialog(context)) Object.assign(creatorProfile, result);
+    if (currentDialog(context)) {
+      if (
+        !result ||
+        result.userId !== auth.user?.id ||
+        !Number.isSafeInteger(result.version) ||
+        result.version < 0 ||
+        !['DRAFT', 'ACTIVE', 'SUSPENDED'].includes(result.status)
+      )
+        throw new Error('本人主页响应未确认。');
+      Object.assign(creatorProfile, result);
+      creatorProfileLoaded.value = true;
+      editorGuard.markConfirmed();
+    }
   } catch (cause) {
+    if (currentDialog(context) && cause instanceof ApiRequestError && cause.status === 404) {
+      creatorProfileLoaded.value = true;
+      editorGuard.markConfirmed();
+    }
     if (currentDialog(context) && (!(cause instanceof ApiRequestError) || cause.status !== 404)) {
       formError.value = cause instanceof Error ? cause.message : '无法加载创作者资料';
     }
+  } finally {
+    if (currentDialog(context)) creatorProfileLoading.value = false;
   }
 }
 
 async function saveCreatorProfile(publish: boolean) {
-  if (imageUploading.value || submitting.value) return;
-  submitting.value = true;
+  if (imageUploading.value || submitting.value || !creatorProfileLoaded.value || creatorProfileLoading.value) return;
   formError.value = '';
-  try {
-    let saved = await api.saveCreatorProfile(creatorProfile);
-    if (publish && saved.status === 'DRAFT') saved = await api.publishCreatorProfile(saved.version);
-    Object.assign(creatorProfile, saved);
-    studioProfile.value = saved;
-    const index = creators.value.findIndex((item) => item.userId === saved.userId);
-    if (saved.status === 'ACTIVE') {
-      if (index >= 0) creators.value[index] = saved;
-      else creators.value.unshift(saved);
-      await loadDiscovery();
-    }
-  } catch (cause) {
-    formError.value = cause instanceof Error ? cause.message : '创作者资料保存失败';
-  } finally {
-    submitting.value = false;
+  if (await creatorEditor.saveProfile(creatorProfile, publish)) {
+    if (creatorProfile.status === 'ACTIVE') void loadDiscovery();
   }
+}
+
+function applyConfirmedProfile(saved: CreatorProfile) {
+  Object.assign(creatorProfile, saved);
+  editorGuard.markConfirmed();
+  studioProfile.value = saved;
+  const index = creators.value.findIndex((item) => item.userId === saved.userId);
+  if (saved.status === 'ACTIVE') {
+    if (index >= 0) creators.value[index] = saved;
+    else creators.value.unshift(saved);
+  } else if (index >= 0) creators.value.splice(index, 1);
+}
+
+/** 用户确认覆盖本地表单后只查询实际本人接口，从不重发保存/发布。 */
+function recheckCreatorSubmission() {
+  if (submitting.value || imageUploading.value || !editorRecovery.value) return;
+  if (!window.confirm('重新读取会用服务端最新状态覆盖当前表单；只查询，不会重复保存或发布。是否继续？')) return;
+  void creatorEditor.recheck();
 }
 
 function onImageBusy(value: boolean) {
@@ -916,6 +1231,22 @@ async function createVoiceRoom() {
 watch(
   [() => auth.user?.id, () => auth.sessionRevision],
   () => {
+    resetPostReaderOperations();
+    if (dialog.value === 'post' || dialog.value === 'creator') dialog.value = null;
+    Object.assign(postEdit, {
+      id: '',
+      slug: '',
+      title: '',
+      excerpt: '',
+      body: '',
+      coverUrl: '',
+      coverAssetId: '',
+      status: 'DRAFT',
+      version: 0,
+    });
+    creatorProfileLoaded.value = false;
+    creatorProfileLoading.value = false;
+    newCreatorDraft();
     if (voiceCreatePending) {
       voiceCreateRevision++;
       voiceCreatePending = false;
@@ -968,10 +1299,10 @@ function showAuth() {
   formError.value = '';
   workspaceError.value = '';
 }
-function workspaceAction(kind: WorkspaceAction) {
+async function workspaceAction(kind: WorkspaceAction) {
   if (submitting.value || imageUploading.value || interactionSubmitting.value) return;
   if (kind === 'post') {
-    void router.push('/studio');
+    if (route.name !== 'studio' && (await router.push('/studio'))) return;
     if (auth.user) newPostDraft();
     else showAuth();
     return;
@@ -1023,6 +1354,7 @@ async function logout() {
     workspaceError.value = '请等待当前操作完成后退出，避免提交结果无法确认。';
     return;
   }
+  if (!editorGuard.requestLeave()) return;
   loggingOut.value = true;
   workspaceError.value = '';
   try {
@@ -1040,8 +1372,10 @@ async function retrySession() {
   if (auth.initialized && !loggingOut.value && !submitting.value) await auth.restore();
 }
 function closeDialog() {
-  if (!submitting.value && !imageUploading.value && !interactionSubmitting.value && !voiceInteractionBusy.value)
+  if (!submitting.value && !imageUploading.value && !interactionSubmitting.value && !voiceInteractionBusy.value) {
+    if (!editorGuard.requestLeave()) return;
     dialog.value = null;
+  }
 }
 const anyDialogOpen = computed(() => !!dialog.value || communityHubOpen.value);
 useDialogAccessibility(
@@ -1081,6 +1415,13 @@ const viewBindings = computed(() => {
       profile: studioProfile.value,
       loading: studioLoading.value,
       error: studioError.value,
+      actionBusy: archiveBusy.value || submitting.value || imageUploading.value,
+      actionError: archiveError.value,
+      actionSuccess: archiveSuccess.value,
+      archivePendingId: archivePending.value?.id,
+      onArchive: archivePost,
+      onRecheckArchive: contentActions.recheck,
+      onRead: readPost,
       onRefresh: loadStudio,
       onCreate: newPostDraft,
       onEdit: editPost,
@@ -1146,6 +1487,7 @@ watch(
 watch(
   dialog,
   (current, previous) => {
+    if (previous === 'postReader' && current !== 'postReader') resetPostReaderOperations();
     ++dialogReadRevision;
     collectionLoading.value = false;
     commentLoading.value = false;
@@ -1160,6 +1502,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   disposed = true;
+  readerRelationRead.abort();
   ++discoveryRevision;
   ++studioRevision;
   for (const read of Object.values(discoveryReads)) read.abort();
@@ -1356,52 +1699,79 @@ onBeforeUnmount(() => {
         >×</button
       >
       <p class="eyebrow">CREATOR STUDIO</p><h2>UP 主主页</h2>
-      <div class="profile-status"
+      <div v-if="creatorProfileLoaded" class="profile-status"
         ><span :class="creatorProfile.status.toLowerCase()">{{
           creatorProfile.status === 'ACTIVE' ? '已发布' : creatorProfile.status === 'DRAFT' ? '草稿' : '已暂停'
         }}</span
         ><small>版本 {{ creatorProfile.version }}</small></div
       >
-      <label
-        >主页地址<input
-          v-model.trim="creatorProfile.slug"
-          pattern="[a-z0-9][a-z0-9-]{1,62}[a-z0-9]"
-          maxlength="64"
-          placeholder="creator-name"
-          required
-      /></label>
-      <label>UP 主名称<input v-model.trim="creatorProfile.displayName" maxlength="80" required /></label>
-      <label
-        >一句话介绍<input v-model.trim="creatorProfile.headline" maxlength="120" placeholder="告诉大家你在创作什么"
-      /></label>
-      <label>详细介绍<textarea v-model.trim="creatorProfile.bio" maxlength="1000"></textarea></label>
-      <ManagedImagePicker
-        label="头像图片"
-        purpose="AVATAR"
-        :current-url="creatorProfile.avatarUrl"
-        :disabled="submitting || imageUploading"
-        @uploaded="(image) => setCreatorImage('avatar', image)"
-        @cleared="clearCreatorImage('avatar')"
-        @busy="onImageBusy"
-      />
-      <ManagedImagePicker
-        label="主页封面"
-        purpose="BANNER"
-        :current-url="creatorProfile.bannerUrl"
-        :disabled="submitting || imageUploading"
-        @uploaded="(image) => setCreatorImage('banner', image)"
-        @cleared="clearCreatorImage('banner')"
-        @busy="onImageBusy"
-      />
+      <p v-if="creatorProfileLoading" role="status" class="hint">正在读取本人主页，确认当前版本前不能保存。</p>
+      <button
+        v-if="!creatorProfileLoaded && !creatorProfileLoading"
+        type="button"
+        class="secondary"
+        @click="openCreatorStudio"
+        >重新读取主页</button
+      >
+      <fieldset
+        class="creator-editor-fields"
+        :disabled="submitting || creatorProfileLoading || !creatorProfileLoaded || !!editorRecovery"
+      >
+        <label
+          >主页地址<input
+            v-model.trim="creatorProfile.slug"
+            pattern="[a-z0-9][a-z0-9-]{1,62}[a-z0-9]"
+            maxlength="64"
+            placeholder="creator-name"
+            required
+        /></label>
+        <label>UP 主名称<input v-model.trim="creatorProfile.displayName" maxlength="80" required /></label>
+        <label
+          >一句话介绍<input v-model.trim="creatorProfile.headline" maxlength="120" placeholder="告诉大家你在创作什么"
+        /></label>
+        <label>详细介绍<textarea v-model.trim="creatorProfile.bio" maxlength="1000"></textarea></label>
+        <ManagedImagePicker
+          label="头像图片"
+          purpose="AVATAR"
+          :current-url="creatorProfile.avatarUrl"
+          :disabled="submitting || imageUploading || !creatorProfileLoaded || !!editorRecovery"
+          @uploaded="(image) => setCreatorImage('avatar', image)"
+          @cleared="clearCreatorImage('avatar')"
+          @busy="onImageBusy"
+        />
+        <ManagedImagePicker
+          label="主页封面"
+          purpose="BANNER"
+          :current-url="creatorProfile.bannerUrl"
+          :disabled="submitting || imageUploading || !creatorProfileLoaded || !!editorRecovery"
+          @uploaded="(image) => setCreatorImage('banner', image)"
+          @cleared="clearCreatorImage('banner')"
+          @busy="onImageBusy"
+        />
+      </fieldset>
       <p class="hint">首次保存为草稿。发布后图片才向访客开放；后续修改采用版本号校验，避免多个窗口互相覆盖。</p>
+      <p v-if="editorDirty && !editorRecovery" class="hint" role="status"
+        >有未保存修改；关闭或离开前会提醒，不会自动保存。</p
+      >
       <p v-if="formError" class="form-error">{{ formError }}</p>
+      <CreatorSaveStatus
+        :success="editorSuccess"
+        :error="editorError"
+        :needs-recheck="!!editorRecovery"
+        :busy="submitting"
+        @recheck="recheckCreatorSubmission"
+      />
       <div class="creator-form-actions"
-        ><button class="secondary" type="submit" :disabled="submitting || imageUploading">保存</button
+        ><button
+          class="secondary"
+          type="submit"
+          :disabled="submitting || imageUploading || !creatorProfileLoaded || !!editorRecovery"
+          >保存</button
         ><button
           v-if="creatorProfile.status === 'DRAFT'"
           class="primary"
           type="button"
-          :disabled="submitting || imageUploading"
+          :disabled="submitting || imageUploading || !creatorProfileLoaded || !!editorRecovery"
           @click="saveCreatorProfile(true)"
           >保存并发布</button
         ></div
@@ -1477,10 +1847,19 @@ onBeforeUnmount(() => {
             ></div
           ><div class="managed-actions"
             ><button class="icon-button" title="编辑" @click="editPost(item)"><Pencil :size="17" /></button
-            ><button class="icon-button danger" title="归档" :disabled="submitting" @click="archivePost(item)"
+            ><button
+              class="icon-button danger"
+              title="归档"
+              :disabled="submitting || archiveBusy || !!archivePending"
+              @click="archivePost(item)"
               ><Archive :size="17" /></button></div></article
         ><div v-if="!ownedPosts.length" class="empty compact">你还没有内容草稿。创建后可先保存，再正式发布。</div
-        ><p v-if="formError" class="form-error">{{ formError }}</p></div
+        ><p v-if="formError" class="form-error">{{ formError }}</p>
+        <p v-if="archiveError" class="form-error" role="alert">{{ archiveError }}</p>
+        <p v-if="archiveSuccess" class="workspace-success" role="status">{{ archiveSuccess }}</p>
+        <button v-if="archivePending" class="secondary" :disabled="archiveBusy" @click="contentActions.recheck()"
+          >查询归档结果</button
+        ></div
       ></div
     >
     <form v-else-if="dialog === 'post'" class="modal post-modal" @submit.prevent="savePost(false)">
@@ -1494,44 +1873,58 @@ onBeforeUnmount(() => {
       >
       <p class="eyebrow">ARTICLE EDITOR</p><h2>{{ postEdit.id ? '编辑内容' : '创建内容草稿' }}</h2>
       <div class="profile-status"
-        ><span :class="postEdit.status.toLowerCase()">{{ postEdit.status === 'PUBLISHED' ? '已发布' : '草稿' }}</span
-        ><small>版本 {{ postEdit.version }}</small></div
+        ><span :class="postEdit.status.toLowerCase()">{{
+          !postEdit.id ? '本地未保存' : postEdit.status === 'PUBLISHED' ? '已发布' : '草稿'
+        }}</span
+        ><small>{{ postEdit.id ? `版本 ${postEdit.version}` : '尚无服务端版本' }}</small></div
       >
-      <label
-        >内容地址<input
-          v-model.trim="postEdit.slug"
-          pattern="[a-z0-9][a-z0-9-]{1,78}[a-z0-9]"
-          maxlength="80"
-          placeholder="my-first-story"
-          required
-      /></label>
-      <label>标题<input v-model.trim="postEdit.title" maxlength="160" required /></label>
-      <label
-        >摘要<textarea v-model.trim="postEdit.excerpt" maxlength="300" placeholder="用于发现页展示"></textarea>
-      </label>
-      <label
-        >正文<textarea v-model.trim="postEdit.body" class="article-body" maxlength="100000" required></textarea>
-      </label>
-      <ManagedImagePicker
-        label="文章封面"
-        purpose="POST_COVER"
-        :current-url="postEdit.coverUrl"
-        :disabled="submitting || imageUploading"
-        @uploaded="setPostCover"
-        @cleared="clearPostCover"
-        @busy="onImageBusy"
-      />
+      <fieldset class="creator-editor-fields" :disabled="submitting || !!editorRecovery">
+        <label
+          >内容地址<input
+            v-model.trim="postEdit.slug"
+            pattern="[a-z0-9][a-z0-9-]{1,78}[a-z0-9]"
+            maxlength="80"
+            placeholder="my-first-story"
+            required
+        /></label>
+        <label>标题<input v-model.trim="postEdit.title" maxlength="160" required /></label>
+        <label
+          >摘要<textarea v-model.trim="postEdit.excerpt" maxlength="300" placeholder="用于发现页展示"></textarea>
+        </label>
+        <label
+          >正文<textarea v-model.trim="postEdit.body" class="article-body" maxlength="100000" required></textarea>
+        </label>
+        <ManagedImagePicker
+          label="文章封面"
+          purpose="POST_COVER"
+          :current-url="postEdit.coverUrl"
+          :disabled="submitting || imageUploading || !!editorRecovery"
+          @uploaded="setPostCover"
+          @cleared="clearPostCover"
+          @busy="onImageBusy"
+        />
+      </fieldset>
       <p class="hint">内容会先以草稿保存，发布后封面才向访客开放。修改带版本号，其他窗口已更新时不会静默覆盖。</p>
+      <p v-if="editorDirty && !editorRecovery" class="hint" role="status"
+        >有未保存修改；关闭或离开前会提醒，不会自动保存。</p
+      >
       <p v-if="formError" class="form-error">{{ formError }}</p>
+      <CreatorSaveStatus
+        :success="editorSuccess"
+        :error="editorError"
+        :needs-recheck="!!editorRecovery"
+        :busy="submitting"
+        @recheck="recheckCreatorSubmission"
+      />
       <div class="creator-form-actions"
-        ><button class="secondary" type="submit" :disabled="submitting || imageUploading">{{
+        ><button class="secondary" type="submit" :disabled="submitting || imageUploading || !!editorRecovery">{{
           submitting ? '保存中…' : postEdit.status === 'PUBLISHED' ? '保存修改' : '保存草稿'
         }}</button
         ><button
           v-if="postEdit.status === 'DRAFT'"
           class="primary"
           type="button"
-          :disabled="submitting || imageUploading"
+          :disabled="submitting || imageUploading || !!editorRecovery"
           @click="savePost(true)"
           >保存并发布</button
         ></div
@@ -1598,35 +1991,67 @@ onBeforeUnmount(() => {
             selectedPost.slug
           }}</p
         ><p class="reader-body">{{ selectedPost.body }}</p
-        ><div class="reader-engagement"
+        ><p v-if="readerRelationsLoading" class="hint" role="status">正在核验本人点赞与收藏状态…</p>
+        <p v-if="readerRelationsError" class="form-error" role="alert">{{ readerRelationsError }}</p>
+        <button
+          v-if="auth.user && !readerRelationsReady"
+          class="secondary"
+          :disabled="readerRelationsLoading || interactionSubmitting"
+          @click="refreshPostRelations"
+          >重新核验互动状态</button
+        >
+        <div class="reader-engagement"
           ><button
             class="like-button"
-            :class="{ liked: postEngagement.likedByMe }"
-            :disabled="interactionSubmitting"
+            :class="{ liked: readerRelationsReady && postEngagement.likedByMe }"
+            :disabled="
+              interactionSubmitting ||
+              !readerRelationsReady ||
+              readerRelationsLoading ||
+              commentLoading ||
+              readerCommentsRefreshing
+            "
             @click="togglePostLike"
-            ><Heart :size="18" :fill="postEngagement.likedByMe ? 'currentColor' : 'none'" />{{
-              postEngagement.likedByMe ? '已点赞' : '点赞'
+            ><Heart :size="18" :fill="readerRelationsReady && postEngagement.likedByMe ? 'currentColor' : 'none'" />{{
+              !readerRelationsReady ? '点赞状态待核验' : postEngagement.likedByMe ? '已点赞' : '点赞'
             }}
             · {{ postEngagement.likeCount }}</button
           ><button
             class="like-button"
-            :class="{ liked: postFavorite.favoritedByMe }"
-            :disabled="interactionSubmitting"
+            :class="{ liked: readerRelationsReady && postFavorite.favoritedByMe }"
+            :disabled="
+              interactionSubmitting ||
+              !readerRelationsReady ||
+              readerRelationsLoading ||
+              commentLoading ||
+              readerCommentsRefreshing
+            "
             @click="togglePostFavorite"
-            ><Bookmark :size="18" :fill="postFavorite.favoritedByMe ? 'currentColor' : 'none'" />{{
-              postFavorite.favoritedByMe ? '已收藏' : '收藏'
-            }}
-            · {{ postFavorite.favoriteCount }}</button
+            ><Bookmark
+              :size="18"
+              :fill="readerRelationsReady && postFavorite.favoritedByMe ? 'currentColor' : 'none'"
+            />{{ !readerRelationsReady ? '收藏状态待核验' : postFavorite.favoritedByMe ? '已收藏' : '收藏' }} ·
+            {{ postFavorite.favoriteCount }}</button
           ><span><MessageCircle :size="17" />{{ postEngagement.commentCount }} 条评论</span></div
         ><section class="comment-section"
           ><form class="comment-form" @submit.prevent="submitComment">
             <textarea
               v-model.trim="commentBody"
+              aria-label="评论正文"
               maxlength="2000"
               :placeholder="auth.user ? '写下你的评论…' : '登录后参与评论'"
-              :disabled="!auth.user"
+              :disabled="!auth.user || interactionSubmitting || commentWriteUnconfirmed"
             ></textarea
-            ><button v-if="auth.user" class="primary" :disabled="interactionSubmitting || !commentBody.trim()"
+            ><button
+              v-if="auth.user"
+              class="primary"
+              :disabled="
+                interactionSubmitting ||
+                commentLoading ||
+                readerCommentsRefreshing ||
+                commentWriteUnconfirmed ||
+                !commentBody.trim()
+              "
               >发表评论</button
             ><button
               v-else
@@ -1638,7 +2063,16 @@ onBeforeUnmount(() => {
               "
               >登录后评论</button
             ></form
-          ><p v-if="formError" class="form-error">{{ formError }}</p
+          ><p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+          <p v-if="commentWriteUnconfirmed" class="hint" role="status"
+            >评论提交结果未确认，原文已保留但不会自动重发。查看列表不能证明原请求已结束；关闭或刷新会丢失本机提示。</p
+          >
+          <button
+            v-if="commentWriteUnconfirmed"
+            class="secondary"
+            :disabled="interactionSubmitting || commentLoading || readerCommentsRefreshing"
+            @click="refreshReaderComments"
+            >{{ readerCommentsRefreshing ? '正在读取…' : '查看最新评论' }}</button
           ><div class="comment-list"
             ><article v-for="item in postComments" :key="item.id"
               ><div class="comment-avatar">{{ item.userId === auth.user?.id ? initials : '成' }}</div
@@ -1650,14 +2084,14 @@ onBeforeUnmount(() => {
                 v-if="item.userId === auth.user?.id || selectedPost.ownerId === auth.user?.id"
                 class="comment-delete"
                 title="删除评论"
-                :disabled="interactionSubmitting"
+                :disabled="interactionSubmitting || commentLoading || readerCommentsRefreshing"
                 @click="deleteComment(item)"
                 ><Trash2 :size="15" /></button></article
             ><div v-if="!postComments.length" class="empty compact">还没有评论，来发表第一条真实评论。</div></div
           ><button
             v-if="postComments.length < commentTotal"
             class="secondary load-more"
-            :disabled="commentLoading"
+            :disabled="commentLoading || interactionSubmitting || readerCommentsRefreshing"
             @click="loadMoreComments"
             >{{ commentLoading ? '加载中…' : '加载更多评论' }}</button
           ></section
@@ -1676,7 +2110,13 @@ onBeforeUnmount(() => {
             ? '媒体连接恢复中…'
             : `${participantCount} 人在线 · 加入默认不开麦`
       }}</span>
-      <p v-if="voiceError" role="alert" class="form-error">{{ voiceError }}</p></div
+      <p v-if="voiceError" role="alert" class="form-error">{{ voiceError }}</p>
+      <VoicePlaybackControls
+        :phase="voicePhase"
+        :blocked="audioPlaybackBlocked"
+        :busy="audioPlaybackBusy"
+        :error="audioPlaybackError"
+        @resume="resumeVoiceAudio" /></div
     ><button
       v-if="connectedVoice"
       class="icon-button"

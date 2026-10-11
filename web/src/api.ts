@@ -279,7 +279,8 @@ export const api = {
   followCreator: (id: string) => request<CreatorFollowState>(`/creators/${id}/follow`, { method: 'PUT' }),
   unfollowCreator: (id: string) => request<CreatorFollowState>(`/creators/${id}/follow`, { method: 'DELETE' }),
   favorites: (page: number, size = 12) => request<Page<CreatorPost>>(`/content/favorites?page=${page}&size=${size}`),
-  postFavoriteState: (id: string) => request<PostFavoriteState>(`/content/posts/${id}/favorite`),
+  postFavoriteState: (id: string, signal?: AbortSignal) =>
+    request<PostFavoriteState>(`/content/posts/${id}/favorite`, { signal, cache: 'no-store' }),
   favoritePost: (id: string) => request<PostFavoriteState>(`/content/posts/${id}/favorite`, { method: 'PUT' }),
   unfavoritePost: (id: string) => request<PostFavoriteState>(`/content/posts/${id}/favorite`, { method: 'DELETE' }),
   notifications: (page: number, size = 20, signal?: AbortSignal) =>
@@ -294,11 +295,13 @@ export const api = {
       body: JSON.stringify({ enabled }),
       signal,
     }),
-  post: (slug: string) => request<CreatorPost>(`/discovery/posts/${encodeURIComponent(slug)}`),
+  post: (slug: string) => request<CreatorPost>(`/discovery/posts/${encodeURIComponent(slug)}`, { cache: 'no-store' }),
   postComments: (slug: string) =>
     request<PostComment[]>(`/discovery/posts/${encodeURIComponent(slug)}/comments?limit=50`),
   postCommentsPage: (slug: string, page: number, size = 20) =>
-    request<Page<PostComment>>(`/discovery/posts/${encodeURIComponent(slug)}/comments/page?page=${page}&size=${size}`),
+    request<Page<PostComment>>(`/discovery/posts/${encodeURIComponent(slug)}/comments/page?page=${page}&size=${size}`, {
+      cache: 'no-store',
+    }),
   me: () => request<UserIdentity>('/auth/me'),
   login: (email: string, password: string) =>
     request<LoginResult>('/auth/login', {
@@ -318,12 +321,24 @@ export const api = {
     request<Community>(`/communities/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   archiveCommunity: (id: string, version: number) =>
     request<void>(`/communities/${id}?version=${version}`, { method: 'DELETE' }),
-  myCreatorProfile: (signal?: AbortSignal) => request<CreatorProfile>('/creators/me', { signal }),
-  saveCreatorProfile: (payload: Omit<CreatorProfile, 'userId' | 'status'>) =>
-    request<CreatorProfile>('/creators/me', { method: 'PUT', body: JSON.stringify(payload) }),
+  myCreatorProfile: (signal?: AbortSignal) => request<CreatorProfile>('/creators/me', { signal, cache: 'no-store' }),
+  saveCreatorProfile: (
+    payload: Pick<
+      CreatorProfile,
+      | 'slug'
+      | 'displayName'
+      | 'headline'
+      | 'bio'
+      | 'avatarUrl'
+      | 'bannerUrl'
+      | 'avatarAssetId'
+      | 'bannerAssetId'
+      | 'version'
+    >,
+  ) => request<CreatorProfile>('/creators/me', { method: 'PUT', body: JSON.stringify(payload) }),
   publishCreatorProfile: (version: number) =>
     request<CreatorProfile>(`/creators/me/publish?version=${version}`, { method: 'POST' }),
-  myPosts: (signal?: AbortSignal) => request<CreatorPost[]>('/content/posts/mine', { signal }),
+  myPosts: (signal?: AbortSignal) => request<CreatorPost[]>('/content/posts/mine', { signal, cache: 'no-store' }),
   createPost: (payload: PostWriteRequest) =>
     request<CreatorPost>('/content/posts', { method: 'POST', body: JSON.stringify(payload) }),
   updatePost: (id: string, payload: PostUpdateRequest) =>
@@ -332,7 +347,8 @@ export const api = {
     request<CreatorPost>(`/content/posts/${id}/publish?version=${version}`, { method: 'POST' }),
   archivePost: (id: string, version: number) =>
     request<void>(`/content/posts/${id}?version=${version}`, { method: 'DELETE' }),
-  postEngagement: (id: string) => request<PostEngagement>(`/content/posts/${id}/engagement`),
+  postEngagement: (id: string, signal?: AbortSignal) =>
+    request<PostEngagement>(`/content/posts/${id}/engagement`, { signal, cache: 'no-store' }),
   likePost: (id: string) => request<PostEngagement>(`/content/posts/${id}/like`, { method: 'PUT' }),
   unlikePost: (id: string) => request<PostEngagement>(`/content/posts/${id}/like`, { method: 'DELETE' }),
   commentPost: (id: string, body: string) =>

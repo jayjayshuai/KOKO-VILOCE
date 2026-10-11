@@ -1085,6 +1085,12 @@ a {
   display: grid;
   gap: 0;
 }
+.creator-editor-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
 .notification-inbox article {
   display: flex;
   align-items: center;
@@ -1158,7 +1164,8 @@ a {
   bottom: 20px;
 }
 .modal-backdrop {
-  z-index: 40;
+  /* 编辑器的焦点/点击边界必须在常驻通话条之上；通话仍在后台继续。 */
+  z-index: 60;
 }
 @media (max-width: 1200px) {
   .discovery-workspace.with-context {

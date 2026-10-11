@@ -10,6 +10,10 @@ const props = defineProps<{
   loading: boolean;
   /** 当前读取错误。 */
   error: string;
+  /** 内容操作互斥，不把未知结果当成功。 */ actionBusy?: boolean;
+  /** 已确认操作或只读核实反馈。 */ actionSuccess?: string;
+  /** 独立内容操作错误。 */ actionError?: string;
+  /** 原结果未确认内容，不能盲重发归档。 */ archivePendingId?: string;
 }>();
 const emit = defineEmits<{
   /** 重查服务器事实。 */
@@ -20,6 +24,9 @@ const emit = defineEmits<{
   edit: [post: CreatorPost];
   /** 打开本人 UP 主表单。 */
   profile: [];
+  /** 公开查看仅限已发布内容。 */ read: [post: CreatorPost];
+  /** 确认后按当前版本归档。 */ archive: [post: CreatorPost];
+  /** 只查询，不重发归档。 */ recheckArchive: [];
 }>();
 </script>
 <template>
@@ -38,6 +45,11 @@ const emit = defineEmits<{
     ><button class="secondary" @click="emit('refresh')">重新读取</button></div
   >
   <template v-else>
+    <p v-if="actionSuccess" class="workspace-success" role="status">{{ actionSuccess }}</p>
+    <p v-if="actionError" class="workspace-error compact" role="alert">{{ actionError }}</p>
+    <button v-if="archivePendingId" class="secondary" :disabled="actionBusy" @click="emit('recheckArchive')"
+      >查询归档结果</button
+    >
     <section class="studio-profile-card"
       ><div class="studio-profile-icon"><UserRound :size="24" /></div
       ><div
@@ -70,8 +82,23 @@ const emit = defineEmits<{
                 }}</span></td
               ><td class="muted">v{{ post.version }}</td
               ><td
-                ><button class="secondary compact-button" @click="emit('edit', post)"
+                ><button
+                  class="secondary compact-button"
+                  :disabled="actionBusy || archivePendingId === post.id"
+                  @click="emit('edit', post)"
                   ><Pencil :size="14" />编辑</button
+                ><button
+                  v-if="post.status === 'PUBLISHED'"
+                  class="secondary compact-button"
+                  :disabled="actionBusy"
+                  @click="emit('read', post)"
+                  >查看</button
+                >
+                <button
+                  class="secondary compact-button"
+                  :disabled="actionBusy || !!archivePendingId"
+                  @click="emit('archive', post)"
+                  >归档</button
                 ></td
               ></tr
             ></tbody

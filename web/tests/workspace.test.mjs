@@ -641,42 +641,1094 @@ const snapshotApi = (overrides) => ({
   myCreatorProfile: () => Promise.reject(new ApiRequestError('profile missing', 404)),
   ...overrides,
 })
-async function app(overrides = {}, authOverrides = {}) {
+async function app(overrides = {}, authOverrides = {}, globals = {}) {
   const auth = vue.reactive({ user: null, initialized: true, sessionRevision: 1, sessionError: '', ...authOverrides })
   const route = vue.reactive({ name: 'explore', fullPath: '/explore' })
-  const h = await setup('App.vue', snapshotApi(overrides), {}, {}, async (api, runtimeVue) => {
-    const voiceModule = await execute(
-      await readFile(new URL('../src/composables/voice-connection.ts', import.meta.url), 'utf8'),
-      {
-        vue: runtimeVue,
-        '../api': { ApiRequestError },
-      },
-    )
-    return {
-      './composables/voice-connection': voiceModule,
-      './api': { api, ApiRequestError, managedImageUrl: (id) => `/images/${id}` },
-      './stores/auth': { useAuthStore: () => auth },
-      './router/pages': { workspacePages: catalog.workspacePages, unknownPage: catalog.unknownPage },
-      'vue-router': {
-        RouterView: {},
-        useRoute: () => route,
-        useRouter: () => ({
-          push: (path) => {
-            route.name = catalog.workspacePages.find((page) => page.path === path)?.name
-            route.fullPath = path
-          },
-        }),
-      },
-      './composables/dialog-accessibility': { useDialogAccessibility() {} },
-      './components/ManagedImagePicker.vue': { default: {} },
-      './components/WorkspaceShell.vue': { default: {} },
-      './components/CommunityMembershipPanel.vue': { default: {} },
-      './components/VoiceInteractionPanel.vue': { default: {} },
-      './components/PersistentVoiceCallBar.vue': { default: {} },
+  const windowStub = { addEventListener() {}, removeEventListener() {}, confirm: () => true, ...globals.window }
+  const beforeNavigation = [],
+    afterNavigation = []
+  const register = (list, callback) => {
+    list.push(callback)
+    return () => {
+      const index = list.indexOf(callback)
+      if (index >= 0) list.splice(index, 1)
     }
-  })
-  return { ...h, auth, route }
+  }
+  const navigation = {
+    beforeEach: (callback) => register(beforeNavigation, callback),
+    afterEach: (callback) => register(afterNavigation, callback),
+    async push(path) {
+      const to = { name: catalog.workspacePages.find((page) => page.path === path)?.name, fullPath: path },
+        from = { ...route }
+      for (const guard of beforeNavigation)
+        if ((await guard(to, from)) === false) {
+          const failure = { type: 'aborted' }
+          for (const after of afterNavigation) after(to, from, failure)
+          return failure
+        }
+      route.name = to.name
+      route.fullPath = path
+      for (const guard of afterNavigation) guard(to, from, undefined)
+      return undefined
+    },
+  }
+  const h = await setup(
+    'App.vue',
+    snapshotApi(overrides),
+    {},
+    { ...globals, window: windowStub },
+    async (api, runtimeVue) => {
+      const editorModule = await execute(
+        await readFile(new URL('../src/composables/creator-editor-writes.ts', import.meta.url), 'utf8'),
+        {
+          vue: runtimeVue,
+          '../api': { api, ApiRequestError },
+        },
+      )
+      const voiceModule = await execute(
+        await readFile(new URL('../src/composables/voice-connection.ts', import.meta.url), 'utf8'),
+        {
+          vue: runtimeVue,
+          '../api': { ApiRequestError },
+        },
+      )
+      const editorGuardModule = await execute(
+        await readFile(new URL('../src/composables/unsaved-editor-guard.ts', import.meta.url), 'utf8'),
+        { vue: runtimeVue },
+        { window: windowStub },
+      )
+      const contentActionsModule = await execute(
+        await readFile(new URL('../src/composables/creator-content-actions.ts', import.meta.url), 'utf8'),
+        { vue: runtimeVue, '../api': { api, ApiRequestError } },
+      )
+      return {
+        './composables/voice-connection': voiceModule,
+        './composables/creator-editor-writes': editorModule,
+        './composables/unsaved-editor-guard': editorGuardModule,
+        './composables/creator-content-actions': contentActionsModule,
+        './api': { api, ApiRequestError, managedImageUrl: (id) => `/images/${id}` },
+        './stores/auth': { useAuthStore: () => auth },
+        './router/pages': { workspacePages: catalog.workspacePages, unknownPage: catalog.unknownPage },
+        'vue-router': {
+          RouterView: {},
+          useRoute: () => route,
+          useRouter: () => navigation,
+        },
+        './composables/dialog-accessibility': { useDialogAccessibility() {} },
+        './components/ManagedImagePicker.vue': { default: {} },
+        './components/WorkspaceShell.vue': { default: {} },
+        './components/CommunityMembershipPanel.vue': { default: {} },
+        './components/VoiceInteractionPanel.vue': { default: {} },
+        './components/VoicePlaybackControls.vue': { default: {} },
+        './components/PersistentVoiceCallBar.vue': { default: {} },
+        './components/CreatorSaveStatus.vue': { default: {} },
+      }
+    },
+  )
+  return { ...h, auth, route, navigation, beforeNavigation, afterNavigation }
 }
+
+const editorPost = (overrides = {}) => ({
+  id: '100',
+  ownerId: '42',
+  slug: 'article-one',
+  title: '真实夹具草稿',
+  excerpt: '',
+  body: '完整本人正文',
+  coverUrl: '',
+  coverAssetId: '',
+  status: 'DRAFT',
+  version: 1,
+  kind: 'ARTICLE',
+  likeCount: 0,
+  commentCount: 0,
+  favoriteCount: 0,
+  ...overrides,
+})
+test('编辑器本人重新读取携带取消器并禁用浏览器缓存，不把旧缓存当核实事实', async () => {
+  const calls = []
+  const source = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8')
+  const module = await execute(source, {
+    './services/http': {
+      apiBaseUrl: '/koko-api',
+      ApiRequestError,
+      request: async (path, options) => {
+        calls.push({ path, options })
+      },
+    },
+  })
+  const signal = new AbortController().signal
+  await module.api.myPosts(signal)
+  await module.api.myCreatorProfile(signal)
+  assert.deepEqual(
+    calls.map((call) => call.path),
+    ['/content/posts/mine', '/creators/me'],
+  )
+  for (const call of calls) {
+    assert.equal(call.options.signal, signal)
+    assert.equal(call.options.cache, 'no-store')
+  }
+})
+const editorProfile = (overrides = {}) => ({
+  userId: '42',
+  slug: 'synthetic-creator',
+  displayName: '合成创作者',
+  headline: '',
+  bio: '本人介绍',
+  avatarUrl: '',
+  bannerUrl: '',
+  avatarAssetId: '',
+  bannerAssetId: '',
+  status: 'DRAFT',
+  version: 3,
+  followerCount: 0,
+  ...overrides,
+})
+const readerApi = (overrides = {}) => ({
+  post: (slug) => Promise.resolve(editorPost({ id: slug === 'beta' ? '200' : '100', slug, status: 'PUBLISHED' })),
+  postCommentsPage: (_slug, page) => Promise.resolve({ items: [], page, total: 0 }),
+  postEngagement: () => Promise.resolve({ likeCount: 0, commentCount: 0, likedByMe: false }),
+  postFavoriteState: () => Promise.resolve({ favoriteCount: 0, favoritedByMe: false }),
+  ...overrides,
+})
+async function reader(overrides = {}) {
+  const h = await app(readerApi(overrides), { user: identity('42') })
+  await h.state.readPost({ slug: 'alpha' })
+  return h
+}
+async function settleUntil(predicate) {
+  for (let i = 0; i < 20 && !predicate(); i++) await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(predicate(), true)
+}
+const readerComment = (overrides = {}) => ({
+  id: '1001',
+  postId: '100',
+  userId: '42',
+  body: '本人评论',
+  version: 0,
+  createdAt: '2026-10-07T23:00:00',
+  ...overrides,
+})
+
+test('本人关系读取未完成或失败不能用默认false发送点赞/收藏，核验后才放行', async () => {
+  const wait = deferred()
+  const h = await app(readerApi({ postEngagement: () => wait.promise }), { user: identity('42') })
+  try {
+    const reading = h.state.readPost({ slug: 'alpha' })
+    await settleUntil(() => h.state.readerRelationsLoading.value)
+    await h.state.togglePostLike()
+    await h.state.togglePostFavorite()
+    assert.equal(h.calls.filter((call) => ['likePost', 'favoritePost'].includes(call.name)).length, 0)
+    wait.reject(new Error('relation offline'))
+    await reading
+    assert.equal(h.state.readerRelationsReady.value, false)
+    assert.match(h.state.readerRelationsError.value, /offline/)
+    await h.state.togglePostLike()
+    assert.equal(h.calls.filter((call) => call.name === 'likePost').length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('点赞重复调用与并行收藏都被在途门禁阻止，成功仅更新当前文章', async () => {
+  const wait = deferred(),
+    h = await reader({ likePost: () => wait.promise })
+  try {
+    const saving = h.state.togglePostLike()
+    await h.state.togglePostLike()
+    await h.state.togglePostFavorite()
+    assert.equal(h.calls.filter((call) => call.name === 'likePost').length, 1)
+    assert.equal(h.calls.filter((call) => call.name === 'favoritePost').length, 0)
+    wait.resolve({ likeCount: 1, commentCount: 0, likedByMe: true })
+    await saving
+    assert.equal(h.state.selectedPost.value.likeCount, 1)
+    assert.equal(h.state.interactionSubmitting.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('切文章后旧点赞回复不更新新文章或解除新在途写入', async () => {
+  const old = deferred(),
+    fresh = deferred()
+  const h = await reader({ likePost: (id) => (id === '100' ? old.promise : fresh.promise) })
+  try {
+    const first = h.state.togglePostLike()
+    await h.state.readPost({ slug: 'beta' })
+    const second = h.state.togglePostLike()
+    old.resolve({ likeCount: 99, commentCount: 0, likedByMe: true })
+    await first
+    assert.equal(h.state.interactionSubmitting.value, true)
+    assert.equal(h.state.selectedPost.value.id, '200')
+    assert.equal(h.state.selectedPost.value.likeCount, 0)
+    fresh.resolve({ likeCount: 1, commentCount: 0, likedByMe: true })
+    await second
+    assert.equal(h.state.selectedPost.value.likeCount, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('旧账号收藏失败不得回填新账号错误或清除新忙态', async () => {
+  const old = deferred(),
+    fresh = deferred()
+  let first = true
+  const h = await reader({ favoritePost: () => (first ? ((first = false), old.promise) : fresh.promise) })
+  try {
+    const saving = h.state.togglePostFavorite()
+    h.auth.user = identity('43')
+    h.auth.sessionRevision++
+    await vue.nextTick()
+    await h.state.readPost({ slug: 'beta' })
+    const newSaving = h.state.togglePostFavorite()
+    old.reject(new Error('old private error'))
+    await saving
+    assert.equal(h.state.readerRelationsError.value, '')
+    assert.equal(h.state.interactionSubmitting.value, true)
+    fresh.resolve({ favoriteCount: 1, favoritedByMe: true })
+    await newSaving
+    assert.equal(h.state.postFavorite.value.favoritedByMe, true)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('收藏结果未知不盲反向切换，只读核验实际状态后才能继续', async () => {
+  let favorited = false
+  const h = await reader({
+    favoritePost: () => {
+      favorited = true
+      return Promise.reject(new Error('reply lost'))
+    },
+    postFavoriteState: () => Promise.resolve({ favoriteCount: favorited ? 1 : 0, favoritedByMe: favorited }),
+  })
+  try {
+    await h.state.togglePostFavorite()
+    await h.state.togglePostFavorite()
+    assert.equal(h.calls.filter((call) => call.name === 'favoritePost').length, 1)
+    assert.equal(h.state.readerRelationsReady.value, false)
+    await h.state.refreshPostRelations()
+    assert.equal(h.state.readerRelationsReady.value, true)
+    assert.equal(h.state.postFavorite.value.favoritedByMe, true)
+    assert.equal(h.calls.filter((call) => call.name === 'unfavoritePost').length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('评论回复丢失保留原文，列表同文字不等于提交收据，也不自动解锁重发', async () => {
+  let hasComment = false
+  const h = await reader({
+    commentPost: () => {
+      hasComment = true
+      return Promise.reject(new Error('reply lost'))
+    },
+    postCommentsPage: () =>
+      Promise.resolve({ items: hasComment ? [readerComment()] : [], page: 1, total: hasComment ? 1 : 0 }),
+  })
+  try {
+    h.state.commentBody.value = '本人评论'
+    await h.state.submitComment()
+    await h.state.submitComment()
+    assert.equal(h.state.commentWriteUnconfirmed.value, true)
+    assert.equal(h.state.commentBody.value, '本人评论')
+    assert.equal(h.calls.filter((call) => call.name === 'commentPost').length, 1)
+    await h.state.refreshReaderComments()
+    await h.state.submitComment()
+    assert.equal(h.state.postComments.value[0].body, '本人评论')
+    assert.equal(h.state.commentWriteUnconfirmed.value, true)
+    assert.equal(h.calls.filter((call) => call.name === 'commentPost').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('评论在途捕获原文，成功仅清除仍相同的输入，不覆盖程序晚更新的草稿', async () => {
+  const wait = deferred(),
+    h = await reader({ commentPost: () => wait.promise })
+  try {
+    h.state.commentBody.value = '本人评论'
+    const saving = h.state.submitComment()
+    await h.state.submitComment()
+    h.state.commentBody.value = '另外的新评论'
+    wait.resolve(readerComment())
+    await saving
+    assert.equal(h.calls.filter((call) => call.name === 'commentPost').length, 1)
+    assert.equal(h.state.postComments.value[0].body, '本人评论')
+    assert.equal(h.state.commentBody.value, '另外的新评论')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('错误评论归属回复不插入列表或清空原文', async () => {
+  const h = await reader({ commentPost: () => Promise.resolve(readerComment({ userId: '99' })) })
+  try {
+    h.state.commentBody.value = '本人评论'
+    await h.state.submitComment()
+    assert.equal(h.state.postComments.value.length, 0)
+    assert.equal(h.state.commentBody.value, '本人评论')
+    assert.equal(h.state.commentWriteUnconfirmed.value, true)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('删除核对当前列表和当前权限，旧文章删除回复不能删新文章评论', async () => {
+  const wait = deferred(),
+    h = await reader({ deletePostComment: () => wait.promise })
+  try {
+    await h.state.deleteComment(readerComment())
+    assert.equal(h.calls.filter((call) => call.name === 'deletePostComment').length, 0)
+    h.state.postComments.value = [readerComment()]
+    const deleting = h.state.deleteComment(h.state.postComments.value[0])
+    await h.state.readPost({ slug: 'beta' })
+    h.state.postComments.value = [readerComment({ postId: '200' })]
+    wait.resolve()
+    await deleting
+    assert.equal(h.state.postComments.value.length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('新关系读取替换旧请求，迟到故障不覆盖已核验事实或清除新加载状态', async () => {
+  const old = deferred()
+  let call = 0
+  const h = await reader({
+    postEngagement: () =>
+      ++call === 2 ? old.promise : Promise.resolve({ likeCount: 2, commentCount: 0, likedByMe: true }),
+  })
+  try {
+    const first = h.state.refreshPostRelations()
+    const signal = h.calls.filter((call) => call.name === 'postEngagement').at(-1).args[1]
+    await h.state.refreshPostRelations()
+    assert.equal(signal.aborted, true)
+    old.reject(new Error('old relation error'))
+    await first
+    assert.equal(h.state.readerRelationsError.value, '')
+    assert.equal(h.state.readerRelationsReady.value, true)
+    assert.equal(h.state.postEngagement.value.likedByMe, true)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('登录轮次改变清除旧评论输入和私人关系，迟到评论不重新展示', async () => {
+  const wait = deferred(),
+    h = await reader({ commentPost: () => wait.promise })
+  try {
+    h.state.commentBody.value = '本人评论'
+    const saving = h.state.submitComment()
+    h.auth.sessionRevision++
+    assert.equal(h.state.commentBody.value, '')
+    assert.equal(h.state.readerRelationsReady.value, false)
+    wait.resolve(readerComment())
+    await saving
+    assert.equal(h.state.postComments.value.length, 0)
+    assert.equal(h.state.interactionSubmitting.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+function fillEditor(h) {
+  h.state.newPostDraft()
+  Object.assign(h.state.postEdit, { slug: 'article-one', title: '真实夹具草稿', body: '完整本人正文' })
+}
+
+function guardWindow() {
+  const listeners = new Map(),
+    questions = []
+  let consent = false
+  return {
+    listeners,
+    questions,
+    consent(value) {
+      consent = value
+    },
+    window: {
+      addEventListener(type, callback) {
+        listeners.set(type, callback)
+      },
+      removeEventListener(type, callback) {
+        if (listeners.get(type) === callback) listeners.delete(type)
+      },
+      confirm(text) {
+        questions.push(text)
+        return consent
+      },
+    },
+  }
+}
+
+test('文章脏检查包含正文与封面，输入回退到原值解除警告，只读版本变化不误报', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    h.state.newPostDraft()
+    assert.equal(h.state.editorDirty.value, false)
+    h.state.postEdit.body = '未保存正文'
+    assert.equal(h.state.editorDirty.value, true)
+    assert.equal(browser.listeners.has('beforeunload'), true)
+    h.state.postEdit.body = ''
+    assert.equal(h.state.editorDirty.value, false)
+    assert.equal(browser.listeners.has('beforeunload'), false)
+    h.state.postEdit.version++
+    assert.equal(h.state.editorDirty.value, false)
+    h.state.postEdit.coverAssetId = 'synthetic-asset'
+    assert.equal(h.state.editorDirty.value, true)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('保存确认更新脏检查基线，关闭不再多问但后续修改仍会提醒', async () => {
+  const browser = guardWindow(),
+    h = await app(
+      { createPost: () => Promise.resolve(editorPost()) },
+      { user: identity('42') },
+      { window: browser.window },
+    )
+  try {
+    fillEditor(h)
+    assert.equal(h.state.editorDirty.value, true)
+    await h.state.savePost(false)
+    assert.equal(h.state.editorDirty.value, false)
+    assert.equal(browser.listeners.has('beforeunload'), false)
+    h.state.postEdit.title = '之后的未保存修改'
+    h.state.closeDialog()
+    assert.equal(h.state.dialog.value, 'post')
+    assert.equal(browser.questions.length, 1)
+    h.state.postEdit.title = '真实夹具草稿'
+    h.state.closeDialog()
+    assert.equal(h.state.dialog.value, null)
+    assert.equal(browser.questions.length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('已读取主页基线排除粉丝数但包含简介和两类图片', async () => {
+  const browser = guardWindow(),
+    h = await app(
+      { myCreatorProfile: () => Promise.resolve(editorProfile()) },
+      { user: identity('42') },
+      { window: browser.window },
+    )
+  try {
+    await h.state.openCreatorStudio()
+    assert.equal(h.state.editorDirty.value, false)
+    h.state.creatorProfile.followerCount++
+    assert.equal(h.state.editorDirty.value, false)
+    h.state.creatorProfile.bio = '新简介'
+    assert.equal(h.state.editorDirty.value, true)
+    h.state.creatorProfile.bio = '本人介绍'
+    h.state.creatorProfile.bannerAssetId = 'synthetic-banner'
+    assert.equal(h.state.editorDirty.value, true)
+    h.state.creatorProfile.bannerAssetId = ''
+    h.state.creatorProfile.avatarAssetId = 'synthetic-avatar'
+    assert.equal(h.state.editorDirty.value, true)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('拒绝关闭未保存编辑器保留内容，允许关闭不偷偷发送保存或发布', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    fillEditor(h)
+    h.state.closeDialog()
+    assert.equal(h.state.dialog.value, 'post')
+    assert.equal(h.state.postEdit.body, '完整本人正文')
+    assert.match(browser.questions[0], /尚未保存/)
+    browser.consent(true)
+    h.state.closeDialog()
+    assert.equal(h.state.dialog.value, null)
+    assert.equal(h.calls.filter((call) => ['createPost', 'updatePost', 'publishPost'].includes(call.name)).length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('取消新建/切换文章/打开主页，都不覆盖原未保存表单', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    fillEditor(h)
+    h.state.newPostDraft()
+    h.state.editPost(editorPost({ title: '别的内容' }))
+    await h.state.openCreatorStudio()
+    assert.equal(h.state.dialog.value, 'post')
+    assert.equal(h.state.postEdit.body, '完整本人正文')
+    assert.equal(browser.questions.length, 3)
+    assert.equal(h.calls.length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('未保存导航取消保持路由与表单；成功导航才关闭并解除卸载监听', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    fillEditor(h)
+    const failure = await h.navigation.push('/voice')
+    assert.ok(failure)
+    assert.equal(h.route.fullPath, '/explore')
+    assert.equal(h.state.dialog.value, 'post')
+    browser.consent(true)
+    await h.navigation.push('/voice')
+    assert.equal(h.route.fullPath, '/voice')
+    assert.equal(h.state.dialog.value, null)
+    assert.equal(browser.listeners.has('beforeunload'), false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('全局新建文章等待导航成功，不在守卫取消前覆盖旧表单且不会双重确认', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    h.route.name = 'voice'
+    h.route.fullPath = '/voice'
+    fillEditor(h)
+    await h.state.workspaceAction('post')
+    assert.equal(h.route.fullPath, '/voice')
+    assert.equal(h.state.postEdit.body, '完整本人正文')
+    assert.equal(browser.questions.length, 1)
+    browser.consent(true)
+    await h.state.workspaceAction('post')
+    assert.equal(h.route.fullPath, '/studio')
+    assert.equal(h.state.dialog.value, 'post')
+    assert.equal(h.state.postEdit.body, '')
+    assert.equal(browser.questions.length, 2)
+    assert.equal(h.state.editorDirty.value, false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('相同URL不提示或关闭表单；后续守卫拒绝时不能提前清除脏检查', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    fillEditor(h)
+    await h.navigation.push('/explore')
+    assert.equal(browser.questions.length, 0)
+    assert.equal(h.state.dialog.value, 'post')
+    browser.consent(true)
+    const remove = h.navigation.beforeEach(() => false)
+    await h.navigation.push('/voice')
+    assert.equal(h.state.editorDirty.value, true)
+    assert.equal(h.state.dialog.value, 'post')
+    remove()
+    browser.consent(false)
+    await h.navigation.push('/voice')
+    assert.equal(h.route.fullPath, '/explore')
+    assert.equal(browser.questions.length, 2)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('在途保存或上传阻止路由离开，不弹放弃确认，也不会重发写入', async () => {
+  const browser = guardWindow(),
+    wait = deferred(),
+    h = await app({ createPost: () => wait.promise }, { user: identity('42') }, { window: browser.window })
+  try {
+    fillEditor(h)
+    const saving = h.state.savePost(false)
+    assert.equal(h.state.editorGuard.shouldWarn.value, true)
+    await h.navigation.push('/voice')
+    h.state.closeDialog()
+    assert.equal(browser.questions.length, 0)
+    assert.equal(h.state.dialog.value, 'post')
+    wait.resolve(editorPost())
+    await saving
+    h.state.imageUploading.value = true
+    await h.navigation.push('/voice')
+    assert.equal(h.route.fullPath, '/explore')
+    assert.equal(h.calls.filter((call) => call.name === 'createPost').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('未知提交优先解释核实信息，确认不会被误表述成单纯未保存', async () => {
+  const browser = guardWindow(),
+    h = await app(
+      { createPost: () => Promise.reject(new Error('reply lost')) },
+      { user: identity('42') },
+      { window: browser.window },
+    )
+  try {
+    fillEditor(h)
+    await h.state.savePost(false)
+    h.state.closeDialog()
+    assert.match(browser.questions[0], /仍未核实/)
+    assert.match(browser.questions[0], /不会撤回/)
+    assert.ok(h.state.editorRecovery.value)
+    assert.equal(h.state.dialog.value, 'post')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('beforeunload只设置浏览器原生提醒，不发送请求；撤销修改后解绑', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  try {
+    h.state.newPostDraft()
+    h.state.postEdit.title = '本地私有文字'
+    let prevented = false
+    const event = {
+      returnValue: 'initial',
+      preventDefault() {
+        prevented = true
+      },
+    }
+    browser.listeners.get('beforeunload')(event)
+    assert.equal(prevented, true)
+    assert.equal(event.returnValue, '')
+    assert.equal(h.calls.length, 0)
+    h.state.postEdit.title = ''
+    assert.equal(browser.listeners.has('beforeunload'), false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('退出登录先确认未保存修改，取消不调用注销；成功注销清除旧正文和提醒', async () => {
+  const browser = guardWindow()
+  let logouts = 0
+  const h = await app(
+    {},
+    {
+      user: identity('42'),
+      async logout() {
+        logouts++
+        this.user = null
+        this.sessionRevision++
+      },
+    },
+    { window: browser.window },
+  )
+  try {
+    fillEditor(h)
+    await h.state.logout()
+    assert.equal(logouts, 0)
+    browser.consent(true)
+    await h.state.logout()
+    assert.equal(logouts, 1)
+    assert.equal(h.state.postEdit.body, '')
+    assert.equal(h.state.dialog.value, null)
+    assert.equal(browser.listeners.has('beforeunload'), false)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('账号/同账号登录轮次强制变化不被未保存确认拦住，立即清理私有编辑器', async () => {
+  for (const accountChange of [true, false]) {
+    const browser = guardWindow(),
+      h = await app({}, { user: identity('42') }, { window: browser.window })
+    try {
+      fillEditor(h)
+      if (accountChange) h.auth.user = null
+      else h.auth.sessionRevision++
+      assert.equal(h.state.dialog.value, null)
+      assert.equal(h.state.postEdit.body, '')
+      assert.equal(browser.questions.length, 0)
+      assert.equal(browser.listeners.has('beforeunload'), false)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('编辑器守卫卸载清除beforeunload及两个路由钩子，不保留旧基线监听', async () => {
+  const browser = guardWindow(),
+    h = await app({}, { user: identity('42') }, { window: browser.window })
+  fillEditor(h)
+  assert.equal(browser.listeners.has('beforeunload'), true)
+  assert.equal(h.beforeNavigation.length, 1)
+  assert.equal(h.afterNavigation.length, 1)
+  h.dispose()
+  assert.equal(browser.listeners.has('beforeunload'), false)
+  assert.equal(h.beforeNavigation.length, 0)
+  assert.equal(h.afterNavigation.length, 0)
+})
+
+test('对话框焦点排除fieldset继承禁用的控件，全禁用时Tab保留在对话框根节点', async () => {
+  const hooks = [],
+    listeners = new Map()
+  let targets = []
+  const document = {
+    activeElement: null,
+    querySelectorAll: () => [root],
+    addEventListener(type, handler) {
+      listeners.set(type, handler)
+    },
+    removeEventListener(type, handler) {
+      if (listeners.get(type) === handler) listeners.delete(type)
+    },
+  }
+  class Element {
+    constructor(disabled = false) {
+      this.disabled = disabled
+      this.isConnected = true
+    }
+    matches() {
+      return this.disabled
+    }
+    hasAttribute() {
+      return false
+    }
+    getClientRects() {
+      return [1]
+    }
+    focus() {
+      if (!this.disabled) document.activeElement = this
+    }
+    contains(element) {
+      return element === this || targets.includes(element)
+    }
+    querySelectorAll() {
+      return targets
+    }
+  }
+  const root = new Element(),
+    inheritedDisabled = new Element(true),
+    enabled = new Element()
+  targets = [inheritedDisabled, enabled]
+  document.activeElement = new Element()
+  const namespace = await execute(
+    await readFile(new URL('../src/composables/dialog-accessibility.ts', import.meta.url), 'utf8'),
+    { vue: { ...vue, onBeforeUnmount: (callback) => hooks.push(callback) } },
+    { document, HTMLElement: Element },
+  )
+  namespace.useDialogAccessibility(
+    vue.ref(true),
+    () => {},
+    () => true,
+  )
+  await vue.nextTick()
+  // VM内异步watch跨上下文恢复需要额外微任务轮次；保持对实际焦点目标的严格断言。
+  for (let attempt = 0; attempt < 10 && document.activeElement !== enabled; attempt++)
+    await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(document.activeElement, enabled)
+  targets = [inheritedDisabled]
+  let prevented = false
+  listeners.get('keydown')({
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault() {
+      prevented = true
+    },
+  })
+  assert.equal(prevented, true)
+  assert.equal(document.activeElement, root)
+  hooks.forEach((hook) => hook())
+  assert.equal(listeners.has('keydown'), false)
+})
+
+test('草稿已保存但发布失败保留ID/版本并锁定盲重试，只读核实后不重新创建', async () => {
+  let published = false
+  const h = await app(
+    {
+      createPost: () => Promise.resolve(editorPost()),
+      publishPost: () => Promise.reject(new Error('publish reply lost')),
+      myPosts: () =>
+        Promise.resolve([editorPost({ status: published ? 'PUBLISHED' : 'DRAFT', version: published ? 2 : 1 })]),
+    },
+    { user: identity('42') },
+  )
+  try {
+    fillEditor(h)
+    await h.state.savePost(true)
+    assert.equal(h.state.postEdit.id, '100')
+    assert.equal(h.state.postEdit.version, 1)
+    assert.equal(h.state.ownedPosts.value[0].id, '100')
+    assert.match(h.state.editorSuccess.value, /保存已确认/)
+    assert.match(h.state.editorError.value, /发布.*未确认/)
+    await h.state.savePost(true)
+    assert.equal(h.calls.filter((call) => call.name === 'createPost').length, 1)
+    assert.equal(h.calls.filter((call) => call.name === 'publishPost').length, 1)
+    published = true
+    await h.state.creatorEditor.recheck()
+    assert.equal(h.state.editorRecovery.value, null)
+    assert.equal(h.state.postEdit.status, 'PUBLISHED')
+    assert.equal(h.state.postEdit.version, 2)
+    assert.equal(h.calls.filter((call) => call.name === 'publishPost').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('创建回复丢失按原slug查询，查无记录不证明回滚，不解锁重复创建', async () => {
+  let found = false
+  const h = await app(
+    {
+      createPost: () => Promise.reject(new Error('reply lost')),
+      myPosts: () => Promise.resolve(found ? [editorPost()] : []),
+    },
+    { user: identity('42') },
+  )
+  try {
+    fillEditor(h)
+    await h.state.savePost(false)
+    await h.state.creatorEditor.recheck()
+    assert.match(h.state.editorError.value, /不证明原写入已回滚/)
+    assert.ok(h.state.editorRecovery.value)
+    h.state.postEdit.slug = 'changed-after-failure'
+    await h.state.savePost(false)
+    assert.equal(h.calls.filter((call) => call.name === 'createPost').length, 1)
+    found = true
+    await h.state.creatorEditor.recheck()
+    assert.equal(h.state.postEdit.id, '100')
+    assert.equal(h.state.postEdit.slug, 'article-one')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('发布失败核实到仍为草稿，下一次明确保存沿用服务端ID和当前版本', async () => {
+  let fail = true
+  const h = await app(
+    {
+      createPost: () => Promise.resolve(editorPost()),
+      publishPost: () =>
+        fail ? Promise.reject(new Error('offline')) : Promise.resolve(editorPost({ status: 'PUBLISHED', version: 5 })),
+      myPosts: () => Promise.resolve([editorPost({ version: 3 })]),
+      updatePost: () => Promise.resolve(editorPost({ version: 4 })),
+    },
+    { user: identity('42') },
+  )
+  try {
+    fillEditor(h)
+    await h.state.savePost(true)
+    await h.state.creatorEditor.recheck()
+    fail = false
+    await h.state.savePost(true)
+    const update = h.calls.find((call) => call.name === 'updatePost')
+    assert.equal(update.args[0], '100')
+    assert.equal(update.args[1].version, 3)
+    assert.equal(h.calls.filter((call) => call.name === 'createPost').length, 1)
+    assert.equal(h.state.postEdit.status, 'PUBLISHED')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('错误所有者响应或不完整私人正文不进入编辑器，也不继续发布', async () => {
+  for (const reply of [
+    editorPost({ ownerId: '99' }),
+    editorPost({ body: undefined }),
+    editorPost({ version: -1 }),
+    editorPost({ id: '1/other' }),
+    editorPost({ id: '9223372036854775808' }),
+    editorPost({ slug: 'unrelated-content' }),
+  ]) {
+    const h = await app({ createPost: () => Promise.resolve(reply) }, { user: identity('42') })
+    try {
+      fillEditor(h)
+      await h.state.savePost(true)
+      assert.equal(h.state.postEdit.id, '')
+      assert.equal(h.state.ownedPosts.value.length, 0)
+      assert.equal(h.calls.filter((call) => call.name === 'publishPost').length, 0)
+      assert.ok(h.state.editorRecovery.value)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('旧账号保存迟到不发布或回填，新账号在途操作不被旧finally解除', async () => {
+  const old = deferred(),
+    fresh = deferred()
+  let first = true
+  const h = await app(
+    { createPost: () => (first ? ((first = false), old.promise) : fresh.promise) },
+    { user: identity('42') },
+  )
+  try {
+    fillEditor(h)
+    const saving = h.state.savePost(true)
+    h.auth.user = identity('43')
+    h.auth.sessionRevision++
+    await vue.nextTick()
+    assert.equal(h.state.postEdit.body, '')
+    fillEditor(h)
+    const newSaving = h.state.savePost(false)
+    old.resolve(editorPost())
+    await saving
+    assert.equal(h.state.submitting.value, true)
+    assert.equal(h.state.postEdit.id, '')
+    assert.equal(h.calls.filter((call) => call.name === 'publishPost').length, 0)
+    fresh.resolve(editorPost({ id: '200', ownerId: '43' }))
+    await newSaving
+    assert.equal(h.state.postEdit.id, '200')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('同弹窗换表单隔离旧结果，即使账号没有变化也不继续发布', async () => {
+  const wait = deferred()
+  const h = await app({ createPost: () => wait.promise }, { user: identity('42') })
+  try {
+    fillEditor(h)
+    const saving = h.state.savePost(true)
+    h.state.editorFormRevision.value++
+    h.state.postEdit.title = '新表单标题'
+    wait.resolve(editorPost())
+    await saving
+    assert.equal(h.state.postEdit.title, '新表单标题')
+    assert.equal(h.calls.filter((call) => call.name === 'publishPost').length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('主页初始读取未完成或故障时不使用默认版本保存', async () => {
+  const wait = deferred()
+  const h = await app({ myCreatorProfile: () => wait.promise }, { user: identity('42') })
+  try {
+    const reading = h.state.openCreatorStudio()
+    await h.state.saveCreatorProfile(false)
+    assert.equal(h.calls.filter((call) => call.name === 'saveCreatorProfile').length, 0)
+    wait.reject(new Error('profile unavailable'))
+    await reading
+    assert.equal(h.state.creatorProfileLoaded.value, false)
+    await h.state.saveCreatorProfile(false)
+    assert.equal(h.calls.filter((call) => call.name === 'saveCreatorProfile').length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('主页保存确认但发布回复丢失，保留新版本并只读核实当前发布事实', async () => {
+  let active = false
+  const h = await app(
+    {
+      myCreatorProfile: () =>
+        Promise.resolve(editorProfile({ status: active ? 'ACTIVE' : 'DRAFT', version: active ? 5 : 3 })),
+      saveCreatorProfile: () => Promise.resolve(editorProfile({ version: 4 })),
+      publishCreatorProfile: () => Promise.reject(new Error('reply lost')),
+    },
+    { user: identity('42') },
+  )
+  try {
+    await h.state.openCreatorStudio()
+    await h.state.saveCreatorProfile(true)
+    assert.equal(h.state.creatorProfile.version, 4)
+    assert.equal(h.state.studioProfile.value.version, 4)
+    assert.equal(h.state.editorRecovery.value.kind, 'creator')
+    await h.state.saveCreatorProfile(true)
+    assert.equal(h.calls.filter((call) => call.name === 'saveCreatorProfile').length, 1)
+    active = true
+    await h.state.creatorEditor.recheck()
+    assert.equal(h.state.creatorProfile.status, 'ACTIVE')
+    assert.equal(h.state.creatorProfile.version, 5)
+    assert.equal(h.calls.filter((call) => call.name === 'publishCreatorProfile').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('同账号重登录废弃旧主页保存结果，不以新Cookie继续发布', async () => {
+  const wait = deferred()
+  const h = await app(
+    { myCreatorProfile: () => Promise.resolve(editorProfile()), saveCreatorProfile: () => wait.promise },
+    { user: identity('42') },
+  )
+  try {
+    await h.state.openCreatorStudio()
+    const saving = h.state.saveCreatorProfile(true)
+    h.auth.sessionRevision++
+    await vue.nextTick()
+    wait.resolve(editorProfile({ bio: '旧私有介绍', version: 4 }))
+    await saving
+    assert.equal(h.state.dialog.value, null)
+    assert.notEqual(h.state.creatorProfile.bio, '旧私有介绍')
+    assert.equal(h.calls.filter((call) => call.name === 'publishCreatorProfile').length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('明确400校验拒绝不伪造提交未知；用户可以修正表单后重新保存', async () => {
+  let invalid = true
+  const h = await app(
+    {
+      createPost: () =>
+        invalid ? Promise.reject(new ApiRequestError('title invalid', 400)) : Promise.resolve(editorPost()),
+    },
+    { user: identity('42') },
+  )
+  try {
+    fillEditor(h)
+    await h.state.savePost(false)
+    assert.equal(h.state.editorRecovery.value, null)
+    assert.match(h.state.editorError.value, /保存被拒绝/)
+    invalid = false
+    await h.state.savePost(false)
+    assert.equal(h.state.postEdit.id, '100')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('只读核实错归属或缺完整正文仍锁定未知结果，不能覆盖当前表单', async () => {
+  const h = await app(
+    {
+      createPost: () => Promise.reject(new Error('reply lost')),
+      myPosts: () => Promise.resolve([editorPost({ body: undefined })]),
+    },
+    { user: identity('42') },
+  )
+  try {
+    fillEditor(h)
+    await h.state.savePost(false)
+    await h.state.creatorEditor.recheck()
+    assert.equal(h.state.postEdit.body, '完整本人正文')
+    assert.ok(h.state.editorRecovery.value)
+    assert.match(h.state.editorError.value, /核实未完成/)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('用户取消覆盖和关闭未知编辑器，不读取、不重复写、不丢弃核实信息', async () => {
+  const questions = []
+  const h = await app(
+    { createPost: () => Promise.reject(new Error('reply lost')) },
+    { user: identity('42') },
+    {
+      window: {
+        confirm: (text) => {
+          questions.push(text)
+          return false
+        },
+      },
+    },
+  )
+  try {
+    fillEditor(h)
+    await h.state.savePost(false)
+    h.state.recheckCreatorSubmission()
+    h.state.closeDialog()
+    assert.equal(questions.length, 2)
+    assert.equal(h.state.dialog.value, 'post')
+    assert.ok(h.state.editorRecovery.value)
+    assert.equal(h.calls.filter((call) => call.name === 'myPosts').length, 0)
+    assert.equal(h.calls.filter((call) => call.name === 'createPost').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
 
 test('语音建房确认后刷新房主工作台，重复提交不发送第二个请求', async () => {
   const wait = deferred()
