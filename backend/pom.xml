@@ -67,7 +67,31 @@
         </dependencies>
     </dependencyManagement>
     <build>
+        <!-- 私有生产配置仅由外部目录加载，所有子服务均不得将凭据打包发布。 -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/application-prod.yml</exclude>
+                    <exclude>**/application-prod.yaml</exclude>
+                    <exclude>**/application-prod.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
+            <!-- 二次防护：即使 target/classes 存在旧配置，普通 Jar 与 Boot Jar 也不携带它。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>**/application-prod.yml</exclude>
+                        <exclude>**/application-prod.yaml</exclude>
+                        <exclude>**/application-prod.properties</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId>
                 <configuration><annotationProcessorPaths><path><groupId>org.projectlombok</groupId><artifactId

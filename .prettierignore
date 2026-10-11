@@ -9,4 +9,8 @@ cn/**
 docs/**
 **/db/migration/**
 **/.env*
+# 私有生产配置不交给格式化/检查命令读取或输出。
+**/src/main/resources/application-prod.yml
+**/src/main/resources/application-prod.yaml
+**/src/main/resources/application-prod.properties
 **/*.sql

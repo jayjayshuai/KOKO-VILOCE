@@ -15,6 +15,9 @@ test('private files stay blocked even with Git force-add', () => {
     '.ssh/id_rsa',
     'backend/demo/target/application.jar',
     'runtime.json',
+    'backend/voice-service/src/main/resources/application-prod.yml',
+    'backend/gateway-service/src/main/resources/application-prod.yaml',
+    'backend/chat-service/src/main/resources/application-prod.properties',
   ]) {
     assert.ok(inspectFile(file, 'redacted').includes('private-path-or-artifact'))
   }
@@ -166,6 +169,19 @@ test('actual forced private file and local private host are rejected; safe examp
   writeFileSync(path.join(directory, 'README.md'), 'https://private.example.invalid')
   git(directory, ['add', 'README.md'])
   assert.equal(scan(directory, '--staged').status, 1)
+})
+
+test('actual force-added private production profile is blocked even without literal secrets', () => {
+  const directory = repository()
+  const relative = 'backend/voice-service/src/main/resources/application-prod.yml'
+  mkdirSync(path.dirname(path.join(directory, relative)), { recursive: true })
+  writeFileSync(path.join(directory, '.gitignore'), '**/application-prod.yml\n')
+  writeFileSync(path.join(directory, relative), 'spring.datasource.password: ${DATABASE_PASSWORD:}\n')
+  git(directory, ['add', '-f', relative])
+  const result = scan(directory, '--staged')
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('private-path-or-artifact'))
+  assert.ok(result.stderr.includes(relative))
 })
 
 test('actual deleted historical secret stays blocked and non-HEAD push cannot bypass', () => {

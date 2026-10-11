@@ -8,6 +8,10 @@
 node_modules/
 dist/
 .runtime/
+# 本机私有生产配置含真实凭据，禁止提交；公共 application.yml 保留环境变量模板。
+**/src/main/resources/application-prod.yml
+**/src/main/resources/application-prod.yaml
+**/src/main/resources/application-prod.properties
 /acl-recovery/
 /cn/
 # 文档保留，历史截图、SQL备份和运行证据目录不发布。
