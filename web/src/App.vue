@@ -61,10 +61,12 @@ const auth = useAuthStore();
 const route = useRoute(),
   router = useRouter();
 const workspacePage = computed(() => workspacePages.find((page) => page.name === route.name) ?? unknownPage);
-/** 文本连接不能复用同账号另一登录轮次；其余工作台仍保留原有命令恢复生命周期。 */
+/** 文本连接与通知不能复用同账号另一登录轮次；其余工作台仍保留原有命令恢复生命周期。 */
 const workspaceViewKey = computed(() => {
   const identity = `${String(route.name)}:${auth.user?.id ?? 'anonymous'}`;
-  return ['messages', 'voice-room'].includes(String(route.name)) ? `${identity}:${auth.sessionRevision}` : identity;
+  return ['messages', 'notifications', 'voice-room'].includes(String(route.name))
+    ? `${identity}:${auth.sessionRevision}`
+    : identity;
 });
 const loggingOut = ref(false),
   workspaceError = ref('');

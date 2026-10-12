@@ -174,8 +174,8 @@ export type NotificationItem = {
   summary: string
   /** 服务端创建时间；Asia/Shanghai。 */
   createdAt: string
-  /** 已读时间，未读时缺省；Asia/Shanghai。 */
-  readAt?: string
+  /** 已读时间，未读为空；Asia/Shanghai。 */
+  readAt?: string | null
 }
 export type PostEngagement = {
   /** 服务端统计的点赞数。 */
@@ -284,11 +284,11 @@ export const api = {
   favoritePost: (id: string) => request<PostFavoriteState>(`/content/posts/${id}/favorite`, { method: 'PUT' }),
   unfavoritePost: (id: string) => request<PostFavoriteState>(`/content/posts/${id}/favorite`, { method: 'DELETE' }),
   notifications: (page: number, size = 20, signal?: AbortSignal) =>
-    request<Page<NotificationItem>>(`/notifications?page=${page}&size=${size}`, { signal }),
+    request<Page<NotificationItem>>(`/notifications?page=${page}&size=${size}`, { signal, cache: 'no-store' }),
   markNotificationRead: (id: string, signal?: AbortSignal) =>
     request<void>(`/notifications/${id}/read`, { method: 'PUT', signal }),
   notificationPreference: (type: NotificationType, signal?: AbortSignal) =>
-    request<NotificationPreference>(`/notifications/preferences/${type}`, { signal }),
+    request<NotificationPreference>(`/notifications/preferences/${type}`, { signal, cache: 'no-store' }),
   saveNotificationPreference: (type: NotificationType, enabled: boolean, signal?: AbortSignal) =>
     request<NotificationPreference>(`/notifications/preferences/${type}`, {
       method: 'PUT',

@@ -87,6 +87,9 @@ async function setup(relative, network, props = {}, globals = {}, additionalModu
     },
     '../services/chat-safety': { chatSafetyApi: api },
     '../services/http': { captureUnauthorizedSession: () => () => {} },
+    '../services/notification-time': await execute(
+      await readFile(new URL('../src/services/notification-time.ts', import.meta.url), 'utf8'),
+    ),
     './ChatSafetyPanel.vue': { default: {} },
     './ChatHistoryTools.vue': { default: {} },
   }
@@ -536,12 +539,368 @@ test('偏好写入失败不乐观篡改服务器状态', async () => {
     h.dispose()
   }
 })
+
+test('偏好写入结果未知时不重复切换，读取实际值后按新事实切换', async () => {
+  let enabled = true,
+    failReply = true
+  const h = await inbox({
+    notificationPreference: (type) => Promise.resolve({ eventType: type, enabled: type === 'FOLLOW' ? enabled : true }),
+    saveNotificationPreference: (type, value) => {
+      enabled = value
+      return failReply ? Promise.reject(new Error('reply lost')) : Promise.resolve({ eventType: type, enabled: value })
+    },
+  })
+  try {
+    await h.state.loadPreferences()
+    await h.state.togglePreference('FOLLOW')
+    assert.equal(enabled, false)
+    assert.equal(h.state.preferences.FOLLOW, true)
+    assert.equal(h.state.uncertainPreferences.FOLLOW, true)
+    assert.match(h.state.preferenceError.value, /保存结果未确认/)
+    await h.state.togglePreference('FOLLOW')
+    assert.equal(h.calls.filter((call) => call.name === 'saveNotificationPreference').length, 1)
+    await h.state.loadPreferences()
+    assert.equal(h.state.preferences.FOLLOW, false)
+    assert.equal(h.state.hasUncertainPreference.value, false)
+    failReply = false
+    await h.state.togglePreference('FOLLOW')
+    assert.equal(enabled, true)
+    assert.equal(h.state.preferences.FOLLOW, true)
+    assert.match(h.state.preferenceSuccess.value, /新关注通知已开启/)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('其他偏好保存成功不能吞掉旧的待核实状态或核实入口', async () => {
+  const h = await inbox({
+    saveNotificationPreference: (type, enabled) =>
+      type === 'FOLLOW' ? Promise.reject(new Error('reply lost')) : Promise.resolve({ eventType: type, enabled }),
+  })
+  try {
+    await h.state.loadPreferences()
+    await h.state.togglePreference('FOLLOW')
+    await h.state.togglePreference('COMMENT')
+    assert.equal(h.state.preferences.COMMENT, false)
+    assert.equal(h.state.uncertainPreferences.FOLLOW, true)
+    assert.equal(h.state.hasUncertainPreference.value, true)
+    await h.state.togglePreference('FOLLOW')
+    assert.equal(h.calls.filter((call) => call.name === 'saveNotificationPreference').length, 2)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('偏好部分读取失败或错类型响应不得局部覆盖或清除未知写入', async () => {
+  let mode = 'valid'
+  const h = await inbox({
+    notificationPreference: (type) => {
+      if (mode === 'offline' && type === 'LIVE_STARTED') return Promise.reject(new Error('offline'))
+      return Promise.resolve({ eventType: mode === 'wrong' ? 'FOLLOW' : type, enabled: mode === 'valid' })
+    },
+    saveNotificationPreference: () => Promise.reject(new Error('reply lost')),
+  })
+  try {
+    await h.state.loadPreferences()
+    await h.state.togglePreference('FOLLOW')
+    for (const next of ['offline', 'wrong']) {
+      mode = next
+      await h.state.loadPreferences()
+      assert.equal(h.state.preferences.FOLLOW, true)
+      assert.equal(h.state.preferences.COMMENT, true)
+      assert.equal(h.state.hasUncertainPreference.value, true)
+      assert.ok(h.state.preferenceError.value)
+    }
+  } finally {
+    h.dispose()
+  }
+})
+
+test('偏好保存错类型或错误状态不冒充确认成功', async () => {
+  for (const reply of [{ eventType: 'COMMENT', enabled: false }, { eventType: 'FOLLOW', enabled: true }, undefined]) {
+    const h = await inbox({ saveNotificationPreference: () => Promise.resolve(reply) })
+    try {
+      await h.state.loadPreferences()
+      await h.state.togglePreference('FOLLOW')
+      assert.equal(h.state.preferences.FOLLOW, true)
+      assert.equal(h.state.uncertainPreferences.FOLLOW, true)
+      assert.equal(h.state.preferenceSuccess.value, '')
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('偏好保存防重复且不阻断收件箱读取和标记已读', async () => {
+  const wait = deferred()
+  const h = await inbox({ saveNotificationPreference: () => wait.promise })
+  try {
+    await h.state.loadPreferences()
+    const saving = h.state.togglePreference('FOLLOW')
+    await h.state.togglePreference('FOLLOW')
+    await h.state.loadPreferences()
+    assert.equal(h.calls.filter((call) => call.name === 'saveNotificationPreference').length, 1)
+    assert.equal(h.calls.filter((call) => call.name === 'notificationPreference').length, 3)
+    assert.equal(h.state.preferenceSaving.value, 'FOLLOW')
+    await h.state.load()
+    await h.state.markRead(h.state.items.value[0])
+    assert.equal(h.calls.filter((call) => call.name === 'markNotificationRead').length, 1)
+    wait.resolve({ eventType: 'FOLLOW', enabled: false })
+    await saving
+    assert.equal(h.state.preferenceSaving.value, null)
+    assert.match(h.state.success.value, /已读状态已提交/)
+    assert.match(h.state.preferenceSuccess.value, /已关闭/)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('已读等待不阻断偏好读取和保存', async () => {
+  const wait = deferred()
+  const h = await inbox({ markNotificationRead: () => wait.promise })
+  try {
+    await h.state.load()
+    const marking = h.state.markRead(h.state.items.value[0])
+    await h.state.loadPreferences()
+    await h.state.togglePreference('COMMENT')
+    assert.equal(h.state.preferences.COMMENT, false)
+    assert.equal(h.state.busy.value, true)
+    wait.resolve()
+    await marking
+  } finally {
+    h.dispose()
+  }
+})
+
+test('偏好保存卸载取消等待且忽略迟到回复，不宣称服务器回滚', async () => {
+  const wait = deferred()
+  const h = await inbox({ saveNotificationPreference: () => wait.promise })
+  await h.state.loadPreferences()
+  const saving = h.state.togglePreference('FOLLOW')
+  const signal = h.calls.find((call) => call.name === 'saveNotificationPreference').args[2]
+  h.dispose()
+  assert.equal(signal.aborted, true)
+  wait.resolve({ eventType: 'FOLLOW', enabled: false })
+  await saving
+  assert.equal(h.state.preferences.FOLLOW, true)
+  assert.equal(h.state.preferenceSuccess.value, '')
+})
+
+test('通知分页失败的重试保留列表并重新请求失败页', async () => {
+  let fail = true
+  const h = await inbox({
+    notifications: (page) =>
+      page === 2 && fail
+        ? Promise.reject(new Error('page offline'))
+        : Promise.resolve(inboxPage([notification(String(page))], page, 3)),
+  })
+  try {
+    await h.state.load()
+    await h.state.load(false)
+    assert.equal(h.state.page.value, 1)
+    assert.equal(h.state.items.value[0].id, '1')
+    fail = false
+    await h.state.retryLoad()
+    assert.deepEqual(
+      h.calls.filter((call) => call.name === 'notifications').map((call) => call.args[0]),
+      [1, 2, 2],
+    )
+    assert.equal(h.state.page.value, 2)
+    assert.equal(h.state.items.value.length, 2)
+    assert.equal(h.state.error.value, '')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('错误分页响应不覆盖已确认列表或推进页码', async () => {
+  for (const reply of [
+    inboxPage([notification('wrong-page')], 1, 3),
+    inboxPage([notification('wrong-total')], 2, -1),
+    inboxPage([{ ...notification('wrong-type'), eventType: 'UNKNOWN' }], 2, 3),
+    inboxPage([notification(42)], 2, 3),
+    inboxPage(
+      Array.from({ length: 21 }, (_, index) => notification(String(index))),
+      2,
+      50,
+    ),
+    undefined,
+  ]) {
+    const h = await inbox({
+      notifications: (page) => Promise.resolve(page === 1 ? inboxPage([notification('1')], 1, 3) : reply),
+    })
+    try {
+      await h.state.load()
+      await h.state.load(false)
+      assert.equal(h.state.page.value, 1)
+      assert.equal(h.state.items.value[0].id, '1')
+      assert.equal(h.state.total.value, 3)
+      assert.match(h.state.error.value, /契约/)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('标记已读只操作当前真实列表的未读项，旧按钮不得重复写已读项', async () => {
+  let readAt = null
+  const h = await inbox({ notifications: () => Promise.resolve(inboxPage([notification('1', readAt)])) })
+  try {
+    await h.state.load()
+    const oldItem = h.state.items.value[0]
+    await h.state.markRead(notification('not-present'))
+    readAt = '2026-10-07T23:00:00'
+    await h.state.load()
+    await h.state.markRead(oldItem)
+    assert.equal(h.calls.filter((call) => call.name === 'markNotificationRead').length, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('已读网络失败提示结果未知，重新读取只查事实不重发写入', async () => {
+  let readAt = null
+  const h = await inbox({
+    notifications: () => Promise.resolve(inboxPage([notification('1', readAt)])),
+    markNotificationRead: () => {
+      readAt = '2026-10-07T23:00:00'
+      return Promise.reject(new Error('reply lost'))
+    },
+  })
+  try {
+    await h.state.load()
+    await h.state.markRead(h.state.items.value[0])
+    assert.match(h.state.error.value, /结果未确认/)
+    assert.equal(h.state.items.value[0].readAt, null)
+    await h.state.retryLoad()
+    assert.equal(h.state.items.value[0].readAt, readAt)
+    assert.equal(h.calls.filter((call) => call.name === 'markNotificationRead').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+test('已读回应丢失锁定原ID，重复点击或只读取到未读都不重发写入', async () => {
+  let readAt = null
+  const h = await inbox({
+    notifications: () => Promise.resolve(inboxPage([notification('1', readAt)])),
+    markNotificationRead: () => Promise.reject(new Error('reply lost')),
+  })
+  try {
+    await h.state.load()
+    const target = h.state.items.value[0]
+    await h.state.markRead(target)
+    await h.state.markRead(target)
+    await h.state.load()
+    await h.state.markRead(target)
+    assert.equal(h.calls.filter((call) => call.name === 'markNotificationRead').length, 1)
+    assert.equal(h.state.uncertainReadIds.has('1'), true)
+    readAt = '2026-10-12T08:00:00.123456'
+    await h.state.load()
+    assert.equal(h.state.uncertainReadIds.has('1'), false)
+    assert.equal(h.state.items.value[0].readAt, readAt)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('已读204后刷新失败也保留门禁，错误已读日期或未见目标不能解锁', async () => {
+  let mode = 'initial'
+  const h = await inbox({
+    notifications: () =>
+      mode === 'offline'
+        ? Promise.reject(new Error('offline'))
+        : Promise.resolve(
+            inboxPage(mode === 'absent' ? [] : [notification('1', mode === 'bad' ? 'not-a-date' : null)]),
+          ),
+    markNotificationRead: () => {
+      mode = 'offline'
+      return Promise.resolve()
+    },
+  })
+  try {
+    await h.state.load()
+    const target = h.state.items.value[0]
+    await h.state.markRead(target)
+    await h.state.markRead(target)
+    assert.equal(h.calls.filter((call) => call.name === 'markNotificationRead').length, 1)
+    for (const next of ['bad', 'absent']) {
+      mode = next
+      await h.state.load()
+      assert.equal(h.state.uncertainReadIds.has('1'), true)
+    }
+  } finally {
+    h.dispose()
+  }
+})
+
+test('未读筛选只作用于已加载集合，不把加载条数或筛选数当全量', async () => {
+  const h = await inbox({
+    notifications: () =>
+      Promise.resolve(inboxPage([notification('1'), notification('2', '2026-10-12T08:00:00')], 1, 30)),
+  })
+  try {
+    await h.state.load()
+    assert.equal(h.state.loadedUnread.value, 1)
+    h.state.unreadOnly.value = true
+    assert.deepEqual(
+      Array.from(h.state.visibleItems.value, (item) => item.id),
+      ['1'],
+    )
+    assert.equal(h.state.total.value, 30)
+    h.state.unreadOnly.value = false
+    assert.equal(h.state.visibleItems.value.length, 2)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('通知非法ID和时间响应被拒绝，未核验数据不进入列表', async () => {
+  for (const patch of [
+    { id: '../preferences/FOLLOW' },
+    { id: '9223372036854775808' },
+    { id: '0' },
+    { createdAt: '2026-02-30T00:00:00' },
+    { readAt: 'invalid' },
+    { summary: null },
+  ]) {
+    const h = await inbox({ notifications: () => Promise.resolve(inboxPage([{ ...notification('1'), ...patch }])) })
+    try {
+      await h.state.load()
+      assert.equal(h.state.items.value.length, 0)
+      assert.ok(h.state.error.value)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('通知事实读取使用no-store，保留调用者取消信号', async () => {
+  const requests = []
+  const source = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8')
+  const module = await execute(source, {
+    './services/http': {
+      apiBaseUrl: '/api',
+      ApiRequestError,
+      request: async (path, options) => requests.push({ path, options }),
+    },
+  })
+  const signal = new AbortController().signal
+  await module.api.notifications(2, 20, signal)
+  await module.api.notificationPreference('COMMENT', signal)
+  for (const request of requests) {
+    assert.equal(request.options.cache, 'no-store')
+    assert.equal(request.options.signal, signal)
+  }
+})
+
 test('通知分页去重且未改变已读，不把分页条数当全量', async () => {
   const h = await inbox({
     notifications: (page) =>
       Promise.resolve(
         inboxPage(
-          page === 1 ? [notification('1', 'server-read')] : [notification('1', 'server-read'), notification('2')],
+          page === 1
+            ? [notification('1', '2026-10-07T23:00:00')]
+            : [notification('1', '2026-10-07T23:00:00'), notification('2')],
           page,
           9,
         ),
@@ -552,7 +911,7 @@ test('通知分页去重且未改变已读，不把分页条数当全量', async
     await h.state.load(false)
     assert.equal(h.state.items.value.length, 2)
     assert.equal(h.state.total.value, 9)
-    assert.equal(h.state.items.value[0].readAt, 'server-read')
+    assert.equal(h.state.items.value[0].readAt, '2026-10-07T23:00:00')
   } finally {
     h.dispose()
   }
@@ -1725,6 +2084,22 @@ test('用户取消覆盖和关闭未知编辑器，不读取、不重复写、�
     assert.ok(h.state.editorRecovery.value)
     assert.equal(h.calls.filter((call) => call.name === 'myPosts').length, 0)
     assert.equal(h.calls.filter((call) => call.name === 'createPost').length, 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('同账号登录轮次变化重建通知页面，运营命令页面保持原恢复生命周期', async () => {
+  const h = await app({}, { user: identity('42') })
+  try {
+    h.route.name = 'notifications'
+    const previous = h.state.workspaceViewKey.value
+    h.auth.sessionRevision++
+    assert.notEqual(h.state.workspaceViewKey.value, previous)
+    h.route.name = 'operations'
+    const operationsKey = h.state.workspaceViewKey.value
+    h.auth.sessionRevision++
+    assert.equal(h.state.workspaceViewKey.value, operationsKey)
   } finally {
     h.dispose()
   }
