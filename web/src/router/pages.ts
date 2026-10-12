@@ -30,6 +30,15 @@ export const workspacePages: WorkspacePage[] = [
     section: 'creators',
   },
   {
+    name: 'public-creator',
+    path: '/creators/:slug',
+    title: 'UP 主主页',
+    description: '查看已发布的完整主页并关注创作者。',
+    group: 'space',
+    requiresAuth: false,
+    hidden: true,
+  },
+  {
     name: 'voice',
     path: '/voice',
     title: '语音空间',

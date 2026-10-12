@@ -4,6 +4,7 @@ import DiscoveryView from '../views/DiscoveryView.vue'
 
 /** 页面生命周期由 RouterView 管理；消息/通知离开路由后真正卸载。 */
 const views = {
+  'public-creator': () => import('../views/PublicCreatorView.vue'),
   'voice-room': () => import('../views/VoiceRoomView.vue'),
   studio: () => import('../views/StudioView.vue'),
   assets: () => import('../views/AssetWorkspaceView.vue'),

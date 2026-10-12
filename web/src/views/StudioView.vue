@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { RouterLink } from 'vue-router';
 import { FileText, Pencil, Plus, RefreshCw, UserRound } from 'lucide-vue-next';
 import type { CreatorPost, CreatorProfile } from '../api';
 const props = defineProps<{
@@ -59,6 +60,11 @@ const emit = defineEmits<{
             ? `/${profile.slug} · ${profile.status === 'ACTIVE' ? '已发布' : profile.status === 'DRAFT' ? '草稿' : '已暂停'}`
             : '完善资料、上传头像和封面，再由你确认发布。'
         }}</p></div
+      ><RouterLink
+        v-if="profile?.status === 'ACTIVE'"
+        class="secondary"
+        :to="`/creators/${encodeURIComponent(profile.slug)}`"
+        >查看公开主页</RouterLink
       ><button class="secondary" @click="emit('profile')">{{ profile ? '维护主页' : '创建主页' }}</button></section
     >
     <section class="workspace-card"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { RouterView, useRoute, useRouter } from 'vue-router';
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 import {
   Archive,
   BadgeCheck,
@@ -64,7 +64,7 @@ const workspacePage = computed(() => workspacePages.find((page) => page.name ===
 /** 文本连接与通知不能复用同账号另一登录轮次；其余工作台仍保留原有命令恢复生命周期。 */
 const workspaceViewKey = computed(() => {
   const identity = `${String(route.name)}:${auth.user?.id ?? 'anonymous'}`;
-  return ['messages', 'notifications', 'voice-room'].includes(String(route.name))
+  return ['messages', 'notifications', 'voice-room', 'public-creator'].includes(String(route.name))
     ? `${identity}:${auth.sessionRevision}`
     : identity;
 });
@@ -1446,6 +1446,13 @@ const viewBindings = computed(() => {
       },
     };
   if (route.name === 'notifications') return { userId: auth.user?.id };
+  if (route.name === 'public-creator')
+    return {
+      onLogin: () => {
+        authMode.value = 'login';
+        dialog.value = 'auth';
+      },
+    };
   if (route.name === 'account')
     return {
       user: auth.user,
@@ -1955,7 +1962,10 @@ onBeforeUnmount(() => {
           ><article v-for="item in followedCreators" :key="item.userId"
             ><div class="creator-avatar">{{ item.displayName.slice(0, 1) }}</div
             ><div
-              ><strong>{{ item.displayName }}</strong
+              ><strong
+                ><RouterLink :to="`/creators/${encodeURIComponent(item.slug)}`" @click="dialog = null">{{
+                  item.displayName
+                }}</RouterLink></strong
               ><small>{{ item.followerCount }} 人关注 · /{{ item.slug }}</small></div
             ><button class="secondary" :disabled="followSubmitting === item.userId" @click="toggleFollow(item)"
               >取消关注</button

@@ -268,6 +268,9 @@ export const api = {
   liveRooms: (signal?: AbortSignal) => request<LiveRoom[]>('/live/discovery?limit=12', { signal }),
   voiceRooms: (signal?: AbortSignal) => request<VoiceRoom[]>('/voice/rooms/discovery?limit=12', { signal }),
   creators: () => request<CreatorProfile[]>('/discovery/creators?limit=12'),
+  /** 仅读取已发布主页，未发布/不存在由服务端404；不复用本人草稿。 */
+  publicCreator: (slug: string, signal?: AbortSignal) =>
+    request<CreatorProfile>(`/discovery/creators/${encodeURIComponent(slug)}`, { signal, cache: 'no-store' }),
   posts: () => request<CreatorPost[]>('/discovery/posts?limit=12'),
   creatorPage: (page: number, size = 12, signal?: AbortSignal) =>
     request<Page<CreatorProfile>>(`/discovery/creators/page?page=${page}&size=${size}`, { signal }),
@@ -275,7 +278,8 @@ export const api = {
     request<Page<CreatorPost>>(`/discovery/posts/page?page=${page}&size=${size}`, { signal }),
   following: (page: number, size = 12) =>
     request<Page<CreatorProfile>>(`/creators/following?page=${page}&size=${size}`),
-  followState: (id: string) => request<CreatorFollowState>(`/creators/${id}/follow`),
+  followState: (id: string, signal?: AbortSignal) =>
+    request<CreatorFollowState>(`/creators/${id}/follow`, { signal, cache: 'no-store' }),
   followCreator: (id: string) => request<CreatorFollowState>(`/creators/${id}/follow`, { method: 'PUT' }),
   unfollowCreator: (id: string) => request<CreatorFollowState>(`/creators/${id}/follow`, { method: 'DELETE' }),
   favorites: (page: number, size = 12) => request<Page<CreatorPost>>(`/content/favorites?page=${page}&size=${size}`),

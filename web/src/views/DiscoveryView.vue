@@ -223,7 +223,10 @@ const actionLabels: Record<WorkspaceAction, string> = {
                   >{{ item.displayName.slice(0, 1) }}</span
                 ></span
               ><div class="creator-workspace-body"
-                ><h3>{{ item.displayName }}</h3
+                ><h3
+                  ><RouterLink :to="`/creators/${encodeURIComponent(item.slug)}`">{{
+                    item.displayName
+                  }}</RouterLink></h3
                 ><p>{{ item.headline || '创作者尚未填写介绍。' }}</p
                 ><small>{{ item.followerCount }} 人关注 · /{{ item.slug }}</small
                 ><button

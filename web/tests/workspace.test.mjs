@@ -931,13 +931,17 @@ test('离开通知页取消请求且忽略卸载后的迟到成功', async () =>
 test('页面具有唯一 URL，房主工作台与其他私有领域不能标成公开发现页', async () => {
   const source = await readFile(new URL('../src/router/pages.ts', import.meta.url), 'utf8')
   const { workspacePages, unknownPage } = await execute(source)
-  assert.equal(workspacePages.length, 14)
-  assert.equal(new Set(workspacePages.map((page) => page.path)).size, 14)
-  assert.equal(new Set(workspacePages.map((page) => page.name)).size, 14)
+  assert.equal(workspacePages.length, 15)
+  assert.equal(new Set(workspacePages.map((page) => page.path)).size, 15)
+  assert.equal(new Set(workspacePages.map((page) => page.name)).size, 15)
   assert.equal(workspacePages.find((page) => page.name === 'voice-owner').requiresAuth, true)
   assert.equal(workspacePages.find((page) => page.name === 'binding-operations').requiresAuth, true)
   assert.equal(workspacePages.find((page) => page.name === 'operations').requiresAuth, true)
-  for (const page of workspacePages) assert.equal(page.requiresAuth, !page.section)
+  const detail = workspacePages.find((page) => page.name === 'public-creator')
+  assert.equal(detail.requiresAuth, false)
+  assert.equal(detail.hidden, true)
+  assert.equal(detail.path, '/creators/:slug')
+  for (const page of workspacePages) assert.equal(page.requiresAuth, !page.section && page.name !== 'public-creator')
   assert.equal(unknownPage.name, 'not-found')
 })
 const conversation = {
@@ -1069,6 +1073,7 @@ async function app(overrides = {}, authOverrides = {}, globals = {}) {
         './stores/auth': { useAuthStore: () => auth },
         './router/pages': { workspacePages: catalog.workspacePages, unknownPage: catalog.unknownPage },
         'vue-router': {
+          RouterLink: {},
           RouterView: {},
           useRoute: () => route,
           useRouter: () => navigation,
