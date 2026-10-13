@@ -18,7 +18,27 @@ class GatewayExceptionHandlerTest {
         );
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(response.getBody().code()).isEqualTo("SERVICE_UNAVAILABLE");
-        assertThat(response.getBody().message()).contains("写入结果未确认").doesNotContain("synthetic-private");
+        assertThat(response.getBody().message())
+            .contains("注册结果未确认", "不要重复注册")
+            .doesNotContain("synthetic-private");
+    }
+
+    @Test
+    void profileWriteFailureDoesNotSuggestLoginOrBlindRetry() {
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.put("/api/creators/me"));
+        var response = handler.rpcUnavailable(new org.apache.dubbo.rpc.RpcException("private payload"), exchange);
+        assertThat(response.getBody().message())
+            .contains("写入结果未确认", "先查询", "不要重复提交")
+            .doesNotContain("注册", "登录", "private");
+        assertThat(response.getHeaders().getCacheControl()).isEqualTo("no-store");
+    }
+
+    @Test
+    void readFailureDoesNotClaimThereWasAWrite() {
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/api/discovery/creators/by-slug/page"));
+        var response = handler.rpcUnavailable(new org.apache.dubbo.rpc.RpcException("private payload"), exchange);
+        assertThat(response.getBody().message()).contains("重新读取").doesNotContain("写入", "注册", "private");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     @Test

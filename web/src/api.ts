@@ -270,7 +270,7 @@ export const api = {
   creators: () => request<CreatorProfile[]>('/discovery/creators?limit=12'),
   /** 仅读取已发布主页，未发布/不存在由服务端404；不复用本人草稿。 */
   publicCreator: (slug: string, signal?: AbortSignal) =>
-    request<CreatorProfile>(`/discovery/creators/${encodeURIComponent(slug)}`, { signal, cache: 'no-store' }),
+    request<CreatorProfile>(`/discovery/creators/by-slug/${encodeURIComponent(slug)}`, { signal, cache: 'no-store' }),
   posts: () => request<CreatorPost[]>('/discovery/posts?limit=12'),
   creatorPage: (page: number, size = 12, signal?: AbortSignal) =>
     request<Page<CreatorProfile>>(`/discovery/creators/page?page=${page}&size=${size}`, { signal }),

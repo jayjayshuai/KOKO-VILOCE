@@ -250,7 +250,7 @@ test('公开主页和本人关系GET均带取消/no-store，slug做路径编码'
   const signal = new AbortController().signal
   await api.publicCreator('author/one', signal)
   await api.followState('10', signal)
-  assert.equal(calls[0][0], '/discovery/creators/author%2Fone')
+  assert.equal(calls[0][0], '/discovery/creators/by-slug/author%2Fone')
   assert.equal(calls[1][0], '/creators/10/follow')
   for (const [, options] of calls) {
     assert.equal(options.signal, signal)

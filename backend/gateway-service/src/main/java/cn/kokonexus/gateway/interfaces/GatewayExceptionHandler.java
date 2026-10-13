@@ -15,10 +15,19 @@ public class GatewayExceptionHandler {
     /** RPC故障不是输入错误，写入结果可能已提交；不回传远端堆栈或原始参数。 */
     @ExceptionHandler(org.apache.dubbo.rpc.RpcException.class)
     ResponseEntity<ApiError> rpcUnavailable(org.apache.dubbo.rpc.RpcException exception, ServerWebExchange exchange) {
+        boolean registration = exchange.getRequest().getPath().value().equals("/api/auth/register");
+        boolean reading =
+            exchange.getRequest().getMethod() == org.springframework.http.HttpMethod.GET ||
+            exchange.getRequest().getMethod() == org.springframework.http.HttpMethod.HEAD;
+        String message = registration
+            ? "服务暂不可用；注册结果未确认，可尝试登录核实，不要重复注册"
+            : reading
+              ? "服务暂不可用，请稍后重新读取"
+              : "服务暂不可用；写入结果未确认，请先查询当前状态，不要重复提交";
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
             .header("Cache-Control", "no-store")
             .header("Retry-After", "1")
-            .body(error("SERVICE_UNAVAILABLE", "服务暂不可用，请稍后重试；写入结果未确认，注册可先尝试登录", exchange));
+            .body(error("SERVICE_UNAVAILABLE", message, exchange));
     }
 
     @ExceptionHandler(cn.kokonexus.api.identity.RegistrationConflictException.class)
@@ -29,6 +38,17 @@ public class GatewayExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
             .header("Cache-Control", "no-store")
             .body(error("REGISTRATION_CONFLICT", "邮箱或用户名已被注册，请登录或使用其他邮箱和用户名", exchange));
+    }
+
+    /** 路径/查询约束失败不暴露被拒绝值；方法校验不是服务端异常。 */
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    ResponseEntity<ApiError> invalidParameters(
+        jakarta.validation.ConstraintViolationException exception,
+        ServerWebExchange exchange
+    ) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+            .header("Cache-Control", "no-store")
+            .body(error("INVALID_INPUT", "请求参数不符合格式或范围要求", exchange));
     }
 
     /** Bean校验消息可能包含拒绝的密码值，只输出固定格式说明，不回传/打印原BindException。 */

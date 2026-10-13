@@ -15,6 +15,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 import org.apache.dubbo.config.annotation.DubboReference;
+import org.apache.dubbo.config.annotation.Method;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -34,8 +35,17 @@ import reactor.core.scheduler.Schedulers;
 @RestController
 public class CreatorController {
 
-    /** IdentityRpcService 跨服务契约代理，不直接读取其他服务数据库。 */
-    @DubboReference(version = "1.0.0", check = false, timeout = 5000, retries = 0)
+    /** 两张图片可串行各占5秒RPC预算，另留5秒事务及调度余量；不是成功/回滚保证。 */
+    static final int PROFILE_SAVE_TIMEOUT_MS = 15000;
+
+    /** 仅读取维持5秒预算；保存允许嵌套资产保护调用，仍禁用自动重试。 */
+    @DubboReference(
+        version = "1.0.0",
+        check = false,
+        timeout = 5000,
+        retries = 0,
+        methods = @Method(name = "saveCreatorProfile", timeout = PROFILE_SAVE_TIMEOUT_MS, retries = 0)
+    )
     private IdentityRpcService identityRpcService;
 
     @GetMapping("/api/discovery/creators")
@@ -63,6 +73,20 @@ public class CreatorController {
         return Mono.fromCallable(() -> identityRpcService.findPublishedCreator(slug))
             .subscribeOn(Schedulers.boundedElastic())
             .switchIfEmpty(Mono.error(new GatewayResourceNotFoundException("创作者主页不存在")));
+    }
+
+    /** 独立详情命名空间，避免合法slug为page时命中分页接口；旧路径不删除。 */
+    @GetMapping("/api/discovery/creators/by-slug/{slug}")
+    @io.swagger.v3.oas.annotations.Operation(
+        summary = "按地址读取已发布主页",
+        description = "只读取ACTIVE主页，未发布/不存在404；与分页路径分离，支持page等合法地址。"
+    )
+    public Mono<CreatorProfile> publishedBySlug(
+        @io.swagger.v3.oas.annotations.Parameter(
+            description = "3～64位小写字母、数字及连字符的公开地址"
+        ) @PathVariable @Pattern(regexp = "[a-z0-9][a-z0-9-]{1,62}[a-z0-9]") String slug
+    ) {
+        return published(slug);
     }
 
     @GetMapping("/api/creators/me")
