@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDocumentationPath } from './document-policy.mjs'
 
 // 仅检查Git将发布的内容，不扫描/输出本机.env、备份或凭据；拒绝时只给路径与规则名。
 const DEPLOY_TEMPLATES = new Set([
@@ -224,6 +225,9 @@ export function run(mode = '--staged', pushInput) {
   const contents = blobContents(entries)
   const failures = new Set()
   for (const entry of entries) {
+    // 只阻止当前暂存/实际推送分支顶端再次携带文档；旧历史仍查秘密，不擅自要求强推重写。
+    if (entry.currentConfiguration && isDocumentationPath(entry.filename))
+      failures.add(`${JSON.stringify(entry.filename)}: documentation-not-publishable`)
     for (const issue of inspectFile(entry.filename, contents.get(entry.hash), privateHosts, entry.currentConfiguration))
       failures.add(`${JSON.stringify(entry.filename)}: ${issue}`)
   }

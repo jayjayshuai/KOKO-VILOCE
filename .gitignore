@@ -14,8 +14,36 @@ dist/
 **/src/main/resources/application-prod.properties
 /acl-recovery/
 /cn/
-# 文档保留，历史截图、SQL备份和运行证据目录不发布。
-/docs/*/
+# 按项目负责人要求，说明/计划/验收及生成文档仅留本地，不发布到仓库。
+/docs/
+*.md
+*.markdown
+*.rst
+*.adoc
+*.txt
+*.pdf
+*.doc
+*.docx
+*.docm
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.odt
+*.ods
+*.odp
+*.rtf
+*.tex
+# 依赖/构建清单和法定许可证不是开发文档；仍由秘密守卫检查内容。
+!**/requirements.txt
+!**/requirements-dev.txt
+!**/requirements-prod.txt
+!**/requirements-test.txt
+!**/requirements-build.txt
+!**/CMakeLists.txt
+!LICENSE*
+!COPYING*
+!NOTICE*
 *.tsbuildinfo
 __pycache__/
 *.pyc
