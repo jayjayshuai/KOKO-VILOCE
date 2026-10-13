@@ -146,6 +146,14 @@ export type Page<T> = {
   /** 查询结果总条数。 */
   total: number
 }
+/** 作者公开作品切片，不包含正文或全量总数，读取状态可能随发布/归档变化。 */
+export type AuthorPostSlice = {
+  /** 服务端本次查询的作者ID。 */ ownerId: string
+  /** 当前最多size条公开摘要。 */ items: CreatorPost[]
+  /** 本次页大小，1～30。 */ size: number
+  /** 当前作者后页游标，末页null。 */ nextCursor: string | null
+  /** 原DATETIME存储时区，不能按浏览器所在时区猜测。 */ timeZone: 'UTC' | 'Asia/Shanghai'
+}
 export type CreatorFollowState = {
   /** 创作者用户 ID 字符串。 */
   creatorId: string
@@ -271,6 +279,12 @@ export const api = {
   /** 仅读取已发布主页，未发布/不存在由服务端404；不复用本人草稿。 */
   publicCreator: (slug: string, signal?: AbortSignal) =>
     request<CreatorProfile>(`/discovery/creators/by-slug/${encodeURIComponent(slug)}`, { signal, cache: 'no-store' }),
+  /** 作者及游标由服务端验证，不使用客户端全站筛选。 */
+  authorPosts: (ownerId: string, after?: string, signal?: AbortSignal) =>
+    request<AuthorPostSlice>(
+      `/discovery/posts/by-author/${encodeURIComponent(ownerId)}?size=12${after ? `&after=${encodeURIComponent(after)}` : ''}`,
+      { signal, cache: 'no-store' },
+    ),
   posts: () => request<CreatorPost[]>('/discovery/posts?limit=12'),
   creatorPage: (page: number, size = 12, signal?: AbortSignal) =>
     request<Page<CreatorProfile>>(`/discovery/creators/page?page=${page}&size=${size}`, { signal }),

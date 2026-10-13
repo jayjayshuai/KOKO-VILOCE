@@ -19,6 +19,8 @@ mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml
   configuration.map-underscore-to-camel-case: true
 koko.asset.public-base: ${ASSET_PUBLIC_BASE:/api/assets/images}
+# DATETIME未带偏移；须匹配数据库/历史写入约定，不由JDBC serverTimezone推断。
+koko.content.published-time-zone: ${POST_PUBLISHED_TIME_ZONE:UTC}
 koko.asset-binding.release-enabled: ${ASSET_BINDING_RELEASE_ENABLED:false}
 koko.asset-binding.attempt-reconcile-enabled: ${ASSET_BINDING_ATTEMPT_RECONCILE_ENABLED:false}
 koko.asset-binding.operations-enabled: ${ASSET_BINDING_OPERATIONS_ENABLED:false}

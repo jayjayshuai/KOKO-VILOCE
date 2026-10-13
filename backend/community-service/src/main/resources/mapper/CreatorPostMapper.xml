@@ -23,6 +23,19 @@
         SELECT COUNT(*) FROM creator_post WHERE status = 'PUBLISHED'
     </select>
 
+    <!-- 作者/状态是服务端边界，发布时间相同时用ID断开；既有owner/status索引筛选，排序成本须另作容量验证。 -->
+    <select id="selectPublishedByAuthor" resultType="cn.kokonexus.community.domain.CreatorPost">
+        SELECT id, owner_id, slug, title, excerpt, cover_url, cover_asset_id, kind, status, version,
+               like_count, comment_count, favorite_count, published_at, created_at, updated_at
+        FROM creator_post
+        WHERE owner_id = #{ownerId} AND status = 'PUBLISHED' AND published_at IS NOT NULL
+        <if test="publishedAt != null">
+            AND (published_at &lt; #{publishedAt} OR (published_at = #{publishedAt} AND id &lt; #{postId}))
+        </if>
+        ORDER BY published_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
     <select id="selectPublishedBySlug" resultType="cn.kokonexus.community.domain.CreatorPost">
         SELECT id, owner_id, slug, title, excerpt, body, cover_url, cover_asset_id, kind, status, version, like_count, comment_count, favorite_count,
                published_at, created_at, updated_at

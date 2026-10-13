@@ -2,10 +2,14 @@
 import { computed, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { RefreshCw, Share2, UserRound } from 'lucide-vue-next';
-import { managedImageUrl } from '../api';
+import { managedImageUrl, type CreatorPost } from '../api';
+import PublicAuthorPosts from '../components/PublicAuthorPosts.vue';
 import { useAuthStore } from '../stores/auth';
 import { usePublicCreator } from '../composables/public-creator';
-const emit = defineEmits<{ /** 打开现有真实登录弹窗，不自动关注。 */ login: [] }>();
+const emit = defineEmits<{
+  /** 打开现有真实登录弹窗，不自动关注。 */ login: [];
+  /** 复用实际文章阅读器，正文由独立公开接口读取。 */ readPost: [post: CreatorPost];
+}>();
 const route = useRoute(),
   auth = useAuthStore();
 const {
@@ -117,6 +121,7 @@ async function copyAddress() {
         >公开主页地址<input readonly :value="shareUrl" @focus="($event.target as HTMLInputElement).select()"
       /></label>
       <p v-if="shareMessage" class="workspace-note" role="status">{{ shareMessage }}</p>
+      <PublicAuthorPosts :owner-id="profile.userId" @read="(post) => emit('readPost', post)" />
     </article>
   </main>
 </template>

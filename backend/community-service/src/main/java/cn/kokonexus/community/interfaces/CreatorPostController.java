@@ -114,6 +114,32 @@ public class CreatorPostController {
         return applicationService.discover(limit).stream().map(PostSummaryView::from).toList();
     }
 
+    @GetMapping("/discovery/posts/by-author/{ownerId}")
+    @Operation(
+        summary = "游标读取作者的已发布作品",
+        description = "只返回公开摘要，不含正文、草稿或归档；发布时间和ID降序，无全量总数。"
+    )
+    public AuthorPostSliceView authorPosts(
+        @io.swagger.v3.oas.annotations.Parameter(
+            description = "公开作者用户ID，正Long；不是访问私人内容的身份凭据"
+        ) @PathVariable long ownerId,
+        @io.swagger.v3.oas.annotations.Parameter(description = "上一页返回的原游标，首读缺省") @RequestParam(
+            required = false
+        ) String after,
+        @io.swagger.v3.oas.annotations.Parameter(description = "单页1～30，默认12；超限拒绝") @RequestParam(
+            defaultValue = "12"
+        ) int size
+    ) {
+        var slice = applicationService.publishedByAuthor(ownerId, after, size);
+        return new AuthorPostSliceView(
+            String.valueOf(ownerId),
+            slice.items().stream().map(PostSummaryView::from).toList(),
+            size,
+            slice.nextCursor(),
+            slice.timeZone()
+        );
+    }
+
     @GetMapping("/discovery/posts/page")
     @Operation(summary = "分页发现已发布内容")
     public PostPageView discoverPage(
@@ -184,7 +210,9 @@ public class CreatorPostController {
         @io.swagger.v3.oas.annotations.media.Schema(description = "点赞总数") long likeCount,
         @io.swagger.v3.oas.annotations.media.Schema(description = "评论总数") long commentCount,
         @io.swagger.v3.oas.annotations.media.Schema(description = "收藏总数") long favoriteCount,
-        @io.swagger.v3.oas.annotations.media.Schema(description = "正式发布时间；未发布为空，Asia/Shanghai")
+        @io.swagger.v3.oas.annotations.media.Schema(
+            description = "无偏移DATETIME发布时间；作者游标页按外层timeZone解释，不猜测浏览器时区"
+        )
         LocalDateTime publishedAt
     ) {
         static PostSummaryView from(CreatorPost post) {
@@ -255,5 +283,18 @@ public class CreatorPostController {
         @io.swagger.v3.oas.annotations.media.Schema(description = "页码，从 1 开始") int page,
         @io.swagger.v3.oas.annotations.media.Schema(description = "单页条数，受接口最大值限制") int size,
         @io.swagger.v3.oas.annotations.media.Schema(description = "匹配条件的总条数") long total
+    ) {}
+
+    /** 公开作者页的有界摘要投影；游标不能改变作者或状态权限。 */
+    public record AuthorPostSliceView(
+        @io.swagger.v3.oas.annotations.media.Schema(description = "当前查询作者ID，字符串Long") String ownerId,
+        @io.swagger.v3.oas.annotations.media.Schema(description = "最多size条公开摘要，正文不在此接口提供")
+        List<PostSummaryView> items,
+        @io.swagger.v3.oas.annotations.media.Schema(description = "本次页大小，1～30") int size,
+        @io.swagger.v3.oas.annotations.media.Schema(description = "继续当前作者的游标；无后页null") String nextCursor,
+        @io.swagger.v3.oas.annotations.media.Schema(
+            description = "publishedAt存储时区：UTC或Asia/Shanghai；客户端据此解释后展示"
+        )
+        String timeZone
     ) {}
 }

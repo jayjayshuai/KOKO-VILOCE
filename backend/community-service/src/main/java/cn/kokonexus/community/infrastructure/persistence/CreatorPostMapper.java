@@ -10,6 +10,13 @@ public interface CreatorPostMapper extends BaseMapper<CreatorPost> {
     List<CreatorPost> selectPublished(@Param("limit") int limit);
     List<CreatorPost> selectPublishedPage(@Param("offset") long offset, @Param("size") int size);
     long countPublished();
+    /** 仅读取该作者公开摘要，多取一行判断下一页，不读取正文或依赖客户端状态过滤。 */
+    List<CreatorPost> selectPublishedByAuthor(
+        @Param("ownerId") long ownerId,
+        @Param("publishedAt") java.time.LocalDateTime publishedAt,
+        @Param("postId") Long postId,
+        @Param("limit") int limit
+    );
     CreatorPost selectPublishedBySlug(@Param("slug") String slug);
     int updateOwned(
         @Param("id") long id,

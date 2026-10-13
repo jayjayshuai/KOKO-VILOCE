@@ -1448,6 +1448,7 @@ const viewBindings = computed(() => {
   if (route.name === 'notifications') return { userId: auth.user?.id };
   if (route.name === 'public-creator')
     return {
+      onReadPost: readPost,
       onLogin: () => {
         authMode.value = 'login';
         dialog.value = 'auth';

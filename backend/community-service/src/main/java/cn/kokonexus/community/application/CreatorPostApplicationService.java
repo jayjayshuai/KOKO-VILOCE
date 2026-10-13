@@ -25,15 +25,32 @@ public class CreatorPostApplicationService {
     private final AssetBindingValidator assetBindingValidator;
     /** 受管图片公开读取地址前缀。 */
     private final String assetPublicBase;
+    /** DATETIME存储时区仅在新接口声明，不改会话、历史行或媒体租约。 */
+    private final String publishedTimeZone;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public CreatorPostApplicationService(
         CreatorPostMapper mapper,
         AssetBindingValidator assetBindingValidator,
-        @Value("${koko.asset.public-base:/api/assets/images}") String assetPublicBase
+        @Value("${koko.asset.public-base:/api/assets/images}") String assetPublicBase,
+        @Value("${koko.content.published-time-zone:UTC}") String publishedTimeZone
     ) {
+        if (!List.of("UTC", "Asia/Shanghai").contains(publishedTimeZone)) throw new IllegalArgumentException(
+            "作品存储时区配置无效"
+        );
         this.mapper = mapper;
         this.assetBindingValidator = assetBindingValidator;
         this.assetPublicBase = assetPublicBase;
+        this.publishedTimeZone = publishedTimeZone;
+    }
+
+    /** 保留独立测试调用方式；生产由显式配置构造器创建。 */
+    public CreatorPostApplicationService(
+        CreatorPostMapper mapper,
+        AssetBindingValidator assetBindingValidator,
+        String assetPublicBase
+    ) {
+        this(mapper, assetBindingValidator, assetPublicBase, "UTC");
     }
 
     @Transactional
@@ -112,6 +129,29 @@ public class CreatorPostApplicationService {
             throw new ResourceNotFoundException("内容不存在或尚未发布");
         }
         return presentation(post);
+    }
+
+    /** 公开文章可独立于主页发布状态阅读；不借此暴露草稿或推断私人账号是否存在。 */
+    @Transactional(readOnly = true)
+    public AuthorPostSlice publishedByAuthor(long ownerId, String after, int size) {
+        if (ownerId < 1 || size < 1 || size > 30) throw new IllegalArgumentException(
+            "作者ID必须为正数，每页作品须为1～30条"
+        );
+        var cursor = AuthorPostCursor.decode(after, ownerId);
+        var rows = mapper.selectPublishedByAuthor(
+            ownerId,
+            cursor == null ? null : cursor.publishedAt(),
+            cursor == null ? null : cursor.postId(),
+            size + 1
+        );
+        if (rows.size() > size + 1) throw new IllegalStateException("作品分页超出查询边界");
+        var visible = rows.subList(0, Math.min(size, rows.size()));
+        String next = null;
+        if (rows.size() > size) {
+            var last = visible.getLast();
+            next = new AuthorPostCursor(ownerId, last.getPublishedAt(), last.getId()).encode();
+        }
+        return new AuthorPostSlice(visible.stream().map(this::presentation).toList(), next, publishedTimeZone);
     }
 
     @Transactional
@@ -242,5 +282,12 @@ public class CreatorPostApplicationService {
         @io.swagger.v3.oas.annotations.media.Schema(description = "页码，从 1 开始") int page,
         @io.swagger.v3.oas.annotations.media.Schema(description = "单页条数，受接口最大值限制") int size,
         @io.swagger.v3.oas.annotations.media.Schema(description = "匹配条件的总条数") long total
+    ) {}
+
+    /** 不统计全站/作者总数；有无后页由多取一行的本次事实决定。 */
+    public record AuthorPostSlice(
+        /** 当前公开摘要集合，不含正文。 */ List<CreatorPost> items,
+        /** 后页游标，无后页时null；不是固定快照或权限凭据。 */ String nextCursor,
+        /** 原发布时间DATETIME的存储时区。 */ String timeZone
     ) {}
 }
