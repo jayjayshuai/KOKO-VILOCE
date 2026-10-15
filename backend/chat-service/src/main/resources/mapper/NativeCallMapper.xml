@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.chat.persistence.NativeCallMapper">
+  <sql
+    id="callColumns"
+  >id,conversation_id,initiator_id,client_request_id,request_hash,state,version,end_reason,created_at,ring_expires_at,ended_at,(ring_expires_at &gt; UTC_TIMESTAMP(6)) AS ring_fresh</sql>
+  <select id="lock" resultType="cn.kokonexus.chat.domain.NativeCall" useCache="false" flushCache="true">
+    SELECT <include refid="callColumns" /> FROM chat_call WHERE id=#{id} FOR UPDATE
+  </select>
+  <select id="original" resultType="cn.kokonexus.chat.domain.NativeCall" useCache="false" flushCache="true">
+    SELECT <include refid="callColumns" /> FROM chat_call WHERE conversation_id=#{conversationId}
+      AND initiator_id=#{actorId} AND client_request_id=#{requestId} FOR UPDATE
+  </select>
+  <select id="activeConversation" resultType="cn.kokonexus.chat.domain.NativeCall" useCache="false" flushCache="true">
+    SELECT <include refid="callColumns" /> FROM chat_call WHERE active_conversation_id=#{conversationId} FOR UPDATE
+  </select>
+  <select
+    id="participants"
+    resultType="cn.kokonexus.chat.domain.NativeCallParticipant"
+    useCache="false"
+    flushCache="true"
+  >
+    SELECT call_id,user_id,member_id,display_name,state,website_scope,media_identity,last_seen_at,
+      (last_seen_at &gt; UTC_TIMESTAMP(6)-INTERVAL 35 SECOND) AS lease_fresh
+      FROM chat_call_participant WHERE call_id=#{callId} ORDER BY user_id FOR UPDATE
+  </select>
+  <insert id="insertCall">
+    INSERT INTO chat_call(id,conversation_id,initiator_id,client_request_id,request_hash,state,version,created_at,ring_expires_at)
+      VALUES(#{row.id},#{row.conversationId},#{row.initiatorId},#{row.clientRequestId},#{row.requestHash},'RINGING',1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)+INTERVAL 45 SECOND)
+  </insert>
+  <!-- 按user_id全局顺序插入；busy_user_id唯一约束不能降级成本机Map。 -->
+  <insert id="insertParticipant">
+    INSERT INTO chat_call_participant(call_id,user_id,member_id,display_name,state,website_scope,media_identity,last_seen_at)
+      VALUES(#{row.callId},#{row.userId},#{row.memberId},#{row.displayName},#{row.state},#{row.websiteScope},#{row.mediaIdentity},
+      CASE WHEN #{row.state}='ACCEPTED' THEN UTC_TIMESTAMP(6) ELSE NULL END)
+  </insert>
+  <update id="accept">
+    UPDATE chat_call_participant SET state='ACCEPTED',website_scope=#{scope},media_identity=#{identity},last_seen_at=UTC_TIMESTAMP(6)
+      WHERE call_id=#{callId} AND user_id=#{userId} AND state='INVITED'
+  </update>
+  <update id="participantState">
+    UPDATE chat_call_participant SET state=#{state},website_scope=NULL
+      WHERE call_id=#{callId} AND user_id=#{userId} AND state=#{expected}
+  </update>
+  <update id="advance">
+    UPDATE chat_call SET state=#{state},end_reason=#{reason},version=version+1,
+      ended_at=CASE WHEN #{state}='ENDED' THEN UTC_TIMESTAMP(6) ELSE NULL END
+      WHERE id=#{id} AND version=#{version} AND state IN ('RINGING','ACTIVE') AND version &lt; 9223372036854775807
+  </update>
+  <update id="finishParticipants">
+    UPDATE chat_call_participant SET state=CASE WHEN state='INVITED' THEN 'CANCELLED' ELSE 'LEFT' END,website_scope=NULL
+      WHERE call_id=#{callId} AND state IN ('INVITED','ACCEPTED')
+  </update>
+  <select id="command" resultType="cn.kokonexus.chat.domain.NativeCallCommand" useCache="false" flushCache="true">
+    SELECT call_id,actor_id,request_id,command_type,request_hash,applied_version FROM chat_call_command
+      WHERE call_id=#{callId} AND actor_id=#{actorId} AND request_id=#{requestId} FOR UPDATE
+  </select>
+  <insert id="insertCommand">
+    INSERT INTO chat_call_command(call_id,actor_id,request_id,command_type,request_hash,applied_version,created_at)
+      VALUES(#{row.callId},#{row.actorId},#{row.requestId},#{row.commandType},#{row.requestHash},#{row.appliedVersion},UTC_TIMESTAMP(6))
+  </insert>
+  <update id="heartbeat">
+    UPDATE chat_call_participant SET last_seen_at=UTC_TIMESTAMP(6) WHERE call_id=#{callId} AND user_id=#{actorId}
+      AND state='ACCEPTED' AND website_scope=#{scope} AND last_seen_at &gt; UTC_TIMESTAMP(6)-INTERVAL 35 SECOND
+  </update>
+  <insert id="retire">
+    INSERT INTO chat_call_media_retirement(job_key,call_id,source_version,action,media_identity,created_at)
+      VALUES(#{jobKey},#{callId},#{version},#{action},#{identity},UTC_TIMESTAMP(6))
+  </insert>
+  <!-- 非成员不继承邀请；双向拉黑与会话关闭均失败关闭，不能只隐藏前端按钮。 -->
+  <select id="eligible" resultType="boolean" useCache="false" flushCache="true">
+    SELECT NOT EXISTS(SELECT 1 FROM chat_call_participant p JOIN chat_call c ON c.id=p.call_id
+      LEFT JOIN chat_member m ON m.conversation_id=c.conversation_id AND m.user_id=p.user_id
+      LEFT JOIN chat_contact_lock b ON b.low_id=LEAST(c.initiator_id,p.user_id) AND b.high_id=GREATEST(c.initiator_id,p.user_id)
+      WHERE p.call_id=#{callId} AND p.state IN ('INVITED','ACCEPTED') AND
+        (m.id IS NULL OR m.id &lt;&gt; p.member_id OR COALESCE(b.low_blocks_high,0)=1 OR COALESCE(b.high_blocks_low,0)=1))
+  </select>
+  <select id="scan" resultType="string" useCache="false" flushCache="true">
+    SELECT id FROM chat_call WHERE state IN ('RINGING','ACTIVE')
+      <if test="after != null">AND id &gt; #{after}</if> ORDER BY id LIMIT 50
+  </select>
+</mapper>

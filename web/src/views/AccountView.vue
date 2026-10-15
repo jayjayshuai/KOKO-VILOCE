@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Bookmark, LockKeyhole, Users } from 'lucide-vue-next';
+import { RouterLink } from 'vue-router';
 import type { UserIdentity } from '../api';
 defineProps<{
   /** 本人认证投影，其他用户不会作为账户页数据。 */
@@ -50,10 +51,15 @@ const encryptedTransport = location.protocol === 'https:';
           encryptedTransport ? '加密' : '待配置 TLS'
         }}</span></div
       ><div class="capability-row"
-        ><div><strong>Discord 连接</strong><small>尚未完成正式应用凭据和 OAuth 回调验收。</small></div
-        ><span class="status-tag">尚未开放</span></div
+        ><div><strong>KOKO 站内交流</strong><small>私信、群聊和语音房在本站运行，不需要 Discord 账号。</small></div
+        ><span class="status-tag">原生功能</span></div
+      ><div class="page-actions"
+        ><RouterLink class="secondary" to="/messages">打开消息中心</RouterLink
+        ><RouterLink class="secondary" to="/voice">进入语音空间</RouterLink></div
       ><div class="capability-row"
-        ><div><strong>视频推流与回放</strong><small>排期可创建；实际推流供应商和回放未接入。</small></div
+        ><div
+          ><strong>直接通话、视频投稿与直播</strong
+          ><small>现有语音房可用；直接通话、视频上传播放和真实视频直播仍在开发。</small></div
         ><span class="status-tag">尚未开放</span></div
       ><p class="workspace-note"
         >页面不保存会话令牌到浏览器本地存储。路由入口不是授权凭据，服务端仍检查本人身份与资源归属。</p

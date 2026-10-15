@@ -324,7 +324,7 @@ const actionLabels: Record<WorkspaceAction, string> = {
           ><ChevronRight :size="16" /></button></section
       ><section class="workspace-card connection-guide"
         ><span class="status-tag">能力边界</span><h2>连接正在逐步完善</h2
-        ><p>Discord OAuth、视频推流和回放尚未开放。当前页面不会展示假连接或默认直播。</p
+        ><p>KOKO 的私信、群聊和语音房不依赖 Discord 账号。直接通话、视频投稿、视频直播与回放尚未开放。</p
         ><RouterLink to="/account" class="section-link"
           >账户与连接<ArrowRight :size="14" /></RouterLink></section></aside
   ></div>

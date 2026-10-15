@@ -51,6 +51,8 @@ sa-token:
   is-read-cookie: true
   is-read-header: true
 koko.chat:
+  # 私聊/群聊直接通话：控制面先隔离验收，媒体准入及浏览器链路未验收前保持关闭。
+  calls-enabled: ${CHAT_CALLS_ENABLED:false}
   gateway-key: ${KOKO_GATEWAY_INTERNAL_KEY:}
   websocket-port: ${CHAT_WS_PORT:8097}
   websocket-bind-address: ${CHAT_WS_BIND_ADDRESS:0.0.0.0}
