@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.identity.infrastructure.persistence.DiscordLinkMapper">
+    <select id="sessionRetired" resultType="boolean" useCache="false" flushCache="true">
+        SELECT EXISTS(SELECT 1 FROM identity_discord_session_retirement WHERE user_id=#{userId} AND website_scope=#{scope})
+    </select>
+    <insert id="retireSession">
+        INSERT IGNORE INTO identity_discord_session_retirement(user_id,website_scope,retired_at)
+            VALUES(#{userId},#{scope},UTC_TIMESTAMP(6))
+    </insert>
+    <update id="invalidateCursor">
+        UPDATE identity_discord_link_cursor SET generation=generation+1,active_request_id=NULL
+            WHERE user_id=#{userId} AND generation=#{generation} AND generation &lt; 9223372036854775807
+    </update>
+  <!-- 全部用例统一按user -> cursor -> attempt -> connection加锁；不在持锁事务内访问Discord。 -->
+  <select id="lockUser" resultType="string" useCache="false" flushCache="true">
+    SELECT status FROM identity_user WHERE id=#{userId} FOR UPDATE
+  </select>
+  <insert id="ensureCursor">
+    INSERT IGNORE INTO identity_discord_link_cursor(user_id,generation) VALUES(#{userId},0)
+  </insert>
+  <select
+    id="lockCursor"
+    resultType="cn.kokonexus.identity.domain.DiscordLinkCursor"
+    useCache="false"
+    flushCache="true"
+  >
+    SELECT user_id,generation,active_request_id FROM identity_discord_link_cursor WHERE user_id=#{userId} FOR UPDATE
+  </select>
+  <update id="advance">
+    UPDATE identity_discord_link_cursor SET generation=generation+1,active_request_id=#{requestId}
+    WHERE user_id=#{userId} AND generation=#{generation} AND generation &lt; 9223372036854775807
+  </update>
+  <select id="recentCount" resultType="int" useCache="false" flushCache="true">
+    SELECT COUNT(*) FROM identity_discord_oauth_attempt WHERE user_id=#{userId}
+      AND created_at &gt; UTC_TIMESTAMP(6)-INTERVAL 10 MINUTE
+  </select>
+  <sql id="attemptColumns">
+    user_id,request_id,website_scope,state_digest,generation,attempt_status,code_digest,encrypted_state,
+    encrypted_verifier,encrypted_refresh_token,discord_user_id,discord_username,failure_code,created_at,expires_at,
+    updated_at,(expires_at &gt; UTC_TIMESTAMP(6)) AS fresh
+  </sql>
+  <select
+    id="findRequest"
+    resultType="cn.kokonexus.identity.domain.DiscordOAuthAttempt"
+    useCache="false"
+    flushCache="true"
+  >
+    SELECT <include refid="attemptColumns" /> FROM identity_discord_oauth_attempt
+      WHERE user_id=#{userId} AND request_id=#{requestId} FOR UPDATE
+  </select>
+  <select
+    id="findState"
+    resultType="cn.kokonexus.identity.domain.DiscordOAuthAttempt"
+    useCache="false"
+    flushCache="true"
+  >
+    SELECT <include refid="attemptColumns" /> FROM identity_discord_oauth_attempt
+      WHERE user_id=#{userId} AND state_digest=#{stateDigest} FOR UPDATE
+  </select>
+  <insert id="insertAttempt">
+    INSERT INTO identity_discord_oauth_attempt(user_id,request_id,website_scope,state_digest,generation,
+      attempt_status,encrypted_state,encrypted_verifier,created_at,expires_at,updated_at)
+    VALUES(#{row.userId},#{row.requestId},#{row.websiteScope},#{row.stateDigest},#{row.generation},'WAITING',
+      #{row.encryptedState},#{row.encryptedVerifier},UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)+INTERVAL 10 MINUTE,UTC_TIMESTAMP(6))
+  </insert>
+  <!-- 成功领取提交后绝不重新退回WAITING；已失效nonce不调用供应商。 -->
+  <update id="claim">
+    UPDATE identity_discord_oauth_attempt SET attempt_status='EXCHANGING',code_digest=#{codeDigest},
+      encrypted_state=NULL,encrypted_verifier=NULL,updated_at=UTC_TIMESTAMP(6)
+    WHERE user_id=#{userId} AND request_id=#{requestId} AND website_scope=#{scope} AND generation=#{generation}
+      AND attempt_status='WAITING' AND expires_at &gt; UTC_TIMESTAMP(6)
+  </update>
+  <update id="storeToken">
+    UPDATE identity_discord_oauth_attempt SET encrypted_refresh_token=#{encryptedToken},updated_at=UTC_TIMESTAMP(6)
+      WHERE user_id=#{userId} AND request_id=#{requestId} AND code_digest=#{codeDigest}
+      AND attempt_status='EXCHANGING' AND encrypted_refresh_token IS NULL
+  </update>
+  <update id="verifyIdentity">
+    UPDATE identity_discord_oauth_attempt SET attempt_status='VERIFIED',discord_user_id=#{discordId},
+      discord_username=#{username},updated_at=UTC_TIMESTAMP(6)
+      WHERE user_id=#{userId} AND request_id=#{requestId} AND code_digest=#{codeDigest}
+      AND attempt_status='EXCHANGING' AND encrypted_refresh_token IS NOT NULL
+  </update>
+  <update id="settle">
+    UPDATE identity_discord_oauth_attempt SET attempt_status=#{status},failure_code=#{failureCode},
+      encrypted_state=NULL,encrypted_verifier=NULL,updated_at=UTC_TIMESTAMP(6)
+      WHERE user_id=#{userId} AND request_id=#{requestId} AND attempt_status=#{expected}
+  </update>
+  <insert id="insertConnection">
+    INSERT INTO identity_discord_connection(user_id,discord_user_id,encrypted_refresh_token,connected_at,
+      discord_username,connection_status,connection_version)
+    VALUES(#{row.userId},#{row.discordUserId},#{row.encryptedRefreshToken},UTC_TIMESTAMP(6),#{row.discordUsername},'ACTIVE',#{row.generation})
+  </insert>
+  <update id="bind">
+    UPDATE identity_discord_oauth_attempt SET attempt_status='BOUND',encrypted_refresh_token=NULL,
+      updated_at=UTC_TIMESTAMP(6) WHERE user_id=#{userId} AND request_id=#{requestId}
+      AND generation=#{generation} AND attempt_status='VERIFIED'
+  </update>
+  <insert id="audit">
+    INSERT INTO identity_discord_link_audit(user_id,request_id,generation,action,created_at)
+      VALUES(#{row.userId},#{row.requestId},#{row.generation},#{action},UTC_TIMESTAMP(6))
+  </insert>
+</mapper>

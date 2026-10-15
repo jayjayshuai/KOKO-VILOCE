@@ -17,6 +17,7 @@ public final class DiscordTokenCipher {
     public enum Purpose {
         REFRESH_TOKEN,
         OAUTH_VERIFIER,
+        OAUTH_STATE,
     }
 
     /** 写入采用的密钥标识；读取可保留旧钥实现显式轮换。 */
