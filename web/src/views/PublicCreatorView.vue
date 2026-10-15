@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { RefreshCw, Share2, UserRound } from 'lucide-vue-next';
 import { managedImageUrl, type CreatorPost } from '../api';
 import PublicAuthorPosts from '../components/PublicAuthorPosts.vue';
 import { useAuthStore } from '../stores/auth';
 import { usePublicCreator } from '../composables/public-creator';
+import { useClipboardFeedback } from '../composables/clipboard-feedback';
 const emit = defineEmits<{
   /** 打开现有真实登录弹窗，不自动关注。 */ login: [];
   /** 复用实际文章阅读器，正文由独立公开接口读取。 */ readPost: [post: CreatorPost];
@@ -39,20 +40,7 @@ const followers = computed(() => relation.value?.followerCount ?? profile.value?
 const shareUrl = computed(() =>
   profile.value ? `${location.origin}${location.pathname}#/creators/${encodeURIComponent(profile.value.slug)}` : '',
 );
-const shareMessage = ref('');
-watch(shareUrl, () => {
-  shareMessage.value = '';
-});
-async function copyAddress() {
-  if (!shareUrl.value) return;
-  const address = shareUrl.value;
-  try {
-    await navigator.clipboard.writeText(address);
-    if (shareUrl.value === address) shareMessage.value = '主页地址已复制。';
-  } catch {
-    if (shareUrl.value === address) shareMessage.value = '浏览器未允许复制，请手动选择下方地址。';
-  }
-}
+const { busy: copyBusy, copied, message: shareMessage, copy: copyAddress } = useClipboardFeedback(() => shareUrl.value);
 </script>
 <template>
   <main class="creator-detail" aria-label="UP主公开主页">
@@ -112,7 +100,9 @@ async function copyAddress() {
           @click="readRelation"
           ><RefreshCw :size="16" />查询关注状态</button
         >
-        <button class="secondary" @click="copyAddress"><Share2 :size="16" />复制主页地址</button>
+        <button class="secondary" :disabled="copyBusy" @click="copyAddress"
+          ><Share2 :size="16" />{{ copyBusy ? '正在复制…' : copied ? '已复制主页地址' : '复制主页地址' }}</button
+        >
       </div>
       <p v-if="success" class="workspace-success" role="status">{{ success }}</p>
       <p v-if="relationError" class="workspace-error compact" role="alert">{{ relationError }}</p>

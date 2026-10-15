@@ -1048,13 +1048,39 @@ a {
   margin: 0 0 22px;
 }
 .workspace-field select,
+.workspace-field input:not([type='checkbox']):not([type='radio']):not([type='file']),
+.workspace-field textarea,
 .asset-workspace-grid input[type='file'] {
-  padding: 11px;
+  padding: 12px 14px;
   border: 1px solid #3f4155;
   border-radius: 9px;
   background: #10131b;
   color: #e8e7f1;
   max-width: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.workspace-field input[readonly] {
+  color: #d0c7f5;
+  background: #131621;
+}
+.workspace-field input:not(:disabled):hover,
+.workspace-field textarea:not(:disabled):hover,
+.workspace-field select:not(:disabled):hover {
+  border-color: #686077;
+}
+.workspace-field input:focus-visible,
+.workspace-field textarea:focus-visible,
+.workspace-field select:focus-visible {
+  border-color: var(--workspace-accent);
+}
+.workspace-field textarea {
+  resize: vertical;
+  min-height: 110px;
 }
 .asset-guidance h2 {
   margin: 8px 0 16px;
@@ -1224,6 +1250,20 @@ a {
   }
 }
 @media (max-width: 700px) {
+  .workspace-shell .primary,
+  .workspace-shell .secondary,
+  .workspace-shell .icon-button,
+  .workspace-shell .account-trigger {
+    min-height: 44px;
+  }
+  .workspace-shell .icon-button {
+    min-width: 44px;
+  }
+  .workspace-field input,
+  .workspace-field select,
+  .workspace-field textarea {
+    font-size: 16px;
+  }
   .workspace-shell {
     grid-template-columns: minmax(0, 1fr);
   }

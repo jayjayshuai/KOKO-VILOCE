@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useVoiceConnection } from '../composables/voice-connection';
+import { Headphones, Mic, MicOff } from 'lucide-vue-next';
 import { voiceMediaCredentialsApi, type ControlledMediaCredential } from '../services/voice-media-credentials';
 import type { InteractionSnapshot } from '../services/voice-interaction';
 import VoicePlaybackControls from './VoicePlaybackControls.vue';
@@ -292,8 +293,19 @@ defineExpose({
 });
 </script>
 <template>
-  <section aria-label="受控语音连接" class="workspace-card">
-    <h3>{{ inRoom ? '声音连接' : '3 · 连接声音' }}</h3>
+  <section
+    aria-label="受控语音连接"
+    class="workspace-card voice-console"
+    :class="{ 'in-room': inRoom, 'is-publishing': microphoneEnabled }"
+  >
+    <div class="voice-console-heading"
+      ><h3>{{ inRoom ? '你的声音' : '3 · 连接声音' }}</h3
+      ><span v-if="inRoom && enabled" class="microphone-indicator"
+        ><Mic v-if="microphoneEnabled" :size="16" /><MicOff v-else :size="16" />{{
+          microphoneEnabled ? '麦克风已开启' : '麦克风关闭'
+        }}</span
+      ></div
+    >
     <p v-if="capabilityError" role="alert" class="form-error">{{ capabilityError }}</p>
     <button v-if="capabilityError" type="button" class="secondary" :disabled="loading" @click="loadCapability"
       >重新核验媒体能力</button
@@ -301,7 +313,7 @@ defineExpose({
     <p v-if="loading" role="status">正在核验声音服务，请稍候…</p>
     <p v-else-if="!enabled" role="status">受控语音连接尚未开放，成员和麦位操作不会自动开启麦克风。</p>
     <template v-else>
-      <p role="status">{{
+      <p class="voice-connection-status" role="status">{{
         connectionPreparing && phase === 'idle'
           ? '正在核验入房权限…'
           : phase === 'connected'
@@ -312,7 +324,24 @@ defineExpose({
                 ? '正在恢复连接…'
                 : '未连接'
       }}</p>
-      <p v-if="!snapshot?.mySessionId" class="hint">请先加入房间，才能连接声音。</p>
+      <div v-if="inRoom && quickStart && listenOnly" class="voice-quick-controls">
+        <button
+          class="primary"
+          :class="{ 'is-publishing': microphoneEnabled }"
+          :disabled="quickBusy || microphoneBusy || connectionPreparing"
+          @click="microphoneEnabled ? voice.toggleMicrophone() : quickStart()"
+        >
+          <MicOff v-if="microphoneEnabled" :size="20" /><Mic v-else :size="20" />{{
+            microphoneEnabled ? '关闭麦克风' : quickBusy ? '正在准备发言…' : '开始发言'
+          }}
+        </button>
+        <button class="secondary" :disabled="listenBusy" @click="listenOnly()"
+          ><Headphones :size="20" />{{ quickBusy && !microphoneEnabled ? '取消发言并收听' : '只收听' }}</button
+        >
+      </div>
+      <p v-if="!snapshot?.mySessionId" class="hint">{{
+        inRoom && quickStart ? '选择“开始发言”或“只收听”，会为你加入并连接房间。' : '请先加入房间，才能连接声音。'
+      }}</p>
       <p v-else-if="phase === 'idle'" class="hint">{{
         inRoom && quickStart
           ? '点击“开始发言”，系统会自动入房、申请并连接；选择“只收听”不会开启麦克风。'
@@ -331,7 +360,9 @@ defineExpose({
       <p v-else-if="microphoneEnabled" role="status"
         >麦克风已开启，正在向房间发布音轨。对方还需要连接语音并允许声音播放。</p
       >
-      <p v-if="reading" class="hint">正在核验房间状态，请稍候再连接；定期读取不会主动中断已有通话。</p>
+      <p v-if="reading && (!inRoom || phase !== 'connected')" class="hint"
+        >正在核验房间状态，请稍候再连接；定期读取不会主动中断已有通话。</p
+      >
       <p v-if="phase === 'connected' && participantCount <= 1" role="status"
         >目前只有你连接了声音，请让对方也进入房间并连接语音。</p
       >
@@ -342,21 +373,7 @@ defineExpose({
         >已订阅
         {{ receivedAudioTracks }} 条对方音轨（不等于已听见）。若仍无声，请检查媒体音量、蓝牙输出及声音播放提示。</p
       >
-      <p class="hint"
-        >切换站内页面会保留通话。下麦、房主禁麦或授权失效会断开；手机锁屏可能被系统冻结，需要回到页面重新核验。</p
-      >
-      <div v-if="inRoom && quickStart && listenOnly" class="voice-quick-controls">
-        <button
-          class="primary"
-          :disabled="quickBusy || microphoneBusy || connectionPreparing"
-          @click="microphoneEnabled ? voice.toggleMicrophone() : quickStart()"
-          >{{ microphoneEnabled ? '关闭麦克风' : quickBusy ? '正在准备发言…' : '开始发言' }}</button
-        >
-        <button class="secondary" :disabled="listenBusy" @click="listenOnly()">{{
-          quickBusy && !microphoneEnabled ? '取消发言并收听' : '只收听'
-        }}</button>
-      </div>
-      <template v-else
+      <template v-if="!inRoom || !quickStart || !listenOnly"
         ><button
           type="button"
           class="primary"
@@ -379,9 +396,15 @@ defineExpose({
           >{{ microphoneEnabled ? '关闭麦克风' : '开启麦克风' }}</button
         >
       </template>
-      <p v-if="credential" class="hint"
-        >当前授权轮次 {{ credential.generation }} · {{ credential.canPublish ? '允许本人麦克风发布' : '仅收听' }}</p
-      >
+      <details class="voice-connection-details"
+        ><summary>连接信息与后台说明</summary>
+        <p class="hint"
+          >切换站内页面会保留通话。下麦、房主禁麦或授权失效会断开；手机锁屏可能被系统冻结，需要回到页面重新核验。</p
+        >
+        <p v-if="credential" class="hint"
+          >当前授权轮次 {{ credential.generation }} · {{ credential.canPublish ? '允许本人麦克风发布' : '仅收听' }}</p
+        >
+      </details>
       <p v-if="voiceError" role="alert" class="form-error">{{ voiceError }}</p>
       <VoicePlaybackControls
         :phase="phase"
@@ -400,5 +423,65 @@ defineExpose({
   flex-wrap: wrap;
   gap: 10px;
   margin: 16px 0;
+}
+.voice-console.in-room {
+  border-color: #534774;
+  background: linear-gradient(135deg, #1c1d2d, #171c28);
+}
+.voice-console-heading {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.voice-console-heading h3 {
+  margin: 0;
+}
+.microphone-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #bec6d5;
+  padding: 6px 10px;
+  border: 1px solid #4b4860;
+  border-radius: 999px;
+}
+.is-publishing .microphone-indicator {
+  color: #9be3c8;
+  border-color: #3b7c68;
+}
+.voice-connection-status {
+  color: #c9c3df;
+}
+.voice-quick-controls button {
+  min-height: 48px;
+  padding: 12px 22px;
+  font-size: 15px;
+}
+.voice-quick-controls .primary.is-publishing {
+  background: #b64158;
+  border-color: #dc6b7e;
+}
+.voice-quick-controls .primary.is-publishing:hover {
+  background: #ca5068;
+}
+.voice-connection-details {
+  margin-top: 14px;
+  border-top: 1px solid #403c51;
+  padding-top: 12px;
+}
+.voice-connection-details summary {
+  cursor: pointer;
+  color: #bcb6ce;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .voice-quick-controls button {
+    flex: 1 1 120px;
+    justify-content: center;
+    padding: 12px;
+  }
 }
 </style>

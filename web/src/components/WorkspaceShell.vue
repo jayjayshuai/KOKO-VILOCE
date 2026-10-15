@@ -22,6 +22,7 @@ import {
 import type { UserIdentity } from '../api';
 import type { WorkspacePage } from '../types/workspace';
 import { workspacePages } from '../router/pages';
+import { navigationSection } from '../services/navigation-section';
 
 const props = defineProps<{
   /** 已确认的当前用户；不保存会话令牌。 */
@@ -41,7 +42,7 @@ const emit = defineEmits<{
 }>();
 const route = useRoute();
 /** 房间详情归属语音空间，不能因为隐藏详情路由而丢失导航位置。 */
-const navigationName = computed(() => (route.name === 'voice-room' ? 'voice' : route.name));
+const navigationName = computed(() => navigationSection(route.name));
 const drawer = ref(false),
   accountMenu = ref(false);
 const sidebar = ref<HTMLElement>(),

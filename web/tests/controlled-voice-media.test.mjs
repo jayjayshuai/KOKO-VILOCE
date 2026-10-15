@@ -66,6 +66,7 @@ async function setup(network = {}) {
     { context },
   )
   const mocks = {
+    'lucide-vue-next': { Headphones: () => null, Mic: () => null, MicOff: () => null },
     '../services/voice-media-preparation': { waitForVoiceMediaRetirement: network.prepare ?? (async () => {}) },
     './VoicePlaybackControls.vue': { default: {} },
     vue: { ...vue, onBeforeUnmount: (callback) => hooks.push(callback) },

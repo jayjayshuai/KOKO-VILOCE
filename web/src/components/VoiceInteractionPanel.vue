@@ -453,13 +453,13 @@ defineExpose({
     :aria-busy="loading || busy"
   >
     <div class="workspace-card-heading"
-      ><h2>{{ presentation === 'room' ? '房间控制' : '进入语音房' }}</h2
+      ><h2>{{ presentation === 'room' ? '语音房' : '进入语音房' }}</h2
       ><button type="button" class="secondary" :disabled="busy || actionPreparing" @click="emit('close')">{{
         presentation === 'room' ? '返回列表' : '关闭面板'
       }}</button></div
     >
-    <p class="hint">{{ roomTitle || '当前房间' }}</p>
-    <p class="hint" role="note"
+    <p v-if="presentation !== 'room'" class="hint">{{ roomTitle || '当前房间' }}</p>
+    <p v-if="presentation !== 'room'" class="hint" role="note"
       >手机与电脑请用不同账号；建议戴耳机，避免回声。支持八人同时发言；“只收听”不采集麦克风，“加入并发言”会请求授权。</p
     >
     <div class="voice-sync-status" role="status" aria-live="polite" aria-atomic="true">
@@ -471,6 +471,7 @@ defineExpose({
       <span v-else-if="renewalError && renewalTransient"
         >成员续约暂未确认，下一轮会重试；若连接中断，请重新核验房间状态。</span
       >
+      <span v-else-if="presentation === 'room' && snapshot && fresh">房间状态已核验 · 后台同步中</span>
       <span v-else>成员状态在后台同步，不会重新加载页面。点击操作时才核验最新权限。</span>
     </div>
     <p v-if="readError && !readTransient" class="form-error" role="alert">{{ readError }}</p>
@@ -501,31 +502,41 @@ defineExpose({
     />
     <section v-if="presentation === 'room'" class="room-overview" aria-label="房间成员">
       <div class="workspace-card-heading"
-        ><h3>房间成员 · {{ snapshot ? snapshot.members.length : '—' }}（有效租约）</h3>
+        ><h3>房间成员 · {{ snapshot ? snapshot.members.length : '—' }}</h3>
         <button
           v-if="snapshot?.mySessionId"
-          class="secondary"
+          class="secondary leave-room-button"
           :disabled="disabled || arrivalBusy"
           @click="leaveRoomPage"
           >离开房间</button
         >
       </div>
+      <p class="hint">成员名单不等于声音已连接。是否已开麦，请看上方“你的声音”；房主可以管理发言许可。</p>
       <p v-if="!snapshot?.mySessionId">你已打开房间页面，点击进入后开始收听。不会自动打开麦克风。</p>
       <button v-if="!snapshot?.mySessionId" class="primary" :disabled="disabled || arrivalBusy" @click="enterAndListen"
         >进入并收听</button
       >
       <div class="room-members"
-        ><article v-for="member in snapshot?.members ?? []" :key="member.userId">
+        ><article
+          v-for="member in snapshot?.members ?? []"
+          :key="member.userId"
+          :class="{ 'is-self': member.userId === userId }"
+        >
+          <span class="room-member-avatar" aria-hidden="true">{{
+            String(member.displayName ?? '')
+              .trim()
+              .slice(0, 1) || 'K'
+          }}</span>
           <strong>{{ member.displayName }}</strong
           ><span
             >{{ member.userId === userId ? '你 · ' : ''
             }}{{ member.role === 'OWNER' ? '房主' : member.role === 'ADMIN' ? '房管' : '成员' }}</span
           >
-          <small>{{ member.seatNo ? `麦位 ${member.seatNo}` : '听众' }} · 成员身份不代表已连接声音</small>
+          <small>{{ member.seatNo ? `麦位 ${member.seatNo}` : '听众' }}</small>
           <template
             v-if="member.seatNo && snapshot?.seats.find((seat) => seat.seatNo === member.seatNo)?.state === 'ON_MIC'"
           >
-            <small>{{
+            <small class="member-speaking-permission">{{
               snapshot?.seats.find((seat) => seat.seatNo === member.seatNo)?.muted
                 ? '房间闭麦 · 需房主允许'
                 : '房主已允许发言'
@@ -559,9 +570,17 @@ defineExpose({
     <button type="button" class="secondary" :disabled="busy || actionPreparing || !online" @click="load()">{{
       loading ? '读取中…' : '刷新房间状态'
     }}</button>
-    <label class="hint"
-      ><input v-model="backgroundEnabled" type="checkbox" />切换浏览器标签页时保留已连接通话（手机系统可能冻结）</label
-    >
+    <details class="voice-room-help"
+      ><summary>通话使用帮助与后台设置</summary>
+      <p class="hint">建议戴耳机避免回声。手机和电脑联调请使用不同账号；最多八人同时发言，普通成员需房主允许。</p>
+      <p class="hint">只收听不采集麦克风。点击开始发言后，首次需允许浏览器使用麦克风；离开房间才会结束通话。</p>
+      <label class="hint"
+        ><input
+          v-model="backgroundEnabled"
+          type="checkbox"
+        />切换浏览器标签页时保留已连接通话（手机系统可能冻结）</label
+      >
+    </details>
     <p v-if="capabilities && !capabilities.enabled" role="status">互动核心尚未开放，不能执行成员或麦位操作。</p>
     <template v-if="capabilities?.enabled">
       <section v-if="presentation !== 'room'" class="voice-guide-step" aria-label="加入房间">
@@ -916,6 +935,51 @@ defineExpose({
   padding: 18px;
   border: 1px solid var(--border-color, #303541);
   border-radius: 12px;
+}
+.room-members article.is-self {
+  border-color: #615079;
+  background: #1d1c2b;
+}
+.room-member-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #40335d;
+  color: #e0d2ff !important;
+  font-size: 20px;
+  font-weight: 700;
+}
+.member-speaking-permission {
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: #121822;
+  font-size: 12px;
+}
+.leave-room-button {
+  border-color: #705063;
+  color: #ffb7c8;
+}
+.voice-room-help {
+  margin: 18px 0;
+  padding: 12px 14px;
+  border: 1px solid #303541;
+  border-radius: 10px;
+}
+.voice-room-help summary {
+  cursor: pointer;
+  color: #bcb6ce;
+  font-size: 13px;
+}
+.voice-room-help label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  line-height: 1.6;
+}
+.voice-room-help input {
+  margin-top: 4px;
 }
 .room-members span,
 .room-members small {

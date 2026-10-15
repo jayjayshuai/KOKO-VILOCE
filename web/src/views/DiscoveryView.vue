@@ -55,7 +55,7 @@ const headings = {
   explore: { title: '你的创作，与社区连接。', copy: '发现值得关注的内容，在社区里交流，让新的想法发生。' },
   communities: { title: '找到属于你的社区。', copy: '公开发现与私密成员管理有不同权限，加入后才能查看成员名册。' },
   creators: { title: '发现正在创作的人。', copy: '关注创作者的真实主页，读他们已发布的内容。' },
-  voice: { title: '用声音，开始交流。', copy: '开放语音房由自建 LiveKit 承载，连接状态以实际媒体服务返回为准。' },
+  voice: { title: '用声音，开始交流。', copy: '选一个房间，一键收听或申请发言。切换站内页面，通话也可以继续。' },
   live: { title: '为下一场直播做好准备。', copy: '排期已经支持；实际视频推流、转码与回放尚未接入。' },
 };
 const heading = computed(() => headings[props.section]);
