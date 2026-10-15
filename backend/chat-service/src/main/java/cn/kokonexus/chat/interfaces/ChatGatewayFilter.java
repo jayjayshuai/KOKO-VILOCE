@@ -26,6 +26,10 @@ public class ChatGatewayFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
         throws ServletException, IOException {
+        if (request.getRequestURI().startsWith("/api/chat/calls")) {
+            response.setHeader("Cache-Control", "no-store");
+            response.setHeader("Pragma", "no-cache");
+        }
         String userId = request.getHeader("X-Koko-User-Id");
         String origin = request.getHeader("Origin");
         if (

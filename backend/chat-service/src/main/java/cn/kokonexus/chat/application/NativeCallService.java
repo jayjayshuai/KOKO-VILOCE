@@ -136,6 +136,73 @@ public class NativeCallService {
         return view(row, calls.participants(callId));
     }
 
+    /** 全局来电/当前通话事实；不暴露未明确邀请的其他群成员。 */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, timeout = 5)
+    public View current(long actor) {
+        positive(actor);
+        String id = calls.currentForUser(actor);
+        if (id == null) return null;
+        NativeCall row = load(actor, id);
+        return row.getState().equals("ENDED") ? null : view(row, calls.participants(id));
+    }
+
+    /** 短事务媒体授权，不执行网络；只有明确接听且仍有至少两位有效接听者可获取音频凭据。 */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, timeout = 5)
+    public MediaGrant mediaGrant(long actor, String websiteScope, String callId) {
+        scope(websiteScope);
+        NativeCall row = load(actor, callId);
+        var people = calls.participants(callId);
+        var self = person(people, actor);
+        lockContacts(row, people);
+        if (
+            !"ACTIVE".equals(row.getState()) ||
+            !"ACCEPTED".equals(self.getState()) ||
+            !websiteScope.equals(self.getWebsiteScope()) ||
+            !self.isLeaseFresh() ||
+            count(people, "ACCEPTED") < 2 ||
+            people.stream().anyMatch(p -> "ACCEPTED".equals(p.getState()) && !p.isLeaseFresh()) ||
+            !calls.eligible(callId)
+        ) throw new ForbiddenOperationException("当前通话未接听、已过期或网站会话不匹配");
+        return new MediaGrant(callId, self.getMediaIdentity(), self.getDisplayName());
+    }
+
+    /** 媒体已验签后再比对当前SQL事实；旧身份和另一个网站不能继承接听许可。 */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, timeout = 5)
+    public boolean mediaAllows(long actor, String websiteScope, String callId, String identity) {
+        try {
+            return mediaGrant(actor, websiteScope, callId).identity().equals(identity);
+        } catch (ResourceNotFoundException | ForbiddenOperationException denied) {
+            return false;
+        }
+    }
+
+    /** 注销只清退匹配的原接听网站；新网站、其他成员及新通话不受旧注销请求影响。 */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, timeout = 5)
+    public boolean retireWebsite(long actor, String websiteScope) {
+        positive(actor);
+        scope(websiteScope);
+        String id = calls.currentForUser(actor);
+        if (id == null) return true;
+        var initial = calls.selectById(id);
+        if (initial == null) return true;
+        conversations.lock(initial.getConversationId());
+        var row = calls.lock(id);
+        var people = calls.participants(id);
+        var self = person(people, actor);
+        if (!"ACCEPTED".equals(self.getState()) || !websiteScope.equals(self.getWebsiteScope())) return true;
+        if ("RINGING".equals(row.getState())) end(row, "WEBSITE_ENDED");
+        else if ("ACTIVE".equals(row.getState())) {
+            one(calls.participantState(id, actor, "ACCEPTED", "LEFT"));
+            if (count(calls.participants(id), "ACCEPTED") < 2) end(row, "WEBSITE_ENDED");
+            else {
+                one(calls.advance(id, row.getVersion(), "ACTIVE", null));
+                retire(row, row.getVersion() + 1, self.getMediaIdentity());
+            }
+        }
+        sync.changed(people.stream().map(NativeCallParticipant::getUserId).toList());
+        return true;
+    }
+
     /** 原UUID恢复原应用版本并附当前快照，旧ACCEPT收据不把已经挂断的通话复活。 */
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, timeout = 5)
     public Result command(
@@ -438,4 +505,16 @@ public class NativeCallService {
         @Schema(description = "此命令提交时的版本") long appliedVersion,
         @Schema(description = "当前快照，不返回可能过时的已接听状态") View current
     ) {}
+
+    /** 仅内部签名器使用的短事务投影，不作为HTTP响应或日志内容。 */
+    public record MediaGrant(
+        /** 原私人通话UUID。 */ String callId,
+        /** 本人接听网站的随机媒体身份。 */ String identity,
+        /** 成员显示名快照，最长80字。 */ String displayName
+    ) {
+        @Override
+        public String toString() {
+            return "NativeCallMediaGrant[redacted]";
+        }
+    }
 }

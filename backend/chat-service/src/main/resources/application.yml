@@ -61,6 +61,11 @@ koko.chat:
   # 持久用户版本驱动跨节点同步，独立单线程；每批最多 100 个本机认证用户。
   sync-poll-interval-ms: ${CHAT_SYNC_POLL_INTERVAL_MS:1000}
 koko.public-api-base: ${KOKO_PUBLIC_API_BASE:/api}
+livekit:
+  api-url: ${LIVEKIT_API_URL:}
+  native-call-public-url: ${LIVEKIT_NATIVE_CALL_PUBLIC_URL:}
+  api-key: ${LIVEKIT_API_KEY:}
+  api-secret: ${LIVEKIT_API_SECRET:}
 springdoc:
   api-docs.path: /api/chat/docs/v3/api-docs
   swagger-ui:

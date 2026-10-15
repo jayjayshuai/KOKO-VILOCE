@@ -21,6 +21,34 @@ public class MediaAdmissionClient {
     @DubboReference(version = "1.0.0", check = false, timeout = 2000, retries = 0)
     private MediaAdmissionRpcService service;
 
+    /** 私人通话使用独立RPC，不回退成公开语音房准入。 */
+    @DubboReference(version = "1.0.0", check = false, timeout = 2000, retries = 0)
+    private cn.kokonexus.api.chat.NativeCallMediaAdmissionRpcService nativeCalls;
+
+    public boolean admitNative(MediaAdmissionCommand command) {
+        try {
+            return nativeCalls.admit(command);
+        } catch (RuntimeException unavailable) {
+            throw new MediaAdmissionUnavailableException();
+        }
+    }
+
+    public boolean retainNative(MediaAdmissionCommand command) {
+        try {
+            return nativeCalls.retain(command);
+        } catch (RuntimeException unavailable) {
+            throw new MediaAdmissionUnavailableException();
+        }
+    }
+
+    public boolean retireNativeWebsiteSession(MediaWebsiteSessionCommand command) {
+        try {
+            return nativeCalls.retireWebsiteSession(command);
+        } catch (RuntimeException unavailable) {
+            throw new MediaAdmissionUnavailableException();
+        }
+    }
+
     public boolean admit(MediaAdmissionCommand command) {
         try {
             return service.admit(command);

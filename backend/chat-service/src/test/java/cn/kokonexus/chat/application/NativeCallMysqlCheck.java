@@ -39,13 +39,43 @@ public final class NativeCallMysqlCheck {
         check("koko_native_call_check_20261015".equals(user), "Limited isolated user required");
         var source = new DriverManagerDataSource(url, user, System.getenv("NATIVE_CALL_CHECK_PASSWORD"));
         var jdbc = new JdbcTemplate(source);
+        var baseline = Flyway.configure()
+            .dataSource(source)
+            .table("chat_flyway_schema_history")
+            .locations("classpath:db/migration")
+            .target("5")
+            .load();
+        check(baseline.migrate().migrationsExecuted == 5, "Fresh chat V1-V5 baseline required");
+        String upgradedConversation = conversation(jdbc, "DIRECT", 901, 902);
+        String upgradedCall = UUID.randomUUID().toString();
+        jdbc.update(
+            "INSERT INTO chat_call(id,conversation_id,initiator_id,client_request_id,request_hash,state,created_at,ring_expires_at,ended_at) VALUES(?,?,?,?,?,'ENDED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+            upgradedCall,
+            upgradedConversation,
+            901,
+            UUID.randomUUID().toString(),
+            "c".repeat(64)
+        );
+        jdbc.update(
+            "INSERT INTO chat_call_media_retirement(job_key,call_id,source_version,action,created_at) VALUES(?,?,1,'ROOM',UTC_TIMESTAMP(6))",
+            upgradedCall + ":ROOM:1",
+            upgradedCall
+        );
         var flyway = Flyway.configure()
             .dataSource(source)
             .table("chat_flyway_schema_history")
             .locations("classpath:db/migration")
             .load();
-        check(flyway.migrate().migrationsExecuted == 5, "Fresh chat V1-V5 required");
+        check(flyway.migrate().migrationsExecuted == 1, "Existing V5 facts should upgrade by exactly V6");
         flyway.validate();
+        check(
+            jdbc.queryForObject(
+                "SELECT attempts=0 AND status='READY' AND lease_token IS NULL FROM chat_call_media_retirement WHERE call_id=?",
+                Boolean.class,
+                upgradedCall
+            ),
+            "V5 retirement facts changed on upgrade"
+        );
         var factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(source);
         var configuration = new MybatisConfiguration();
@@ -82,6 +112,7 @@ public final class NativeCallMysqlCheck {
             tx
         );
         var groups = new java.util.ArrayList<String>();
+        groups.add("REAL_V5_FACTS_V6_UPGRADE_PRESERVES_PENDING_RETIREMENT_WITH_FLYWAY_VALIDATION");
 
         String direct = conversation(jdbc, "DIRECT", 1, 2);
         String request = UUID.randomUUID().toString();
@@ -290,6 +321,97 @@ public final class NativeCallMysqlCheck {
         var same = calls.read(21, ids.iterator().next());
         calls.command(21, SCOPE, same.id(), UUID.randomUUID().toString(), 1, "END");
         groups.add("EIGHT_PARALLEL_ORIGINAL_INVITES_ONE_DURABLE_CALL_AND_NONDUPLICATE_SYNC_FACTS");
+
+        String privateGroup = conversation(jdbc, "GROUP", 25, 26, 27, 28);
+        var privateCall = calls.invite(25, SCOPE, privateGroup, UUID.randomUUID().toString(), List.of(26L, 27L));
+        check(
+            calls.current(26).id().equals(privateCall.id()) && calls.current(28) == null,
+            "Incoming call leaked to uninvited member"
+        );
+        expect(ForbiddenOperationException.class, () -> calls.mediaGrant(25, SCOPE, privateCall.id()));
+        calls.command(26, SCOPE, privateCall.id(), UUID.randomUUID().toString(), 1, "ACCEPT");
+        var grant = calls.mediaGrant(25, SCOPE, privateCall.id());
+        check(calls.mediaAllows(25, SCOPE, privateCall.id(), grant.identity()), "Valid accepted identity denied");
+        check(
+            !calls.mediaAllows(25, OTHER_SCOPE, privateCall.id(), grant.identity()),
+            "Another website inherited consent"
+        );
+        check(
+            !calls.mediaAllows(25, SCOPE, privateCall.id(), UUID.randomUUID().toString()),
+            "Another media identity inherited consent"
+        );
+        check(
+            !calls.mediaAllows(27, SCOPE, privateCall.id(), grant.identity()),
+            "Invited user received media before acceptance"
+        );
+        calls.command(27, SCOPE, privateCall.id(), UUID.randomUUID().toString(), 2, "ACCEPT");
+        check(calls.retireWebsite(25, OTHER_SCOPE), "Old unrelated website retirement failed");
+        check(
+            calls.mediaAllows(25, SCOPE, privateCall.id(), grant.identity()),
+            "Unrelated website retired current consent"
+        );
+        check(calls.retireWebsite(25, SCOPE), "Website retirement not committed");
+        check(!calls.mediaAllows(25, SCOPE, privateCall.id(), grant.identity()), "Retired website kept media");
+        check(calls.read(26, privateCall.id()).state().equals("ACTIVE"), "Remaining two callers were ended");
+        check(calls.current(25) == null, "Retired caller still busy");
+        calls.retireWebsite(26, SCOPE);
+        check(calls.read(27, privateCall.id()).state().equals("ENDED"), "One remaining participant should end call");
+        check(calls.retireWebsite(26, SCOPE), "Original retirement should remain idempotent");
+        groups.add("CURRENT_INVITE_PRIVACY_EXPLICIT_MEDIA_CONSENT_IDENTITY_WEBSITE_FENCE_AND_GROUP_LOGOUT_RETIREMENT");
+
+        var retirements = proxy(
+            new NativeCallRetirementState(sessions.getMapper(NativeCallRetirementMapper.class)),
+            tx
+        );
+        // 本组仅消费自己的最后一个通话任务，保留前面测试产生的历史事实。
+        jdbc.update("UPDATE chat_call_media_retirement SET status='DONE' WHERE call_id<>?", privateCall.id());
+        var job = retirements.claim();
+        check(job != null && job.getCallId().equals(privateCall.id()), "Original retirement not claimed");
+        check(retirements.claim() != null, "Distinct pending job should be claimable");
+        String key = job.getJobKey();
+        jdbc.update(
+            "UPDATE chat_call_media_retirement SET lease_until=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE job_key=?",
+            key
+        );
+        var renewed = retirements.claim();
+        check(
+            renewed != null && renewed.getJobKey().equals(key) && !renewed.getLeaseToken().equals(job.getLeaseToken()),
+            "Expired work lease not renewed"
+        );
+        check(!retirements.confirmed(job) && !retirements.failed(job), "Old lease overwrote new work");
+        check(retirements.confirmed(renewed), "Current lease confirmation failed");
+        check(
+            "READY".equals(
+                jdbc.queryForObject("SELECT status FROM chat_call_media_retirement WHERE job_key=?", String.class, key)
+            ),
+            "Early SFU success skipped drain window"
+        );
+        jdbc.update(
+            "UPDATE chat_call_media_retirement SET created_at=UTC_TIMESTAMP(6)-INTERVAL 76 SECOND,next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE job_key=?",
+            key
+        );
+        var finalJob = retirements.claim();
+        check(finalJob != null && finalJob.getJobKey().equals(key), "Drained original target missing");
+        check(retirements.confirmed(finalJob), "Final drain confirmation failed");
+        check(
+            "DONE".equals(
+                jdbc.queryForObject("SELECT status FROM chat_call_media_retirement WHERE job_key=?", String.class, key)
+            ),
+            "Drained success not persisted"
+        );
+        jdbc.update(
+            "UPDATE chat_call_media_retirement SET status='READY',attempts=9,next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE job_key=?",
+            key
+        );
+        var deadJob = retirements.claim();
+        check(retirements.failed(deadJob), "Tenth failure not recorded");
+        check(
+            "DEAD".equals(
+                jdbc.queryForObject("SELECT status FROM chat_call_media_retirement WHERE job_key=?", String.class, key)
+            ),
+            "Exhausted failure not dead"
+        );
+        groups.add("RETIREMENT_REAL_SQL_EXPIRED_LEASE_RECLAIM_STALE_CAS_DRAIN_WINDOW_AND_BOUNDED_FAILURE");
         check(calls.scan(null).isEmpty(), "Ended fixture calls remain in active scan");
         System.out.println(
             new ObjectMapper().writeValueAsString(
@@ -299,7 +421,7 @@ public final class NativeCallMysqlCheck {
                     "realMysql",
                     true,
                     "migrations",
-                    5,
+                    6,
                     "groups",
                     groups,
                     "mediaTested",

@@ -54,4 +54,6 @@ public interface NativeCallMapper extends BaseMapper<NativeCall> {
     );
     boolean eligible(@Param("callId") String callId);
     List<String> scan(@Param("after") String after);
+    /** 全局唯一忙线索引定位本人；随后仍须按会话/通话顺序加锁和核验。 */
+    String currentForUser(@Param("userId") long userId);
 }

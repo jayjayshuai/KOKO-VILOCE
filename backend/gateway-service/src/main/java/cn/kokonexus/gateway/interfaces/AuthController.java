@@ -39,6 +39,10 @@ public class AuthController {
     @org.springframework.beans.factory.annotation.Value("${koko.gateway.media-admission.enabled:false}")
     private boolean mediaEnabled;
 
+    /** 私人通话注销单独启用，不依赖公开语音开关。 */
+    @org.springframework.beans.factory.annotation.Value("${koko.gateway.native-calls-enabled:false}")
+    private boolean nativeCallsEnabled;
+
     @PostMapping("/register")
     @io.swagger.v3.oas.annotations.Operation(summary = "注册账号")
     public Mono<AuthResponse> register(@Valid @RequestBody RegisterRequest request, ServerWebExchange exchange) {
@@ -82,14 +86,20 @@ public class AuthController {
                 String user = StpUtil.getLoginIdAsString();
                 String scope = cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(StpUtil.getTokenValue());
                 StpUtil.logout();
-                if (
-                    mediaEnabled &&
-                    !mediaAdmission.retireWebsiteSession(
-                        new cn.kokonexus.api.voice.MediaWebsiteSessionCommand(user, scope)
-                    )
-                ) {
-                    throw new cn.kokonexus.api.voice.MediaAdmissionUnavailableException();
+                boolean registered = true;
+                var retirement = new cn.kokonexus.api.voice.MediaWebsiteSessionCommand(user, scope);
+                try {
+                    if (mediaEnabled) registered = mediaAdmission.retireWebsiteSession(retirement);
+                } catch (RuntimeException unavailable) {
+                    registered = false;
                 }
+                try {
+                    if (nativeCallsEnabled && !mediaAdmission.retireNativeWebsiteSession(retirement)) registered =
+                        false;
+                } catch (RuntimeException unavailable) {
+                    registered = false;
+                }
+                if (!registered) throw new cn.kokonexus.api.voice.MediaAdmissionUnavailableException();
                 return null;
             })
         )

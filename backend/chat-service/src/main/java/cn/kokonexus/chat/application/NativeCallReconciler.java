@@ -28,6 +28,8 @@ public class NativeCallReconciler {
     });
     /** 仅影响扫描顺序，不承担权限或持久状态。 */
     private String after;
+    /** 重复应用就绪事件不重复启动扫描。 */
+    private final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean();
 
     public NativeCallReconciler(NativeCallService calls) {
         this.calls = calls;
@@ -35,7 +37,7 @@ public class NativeCallReconciler {
 
     @EventListener(ApplicationReadyEvent.class)
     public void ready() {
-        executor.scheduleWithFixedDelay(this::tick, 2, 2, TimeUnit.SECONDS);
+        if (started.compareAndSet(false, true)) executor.scheduleWithFixedDelay(this::tick, 2, 2, TimeUnit.SECONDS);
     }
 
     private void tick() {
@@ -61,5 +63,12 @@ public class NativeCallReconciler {
     @PreDestroy
     public void close() {
         executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(6, TimeUnit.SECONDS)) LOG.warn(
+                "Native call reconciliation termination unconfirmed"
+            );
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

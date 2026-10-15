@@ -47,7 +47,8 @@ public class TrustedUserHeaderFilter implements GlobalFilter, Ordered {
         String scope = exchange.getAttribute(WEBSITE_SCOPE_ATTRIBUTE);
         if (
             loginId != null &&
-            path.matches("/api/voice/rooms/[1-9][0-9]{0,18}/interaction/media-credentials") &&
+            (path.matches("/api/voice/rooms/[1-9][0-9]{0,18}/interaction/media-credentials") ||
+                path.startsWith("/api/chat/calls")) &&
             cn.kokonexus.api.voice.WebsiteSessionScope.valid(scope)
         ) {
             requestBuilder.header(WEBSITE_SCOPE_HEADER, scope);

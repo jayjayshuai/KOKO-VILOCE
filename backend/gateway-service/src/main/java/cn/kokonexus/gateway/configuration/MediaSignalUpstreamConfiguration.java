@@ -8,12 +8,14 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class MediaSignalUpstreamConfiguration {
 
+    @org.springframework.beans.factory.annotation.Autowired
     public MediaSignalUpstreamConfiguration(
         @Value("${koko.gateway.media-admission.enabled:false}") boolean enabled,
         @Value("${LIVEKIT_SIGNAL_WS_URI:}") String signal,
-        @Value("${LIVEKIT_SIGNAL_HTTP_URI:}") String validation
+        @Value("${LIVEKIT_SIGNAL_HTTP_URI:}") String validation,
+        @Value("${koko.gateway.native-calls-enabled:false}") boolean nativeEnabled
     ) {
-        if (!enabled) return;
+        if (!enabled && !nativeEnabled) return;
         URI websocket = upstream(signal, "ws", "wss"),
             http = upstream(validation, "http", "https");
         if (
@@ -21,6 +23,11 @@ public class MediaSignalUpstreamConfiguration {
             effectivePort(websocket) != effectivePort(http) ||
             "wss".equals(websocket.getScheme()) != "https".equals(http.getScheme())
         ) throw new IllegalStateException("媒体信令及验证必须指向同一个显式上游");
+    }
+
+    /** 保留公开语音配置的原构造，私人候选缺省关闭。 */
+    public MediaSignalUpstreamConfiguration(boolean enabled, String signal, String validation) {
+        this(enabled, signal, validation, false);
     }
 
     /** 上游为服务基址，路由负责追加精确rtc路径；拒绝嵌入凭据、查询串和已有路径。 */

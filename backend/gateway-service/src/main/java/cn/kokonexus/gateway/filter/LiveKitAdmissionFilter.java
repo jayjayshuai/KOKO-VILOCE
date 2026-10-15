@@ -22,7 +22,12 @@ import reactor.core.scheduler.*;
 public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoCloseable {
 
     /** 仅这两条固定路由，编码别名不能绕过核验。 */
-    private static final Set<String> ROUTES = Set.of("livekit-signal", "livekit-validate");
+    private static final Set<String> ROUTES = Set.of(
+        "livekit-signal",
+        "livekit-validate",
+        "native-call-signal",
+        "native-call-validate"
+    );
     /** SDK新旧协议均走相同准入；不可用通配路径扩大为LiveKit管理API代理。 */ private static final String BASE =
         "/api/media/livekit";
     /** 精确版本路径，拒绝编码别名、额外段和双斜线。 */ private static final Set<String> SIGNAL_PATHS = Set.of(
@@ -36,20 +41,23 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
     /** voice域RPC适配器，不接收客户端身份。 */ private final MediaAdmissionClient client;
     /** 网站会话请求头与Cookie名称，转发前移除。 */ private final String sessionTokenName;
     /** 未验收的新信令入口默认关闭。 */ private final boolean enabled;
+    /** 私人通话独立开关，公开语音启用不会自动开放此入口。 */ private final boolean nativeEnabled;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public LiveKitAdmissionFilter(
         MediaAdmissionClient client,
         @Value("${koko.gateway.media-admission.enabled:false}") boolean enabled,
         @Value("${koko.gateway.media-admission.allowed-origins:}") String configuredOrigins,
         @Value("${sa-token.token-name:koko-nexus-token}") String sessionTokenName,
         @Value("${koko.gateway.media-admission.workers:2}") int workers,
-        @Value("${koko.gateway.media-admission.queued-tasks-per-thread:16}") int queue
+        @Value("${koko.gateway.media-admission.queued-tasks-per-thread:16}") int queue,
+        @Value("${koko.gateway.native-calls-enabled:false}") boolean nativeEnabled
     ) {
         if (workers < 1 || workers > 16 || queue < 1 || queue > 64) throw new IllegalArgumentException(
             "媒体准入线程/队列超界"
         );
         var allow = new HashSet<String>();
-        if (enabled) for (String origin : configuredOrigins.split(",")) {
+        if (enabled || nativeEnabled) for (String origin : configuredOrigins.split(",")) {
             URI uri = URI.create(origin.trim());
             String host = uri.getHost();
             boolean local = Set.of("127.0.0.1", "localhost", "[::1]", "::1").contains(host == null ? "" : host);
@@ -63,12 +71,25 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
             ) throw new IllegalArgumentException("媒体准入来源必须为HTTPS站点，环回开发除外");
             allow.add(origin.trim());
         }
-        if (enabled && allow.isEmpty()) throw new IllegalArgumentException("媒体准入来源未配置");
+        if ((enabled || nativeEnabled) && allow.isEmpty()) throw new IllegalArgumentException("媒体准入来源未配置");
         this.origins = Set.copyOf(allow);
         this.enabled = enabled;
+        this.nativeEnabled = nativeEnabled;
         this.client = client;
         this.sessionTokenName = sessionTokenName;
         this.worker = Schedulers.newBoundedElastic(workers, queue, "koko-media-admission", 60, true);
+    }
+
+    /** 公开语音原构造保持兼容，私人通话默认关闭。 */
+    public LiveKitAdmissionFilter(
+        MediaAdmissionClient client,
+        boolean enabled,
+        String origins,
+        String token,
+        int workers,
+        int queue
+    ) {
+        this(client, enabled, origins, token, workers, queue, false);
     }
 
     @Override
@@ -76,10 +97,24 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
         Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
         if (route == null || !ROUTES.contains(route.getId())) return chain.filter(exchange);
         exchange.getResponse().getHeaders().setCacheControl("no-store");
-        if (!enabled) return reject(exchange, 503, "MEDIA_ADMISSION_UNAVAILABLE");
+        boolean nativeCall = route.getId().startsWith("native-call-");
+        if (!(nativeCall ? nativeEnabled : enabled)) return reject(exchange, 503, "MEDIA_ADMISSION_UNAVAILABLE");
         String path = exchange.getRequest().getURI().getRawPath();
-        boolean socket = SIGNAL_PATHS.contains(path) && "livekit-signal".equals(route.getId());
-        boolean validation = VALIDATION_PATHS.contains(path) && "livekit-validate".equals(route.getId());
+        String relativePath =
+            nativeCall && path.startsWith("/api/media/native-call/livekit/")
+                ? BASE + path.substring("/api/media/native-call/livekit".length())
+                : path;
+        boolean socket =
+            SIGNAL_PATHS.contains(relativePath) &&
+            (nativeCall ? "native-call-signal" : "livekit-signal").equals(route.getId());
+        boolean validation =
+            VALIDATION_PATHS.contains(relativePath) &&
+            (nativeCall ? "native-call-validate" : "livekit-validate").equals(route.getId());
+        if (nativeCall && !path.startsWith("/api/media/native-call/livekit/")) return reject(
+            exchange,
+            400,
+            "MEDIA_ADMISSION_INVALID"
+        );
         if (exchange.getRequest().getMethod() != HttpMethod.GET || (!socket && !validation)) return reject(
             exchange,
             400,
@@ -132,7 +167,7 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
             cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(websiteToken)
         );
         // 只捕获本次鉴权的故障；下游传输错误不伪装为鉴权成功或改写已升级响应。
-        return Mono.fromCallable(() -> client.admit(command))
+        return Mono.fromCallable(() -> nativeCall ? client.admitNative(command) : client.admit(command))
             .subscribeOn(worker)
             .timeout(Duration.ofSeconds(3))
             .onErrorResume(error -> Mono.empty())
@@ -140,7 +175,7 @@ public class LiveKitAdmissionFilter implements GlobalFilter, Ordered, AutoClosea
                 if (!allowed) return reject(exchange, 403, "MEDIA_ADMISSION_DENIED").thenReturn(false);
                 if (socket) exchange
                     .getAttributes()
-                    .put(MediaConnectionProof.ATTRIBUTE, new MediaConnectionProof(command, websiteToken));
+                    .put(MediaConnectionProof.ATTRIBUTE, new MediaConnectionProof(command, websiteToken, nativeCall));
                 var upstream = request
                     .mutate()
                     .headers(headers -> {

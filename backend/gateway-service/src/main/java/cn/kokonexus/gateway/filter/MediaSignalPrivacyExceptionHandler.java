@@ -17,7 +17,12 @@ import reactor.core.publisher.Mono;
 public class MediaSignalPrivacyExceptionHandler implements WebExceptionHandler, Ordered {
 
     /** 与准入过滤器相同的固定候选路由，不拦截普通业务异常。 */
-    private static final Set<String> ROUTES = Set.of("livekit-signal", "livekit-validate");
+    private static final Set<String> ROUTES = Set.of(
+        "livekit-signal",
+        "livekit-validate",
+        "native-call-signal",
+        "native-call-validate"
+    );
 
     @Override
     public Mono<Void> handle(ServerWebExchange exchange, Throwable error) {

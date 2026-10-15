@@ -79,4 +79,7 @@
     SELECT id FROM chat_call WHERE state IN ('RINGING','ACTIVE')
       <if test="after != null">AND id &gt; #{after}</if> ORDER BY id LIMIT 50
   </select>
+  <select id="currentForUser" resultType="string" useCache="false" flushCache="true">
+    SELECT call_id FROM chat_call_participant WHERE busy_user_id=#{userId}
+  </select>
 </mapper>

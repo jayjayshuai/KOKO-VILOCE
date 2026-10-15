@@ -53,15 +53,15 @@ public class MediaWebSocketLease implements AutoCloseable {
             var denied = Mono.fromCallable(() -> {
                 if (!website.active(proof.websiteToken(), proof.admission().userId())) {
                     // 仅确定失效才登记撤权；Redis故障抛异常时不将未知状态当作注销。
-                    media.retireWebsiteSession(
-                        new cn.kokonexus.api.voice.MediaWebsiteSessionCommand(
-                            proof.admission().userId(),
-                            cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(proof.websiteToken())
-                        )
+                    var command = new cn.kokonexus.api.voice.MediaWebsiteSessionCommand(
+                        proof.admission().userId(),
+                        cn.kokonexus.api.voice.WebsiteSessionScope.fromToken(proof.websiteToken())
                     );
+                    if (proof.nativeCall()) media.retireNativeWebsiteSession(command);
+                    else media.retireWebsiteSession(command);
                     return false;
                 }
-                return media.retain(proof.admission());
+                return proof.nativeCall() ? media.retainNative(proof.admission()) : media.retain(proof.admission());
             })
                 .subscribeOn(workers)
                 .timeout(Duration.ofSeconds(3))

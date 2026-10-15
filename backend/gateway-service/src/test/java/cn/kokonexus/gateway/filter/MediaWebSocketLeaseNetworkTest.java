@@ -30,6 +30,15 @@ class MediaWebSocketLeaseNetworkTest {
 
     @Test
     void periodicRevocationClosesBothProxyPeersAndReturnsSlotWithoutLeakingProof() throws Exception {
+        checkNetwork(false);
+    }
+
+    @Test
+    void nativeCallUsesItsOwnRpcForAdmissionRetainAndWebsiteRetirementOnRealSockets() throws Exception {
+        checkNetwork(true);
+    }
+
+    private void checkNetwork(boolean nativeCall) throws Exception {
         var closed = new AtomicInteger();
         var retained = new AtomicInteger();
         var valid = new AtomicBoolean(true);
@@ -48,18 +57,21 @@ class MediaWebSocketLeaseNetworkTest {
             )
             .bindNow();
         var media = mock(MediaAdmissionClient.class);
-        when(media.admit(any())).thenReturn(true);
-        when(media.retain(any())).thenAnswer(call -> {
+        if (nativeCall) when(media.admitNative(any())).thenReturn(true);
+        else when(media.admit(any())).thenReturn(true);
+        org.mockito.stubbing.Answer<Boolean> checking = call -> {
             thread.set(Thread.currentThread().getName());
             retained.incrementAndGet();
             return valid.get();
-        });
+        };
+        if (nativeCall) when(media.retainNative(any())).thenAnswer(checking);
+        else when(media.retain(any())).thenAnswer(checking);
         var website = mock(MediaWebsiteSessionCheck.class);
         when(website.active("synthetic-cookie", "42")).thenAnswer(call -> site.get());
         String origin = "http://127.0.0.1:45180";
         try (
             var guard = new MediaWebSocketLease(media, website, 50, 1, 1, 4);
-            var admission = new LiveKitAdmissionFilter(media, true, origin, "koko-nexus-token", 1, 4)
+            var admission = new LiveKitAdmissionFilter(media, !nativeCall, origin, "koko-nexus-token", 1, 4, nativeCall)
         ) {
             var beans = new StaticListableBeanFactory(Map.of("mediaWebSocketLease", guard));
             var decorator = MediaWebSocketConfiguration.mediaWebSocketLeaseDecorator(
@@ -72,9 +84,9 @@ class MediaWebSocketLeaseNetworkTest {
                 );
             var strip = new StripPrefixGatewayFilterFactory();
             var config = new StripPrefixGatewayFilterFactory.Config();
-            config.setParts(3);
+            config.setParts(nativeCall ? 4 : 3);
             var route = Route.async()
-                .id("livekit-signal")
+                .id(nativeCall ? "native-call-signal" : "livekit-signal")
                 .uri("ws://127.0.0.1:" + backend.port())
                 .predicate(ignored -> true)
                 .filter(new OrderedGatewayFilter(strip.apply(config), 0))
@@ -101,7 +113,10 @@ class MediaWebSocketLeaseNetworkTest {
                 .bindNow();
             try (var browser = HttpClient.newHttpClient()) {
                 URI uri = URI.create(
-                    "ws://127.0.0.1:" + gateway.port() + "/api/media/livekit/rtc?access_token=synthetic-token"
+                    "ws://127.0.0.1:" +
+                        gateway.port() +
+                        (nativeCall ? "/api/media/native-call/livekit" : "/api/media/livekit") +
+                        "/rtc?access_token=synthetic-token"
                 );
                 var first = new Probe();
                 var socket = connect(browser, uri, origin, first);
@@ -127,10 +142,19 @@ class MediaWebSocketLeaseNetworkTest {
                 site.set(false);
                 assertThat(after.closed.get(3, TimeUnit.SECONDS)).isEqualTo(1008);
                 site.set(true);
-                doThrow(new cn.kokonexus.api.voice.MediaAdmissionUnavailableException()).when(media).retain(any());
+                if (nativeCall) doThrow(new cn.kokonexus.api.voice.MediaAdmissionUnavailableException())
+                    .when(media)
+                    .retainNative(any());
+                else doThrow(new cn.kokonexus.api.voice.MediaAdmissionUnavailableException()).when(media).retain(any());
                 var failure = new Probe();
                 connect(browser, uri, origin, failure);
                 assertThat(failure.closed.get(3, TimeUnit.SECONDS)).isEqualTo(1008);
+                if (nativeCall) {
+                    verify(media, atLeastOnce()).retireNativeWebsiteSession(any());
+                    verify(media, never()).admit(any());
+                    verify(media, never()).retain(any());
+                    verify(media, never()).retireWebsiteSession(any());
+                }
                 assertThat(
                     new MediaConnectionProof(
                         new cn.kokonexus.api.voice.MediaAdmissionCommand("42", "synthetic-token"),

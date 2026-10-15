@@ -19,6 +19,9 @@ class WebsiteScopeHeaderTest {
             "/api/voice/rooms/9/interaction/media-credentials",
             "/api/media/livekit/rtc/v1",
             "/api/voice/rooms/9/interaction",
+            "/api/chat/calls",
+            "/api/chat/calls/36f1fb46-91cd-4f32-b174-55b0c5d4bf17/commands",
+            "/api/media/native-call/livekit/rtc",
         }) {
             var exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.post(path).header(TrustedUserHeaderFilter.WEBSITE_SCOPE_HEADER, "forged")
@@ -29,7 +32,9 @@ class WebsiteScopeHeaderTest {
                 .filter(exchange, next -> {
                     assertThat(
                         next.getRequest().getHeaders().getFirst(TrustedUserHeaderFilter.WEBSITE_SCOPE_HEADER)
-                    ).isEqualTo(path.endsWith("/media-credentials") ? scope : null);
+                    ).isEqualTo(
+                        path.endsWith("/media-credentials") || path.startsWith("/api/chat/calls") ? scope : null
+                    );
                     return Mono.empty();
                 })
                 .block();

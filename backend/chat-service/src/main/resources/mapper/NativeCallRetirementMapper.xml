@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.chat.persistence.NativeCallRetirementMapper">
+  <!-- 不持事务做网络；成功后重复清退75秒覆盖一分钟初次JWT及在途握手，不把TTL当持续撤权。 -->
+  <select id="due" resultType="cn.kokonexus.chat.domain.NativeCallRetirement" useCache="false" flushCache="true">
+    SELECT job_key,call_id,action,media_identity,attempts FROM chat_call_media_retirement
+    WHERE (status='READY' AND (next_attempt_at IS NULL OR next_attempt_at &lt;= UTC_TIMESTAMP(6)))
+      OR (status='PROCESSING' AND lease_until &lt;= UTC_TIMESTAMP(6))
+    ORDER BY created_at,job_key LIMIT 1 FOR UPDATE SKIP LOCKED
+  </select>
+  <update id="claim">
+    UPDATE chat_call_media_retirement SET status='PROCESSING',lease_token=#{lease},lease_until=UTC_TIMESTAMP(6)+INTERVAL 15 SECOND
+    WHERE job_key=#{key} AND attempts &lt; 10 AND
+      ((status='READY' AND (next_attempt_at IS NULL OR next_attempt_at &lt;= UTC_TIMESTAMP(6)))
+      OR (status='PROCESSING' AND lease_until &lt;= UTC_TIMESTAMP(6)))
+  </update>
+  <update id="confirmed">
+    UPDATE chat_call_media_retirement SET
+      status=CASE WHEN created_at &lt;= UTC_TIMESTAMP(6)-INTERVAL 75 SECOND THEN 'DONE' ELSE 'READY' END,
+      next_attempt_at=UTC_TIMESTAMP(6)+INTERVAL 5 SECOND,confirmed_at=UTC_TIMESTAMP(6),lease_token=NULL,lease_until=NULL
+    WHERE job_key=#{key} AND status='PROCESSING' AND lease_token=#{lease} AND lease_until &gt; UTC_TIMESTAMP(6)
+  </update>
+  <update id="failed">
+    UPDATE chat_call_media_retirement SET
+      status=CASE WHEN attempts &gt;= 9 THEN 'DEAD' ELSE 'READY' END,
+      next_attempt_at=TIMESTAMPADD(SECOND,LEAST(300,POW(2,attempts+1)),UTC_TIMESTAMP(6)),
+      attempts=attempts+1,lease_token=NULL,lease_until=NULL
+    WHERE job_key=#{key} AND status='PROCESSING' AND lease_token=#{lease} AND lease_until &gt; UTC_TIMESTAMP(6)
+  </update>
+</mapper>
