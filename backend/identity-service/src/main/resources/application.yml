@@ -22,6 +22,13 @@ koko.asset-binding.operations-enabled: ${ASSET_BINDING_OPERATIONS_ENABLED:false}
 koko.asset-binding.replay-enabled: ${ASSET_BINDING_REPLAY_ENABLED:false}
 koko.asset-binding.metrics-enabled: ${ASSET_BINDING_METRICS_ENABLED:false}
 koko.operations.enabled: ${OPERATIONS_ENABLED:false}
+koko.discord:
+  enabled: ${DISCORD_ENABLED:false}
+  client-id: ${DISCORD_CLIENT_ID:}
+  client-secret: ${DISCORD_CLIENT_SECRET:}
+  redirect-uri: ${DISCORD_REDIRECT_URI:}
+  encryption-key-id: ${DISCORD_ENCRYPTION_KEY_ID:}
+  encryption-key: ${DISCORD_ENCRYPTION_KEY:}
 
 dubbo:
   application:
