@@ -233,7 +233,15 @@ public class NativeCallService {
         if (type.equals("END") && actor != row.getInitiatorId()) throw new ForbiddenOperationException(
             "只有发起者可以结束所有人的通话"
         );
-        if (row.getVersion() != expectedVersion) throw conflict("通话状态已变化，请先刷新");
+        // 群内其他人接听可先推进全局版本，但不消费本人的邀请。仅允许仍然待接听的
+        // 本人按原明确意图接听；下方仍核验响铃期限、成员UUID、联系授权及所有有效租约。
+        // 同一人的跨网站抢接、未来版本和其他动作不放宽，原UUID收据也保留原请求版本。
+        boolean independentAcceptance =
+            type.equals("ACCEPT") &&
+            row.getVersion() > expectedVersion &&
+            row.getState().equals("ACTIVE") &&
+            self.getState().equals("INVITED");
+        if (row.getVersion() != expectedVersion && !independentAcceptance) throw conflict("通话状态已变化，请先刷新");
         if (row.getState().equals("ENDED")) {
             if (!type.equals("LEAVE") && !type.equals("END")) throw conflict("通话已经结束");
         } else {

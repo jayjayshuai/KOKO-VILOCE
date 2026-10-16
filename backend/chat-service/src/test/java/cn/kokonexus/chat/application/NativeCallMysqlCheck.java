@@ -209,6 +209,73 @@ public final class NativeCallMysqlCheck {
         calls.command(4, SCOPE, groupRing.id(), UUID.randomUUID().toString(), 4, "LEAVE");
         groups.add("GROUP_EXPLICIT_TARGETS_THREE_CONSENTS_CALLER_CAN_LEAVE_TWO_CONTINUE_NONINVITEE_DENIED");
 
+        String concurrentGroup = conversation(jdbc, "GROUP", 501, 502, 503, 504);
+        var concurrentRing = calls.invite(
+            501,
+            SCOPE,
+            concurrentGroup,
+            UUID.randomUUID().toString(),
+            List.of(502L, 503L, 504L)
+        );
+        var accepts = Map.of(502L, UUID.randomUUID().toString(), 503L, UUID.randomUUID().toString());
+        var consentBarrier = new CyclicBarrier(2);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var results = new java.util.ArrayList<java.util.concurrent.Future<NativeCallService.Result>>();
+            for (long invitee : List.of(502L, 503L)) {
+                results.add(
+                    executor.submit(() -> {
+                        consentBarrier.await(5, TimeUnit.SECONDS);
+                        return calls.command(invitee, SCOPE, concurrentRing.id(), accepts.get(invitee), 1, "ACCEPT");
+                    })
+                );
+            }
+            var versions = new java.util.HashSet<Long>();
+            for (var result : results) versions.add(result.get(10, TimeUnit.SECONDS).appliedVersion());
+            check(versions.equals(java.util.Set.of(2L, 3L)), "Concurrent consent lost or duplicated a control version");
+        }
+        check(
+            calls
+                .read(501, concurrentRing.id())
+                .participants()
+                .stream()
+                .filter(p -> p.state().equals("ACCEPTED"))
+                .count() == 3,
+            "Independent invitees failed to accept the same observed version"
+        );
+        for (long invitee : List.of(502L, 503L)) {
+            check(
+                calls
+                    .command(invitee, SCOPE, concurrentRing.id(), accepts.get(invitee), 1, "ACCEPT")
+                    .current()
+                    .version() == 3,
+                "Original concurrent accept was not recoverable"
+            );
+        }
+        expect(IllegalStateException.class, () ->
+            calls.command(502, OTHER_SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 1, "ACCEPT")
+        );
+        expect(IllegalStateException.class, () ->
+            calls.command(504, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 4, "ACCEPT")
+        );
+        expect(IllegalStateException.class, () ->
+            calls.command(502, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 1, "LEAVE")
+        );
+        jdbc.update(
+            "UPDATE chat_call SET ring_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE id=?",
+            concurrentRing.id()
+        );
+        expect(IllegalStateException.class, () ->
+            calls.command(504, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 1, "ACCEPT")
+        );
+        check(calls.read(501, concurrentRing.id()).version() == 3, "Rejected stale requests changed call facts");
+        calls.command(501, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 3, "END");
+        expect(IllegalStateException.class, () ->
+            calls.command(504, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 1, "ACCEPT")
+        );
+        groups.add(
+            "CONCURRENT_INVITEES_SAME_VERSION_ACCEPT_EXACT_RECEIPTS_WITH_CROSS_SCOPE_FUTURE_LEAVE_EXPIRY_AND_ENDED_FENCES"
+        );
+
         String busyA = conversation(jdbc, "DIRECT", 7, 8),
             busyB = conversation(jdbc, "DIRECT", 7, 9);
         var first = calls.invite(7, SCOPE, busyA, UUID.randomUUID().toString(), null);
