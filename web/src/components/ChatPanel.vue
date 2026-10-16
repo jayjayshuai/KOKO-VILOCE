@@ -5,6 +5,13 @@ import { chatSafetyApi } from '../services/chat-safety';
 import { captureUnauthorizedSession } from '../services/http';
 import ChatSafetyPanel from './ChatSafetyPanel.vue';
 import ChatHistoryTools from './ChatHistoryTools.vue';
+import { useAuthStore } from '../stores/auth';
+import { useNativeCallStore } from '../stores/native-call';
+import { useRoute, useRouter } from 'vue-router';
+const auth = useAuthStore(),
+  nativeCalls = useNativeCallStore(),
+  route = useRoute(),
+  router = useRouter();
 const props = defineProps<{
   /** 当前已认证用户 ID，服务端仍独立校验权限。 */ userId: string;
   /** 路由内嵌模式；离开页面仍执行 socket/订阅释放。 */ embedded?: boolean;
@@ -164,6 +171,11 @@ async function select(c: Conversation) {
   const signal = AbortSignal.any([reads.signal, historyRequest.signal]);
   if (activeId.value !== c.id) body.value = '';
   activeId.value = c.id;
+  // 手动选择也更新定位，避免通话条返回同一个旧query时无法切回原聊天。
+  if (route.name === 'messages' && route.query.conversation !== c.id)
+    void router.replace({ query: { ...route.query, conversation: c.id } }).catch(() => {
+      if (!disposed && activeId.value === c.id) error.value = '聊天地址未更新，可从会话列表重新打开。';
+    });
   messages.value = [];
   editTitle.value = c.title;
   hasOlder.value = false;
@@ -466,6 +478,10 @@ function backToConversations() {
   historyRequest.abort();
   historyRequest = new AbortController();
   activeId.value = '';
+  if (route.name === 'messages' && route.query.conversation)
+    void router.replace({ query: { ...route.query, conversation: undefined } }).catch(() => {
+      if (!disposed) error.value = '聊天地址未更新，可从会话列表重新打开。';
+    });
   messages.value = [];
   body.value = '';
   loading.value = false;
@@ -479,6 +495,8 @@ onMounted(async () => {
   try {
     await loadConversations();
     await loadBlocked();
+    const requested = conversations.value.find((c) => c.id === route.query.conversation);
+    if (requested) await select(requested);
   } catch (e) {
     error.value = failure(e);
   }
@@ -494,6 +512,13 @@ onMounted(async () => {
     if (document.visibilityState === 'visible') void sync();
   }, 15000);
 });
+watch(
+  () => route.query.conversation,
+  (id) => {
+    const requested = conversations.value.find((c) => c.id === id && c.id !== activeId.value);
+    if (requested && !disposed) void select(requested);
+  },
+);
 watch(safetyOpen, (open) => {
   if (!open) void sync();
 });
@@ -604,6 +629,13 @@ onUnmounted(() => {
         <div class="chat-thread-title"
           ><button class="secondary mobile-only" @click="backToConversations">返回会话</button
           ><h3>{{ active.title }}</h3
+          ><button
+            v-if="nativeCalls.enabled"
+            class="secondary"
+            :disabled="nativeCalls.occupied || blockedDirect"
+            title="对方接听后自动连接并尝试开启麦克风"
+            @click="nativeCalls.open(active, props.userId, auth.sessionRevision)"
+            >语音通话</button
           ><button
             class="secondary"
             @click="

@@ -92,6 +92,9 @@ async function setup(relative, network, props = {}, globals = {}, additionalModu
     ),
     './ChatSafetyPanel.vue': { default: {} },
     './ChatHistoryTools.vue': { default: {} },
+    '../stores/auth': { useAuthStore: () => ({ user: { id: props.userId ?? '42' }, sessionRevision: 1 }) },
+    '../stores/native-call': { useNativeCallStore: () => ({ enabled: false, occupied: false }) },
+    'vue-router': { useRoute: () => vue.reactive({ query: {} }), useRouter: () => ({ replace: async () => {} }) },
   }
   const additions = await additionalModules(api, modules.vue)
   const namespace = await execute(
@@ -1053,6 +1056,9 @@ async function app(overrides = {}, authOverrides = {}, globals = {}) {
         {
           vue: runtimeVue,
           '../api': { ApiRequestError },
+          '../services/audio-ownership': await execute(
+            await readFile(new URL('../src/services/audio-ownership.ts', import.meta.url), 'utf8'),
+          ),
         },
       )
       const editorGuardModule = await execute(
@@ -1085,6 +1091,7 @@ async function app(overrides = {}, authOverrides = {}, globals = {}) {
         './components/VoiceInteractionPanel.vue': { default: {} },
         './components/VoicePlaybackControls.vue': { default: {} },
         './components/PersistentVoiceCallBar.vue': { default: {} },
+        './components/NativeCallSession.vue': { default: {} },
         './components/CreatorSaveStatus.vue': { default: {} },
       }
     },

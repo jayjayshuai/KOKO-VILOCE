@@ -1,6 +1,7 @@
 import { nextTick, onBeforeUnmount, ref, shallowRef, watch, type Ref } from 'vue'
 import type { Room as LiveKitRoom, RemoteTrack } from 'livekit-client'
 import { ApiRequestError, type VoiceRoom, type VoiceJoinCredential } from '../api'
+import { audioConnectionOwnership } from '../services/audio-ownership'
 
 /** 本人会话内的真实媒体连接；切换/取消/登出后旧异步结果不能重新入房或开启麦克风。 */
 export function useVoiceConnection(
@@ -49,6 +50,10 @@ export function useVoiceConnection(
   let epoch = 0,
     disposed = false,
     request = new AbortController()
+  /** SDK完全释放前不允许另一个公开/私人连接占用；旧异步释放只针对原标识。 */
+  let ownership: symbol | null = null
+  /** 未完成的设备授权也占用原连接；SDK断开不一定取消浏览器权限请求。 */
+  const captureOperations = new Map<symbol, Promise<void>>()
   const active = (revision: number, userId: string, sessionRevision: number) =>
     !disposed &&
     epoch === revision &&
@@ -98,6 +103,9 @@ export function useVoiceConnection(
     request.abort()
     const leavingRevision = epoch
     const old = connection.value
+    const oldOwnership = ownership
+    const captureSettlement = oldOwnership ? captureOperations.get(oldOwnership) : undefined
+    ownership = null
     connection.value = null
     connectedVoice.value = null
     voiceJoining.value = null
@@ -121,11 +129,13 @@ export function useVoiceConnection(
       old.removeAllListeners()
       try {
         await old.disconnect()
+        if (captureSettlement) await captureSettlement
+        audioConnectionOwnership.release(oldOwnership)
       } catch {
         if (!disposed && epoch === leavingRevision && !connection.value)
           voiceError.value = '媒体断开未确认，请检查浏览器麦克风权限。'
       }
-    }
+    } else audioConnectionOwnership.release(oldOwnership)
   }
 
   /** 授权失效的旧断开可能等待SDK；迟到反馈不得覆盖随后创建的新连接。 */
@@ -162,6 +172,8 @@ export function useVoiceConnection(
     /** 接口/本站契约错误保留反馈；SDK加载与连接错误只展示固定安全提示。 */
     let failurePhase: 'credential' | 'sdk' | 'connection' = 'credential'
     try {
+      ownership = audioConnectionOwnership.acquire()
+      if (!ownership) throw new Error('已有另一个语音连接正在使用，请先结束当前通话再连接。')
       // 公网明文页面不签发/传送RTC凭据；浏览器仅环回开发环境允许HTTP。
       const page = globalThis.location
       const loopback = page && ['localhost', '127.0.0.1', '[::1]', '::1'].includes(page.hostname)
@@ -172,7 +184,7 @@ export function useVoiceConnection(
       if (!current()) return
       const endpoint = new URL(credential.url)
       // 准入代理使用网站Cookie绑定身份；不能把该入口跨源配置成“看起来可用”的SDK连接。
-      if (/\/(?:api|koko-api)\/media\/livekit\/?$/.test(endpoint.pathname) && page) {
+      if (/\/(?:api|koko-api)\/media\/(?:native-call\/)?livekit\/?$/.test(endpoint.pathname) && page) {
         const sameProtocol = page.protocol === 'https:' ? 'wss:' : 'ws:'
         const pageUrl = new URL(page.href)
         if (endpoint.protocol !== sameProtocol || endpoint.host !== pageUrl.host)
@@ -340,6 +352,12 @@ export function useVoiceConnection(
       sessionRevision = session.sessionRevision
     microphoneBusy.value = true
     voiceError.value = ''
+    const deviceOwnership = ownership
+    let finishCapture!: () => void
+    const captureSettled = new Promise<void>((resolve) => {
+      finishCapture = resolve
+    })
+    if (deviceOwnership) captureOperations.set(deviceOwnership, captureSettled)
     try {
       await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled)
       if (active(revision, userId, sessionRevision) && connection.value === room)
@@ -359,6 +377,9 @@ export function useVoiceConnection(
         voiceError.value = microphoneMessage(cause)
       }
     } finally {
+      if (deviceOwnership && captureOperations.get(deviceOwnership) === captureSettled)
+        captureOperations.delete(deviceOwnership)
+      finishCapture()
       if (active(revision, userId, sessionRevision)) microphoneBusy.value = false
     }
   }

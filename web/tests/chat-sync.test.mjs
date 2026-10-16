@@ -114,6 +114,9 @@ async function harness(overrides = {}) {
     '../services/http': { captureUnauthorizedSession: () => () => expired.push('current-connection') },
     './ChatSafetyPanel.vue': { default: {} },
     './ChatHistoryTools.vue': { default: {} },
+    '../stores/auth': { useAuthStore: () => ({ user: { id: '42' }, sessionRevision: 1 }) },
+    '../stores/native-call': { useNativeCallStore: () => ({ enabled: false, occupied: false }) },
+    'vue-router': { useRoute: () => vue.reactive({ query: {} }), useRouter: () => ({ replace: async () => {} }) },
   }
   const module = new vm.SourceTextModule(code, { context })
   await module.link((name) => {

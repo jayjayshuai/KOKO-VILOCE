@@ -4,6 +4,8 @@ import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
 import * as vue from 'vue'
+import { executeTs } from './helpers/execute-ts.mjs'
+const { createAudioConnectionOwnership } = await executeTs('services/audio-ownership.ts')
 
 // 执行实际生产composable和Vue响应性；SDK/网络桩不证明真实RTC或浏览器设备权限。
 class ApiRequestError extends Error {
@@ -34,6 +36,7 @@ async function until(predicate) {
 }
 
 async function setup(network, options = {}) {
+  const ownership = options.ownership ?? createAudioConnectionOwnership()
   const hooks = [],
     rooms = [],
     calls = []
@@ -114,7 +117,12 @@ async function setup(network, options = {}) {
   const context = vm.createContext({ AbortController, Error, Set, URL, location: options.location })
   const module = new vm.SourceTextModule(code, { context })
   await module.link((specifier) => {
-    const values = specifier === 'vue' ? { ...vue, onBeforeUnmount: (hook) => hooks.push(hook) } : { ApiRequestError }
+    const values =
+      specifier === 'vue'
+        ? { ...vue, onBeforeUnmount: (hook) => hooks.push(hook) }
+        : specifier === '../services/audio-ownership'
+          ? { audioConnectionOwnership: ownership }
+          : { ApiRequestError }
     return new vm.SyntheticModule(
       Object.keys(values),
       function () {
@@ -148,6 +156,7 @@ async function setup(network, options = {}) {
     calls,
     root,
     hooks,
+    ownership,
     scope,
     dispose: async () => {
       hooks.forEach((hook) => hook())
@@ -246,8 +255,11 @@ test('较早加入等待旧断开时不能覆盖随后开始的新加入', async
   const first = s.state.joinVoiceRoom(target('2'))
   await until(() => s.rooms[0].disconnects === 1)
   await s.state.joinVoiceRoom(target('3'))
+  assert.equal(s.state.connectedVoice.value, null)
+  assert.equal(s.rooms.length, 1)
   stop.resolve()
   await first
+  await s.state.joinVoiceRoom(target('3'))
   assert.equal(s.state.connectedVoice.value.id, '3')
   assert.deepEqual(
     s.calls.filter((call) => call[0] === 'credential').map((call) => call[1]),
@@ -267,9 +279,13 @@ test('设备授权迟到完成只关闭旧轨道，不改变新房间', async ()
   assert.equal(s.state.microphoneBusy.value, true)
   await s.state.toggleMicrophone()
   assert.deepEqual(s.rooms[0].microphoneCalls, [true])
-  await s.state.joinVoiceRoom(target('2'))
+  const switching = s.state.joinVoiceRoom(target('2'))
+  await until(() => s.rooms[0].disconnects > 0)
+  assert.equal(s.state.connectedVoice.value, null)
+  assert.equal(s.rooms.length, 1)
   permission.resolve()
   await enabling
+  await switching
   assert.equal(s.state.connectedVoice.value.id, '2')
   assert.equal(s.state.microphoneEnabled.value, false)
   assert.deepEqual(s.rooms[0].microphoneCalls, [true, false])
@@ -387,6 +403,7 @@ test('媒体准入租约结束清理连接与麦克风，不自动重连/索取�
   assert.equal(s.state.connectedVoice.value, null)
   assert.equal(s.calls.filter((call) => call[0] === 'credential').length, 1)
   assert.match(s.state.voiceError.value, /不会自动开麦/)
+  await until(() => !s.ownership.occupied())
   await s.state.joinVoiceRoom(target('2'))
   old()
   assert.equal(s.state.connectedVoice.value.id, '2')
@@ -722,9 +739,12 @@ test('授权失效触发的旧断开迟到不能污染新房间播放或设备�
       await until(() => s.rooms[0].disconnects === 1)
       current = true
       await s.state.joinVoiceRoom({ ...target('2'), controlled: true })
-      s.state.voiceError.value = '新房间反馈'
+      assert.equal(s.state.connectedVoice.value, null)
+      assert.equal(s.rooms.length, 1)
       stop.resolve()
       await revoked
+      await s.state.joinVoiceRoom({ ...target('2'), controlled: true })
+      s.state.voiceError.value = '新房间反馈'
       assert.equal(s.state.connectedVoice.value.id, '2')
       assert.equal(s.state.voiceError.value, '新房间反馈')
     } finally {
@@ -811,7 +831,7 @@ test('明确断开先同步停止本人采集，不等待SDK网络释放', async
   }
 })
 
-test('旧连接失败后等待SDK断开，迟到错误不能覆盖同账号新房间', async () => {
+test('旧连接清理未完成时阻止新音频连接，确认释放后明确重试才能进入新房间', async () => {
   const stop = deferred()
   const s = await setup(undefined, {
     connect: (room) => {
@@ -823,13 +843,39 @@ test('旧连接失败后等待SDK断开，迟到错误不能覆盖同账号新�
     const first = s.state.joinVoiceRoom(target('1'))
     await until(() => s.rooms[0]?.disconnects === 1)
     await s.state.joinVoiceRoom(target('2'))
-    s.state.voiceError.value = '新房间反馈'
+    assert.equal(s.rooms.length, 1)
+    assert.equal(s.state.connectedVoice.value, null)
+    assert.match(s.state.voiceError.value, /另一个语音连接/)
     stop.resolve()
     await first
+    await s.state.joinVoiceRoom(target('2'))
+    s.state.voiceError.value = '新房间反馈'
     assert.equal(s.state.connectedVoice.value.id, '2')
     assert.equal(s.state.voiceError.value, '新房间反馈')
   } finally {
     stop.resolve()
     await s.dispose()
   }
+})
+
+test('公开语音与私人媒体适配器共用所有权，忙碌时不签发凭据，旧释放不能影响新连接', async () => {
+  const ownership = createAudioConnectionOwnership(),
+    first = await setup(null, { ownership }),
+    second = await setup(null, { ownership })
+  try {
+    await first.state.joinVoiceRoom(target('1'))
+    await second.state.joinVoiceRoom(target('2'))
+    assert.equal(second.calls.length, 0)
+    assert.equal(second.rooms.length, 0)
+    assert.match(second.state.voiceError.value, /另一个语音连接/)
+    await first.state.leaveVoiceRoom()
+    await second.state.joinVoiceRoom(target('2'))
+    await first.state.leaveVoiceRoom()
+    assert.equal(ownership.occupied(), true)
+    assert.equal(second.state.phase.value, 'connected')
+  } finally {
+    await first.dispose()
+    await second.dispose()
+  }
+  await until(() => !ownership.occupied())
 })

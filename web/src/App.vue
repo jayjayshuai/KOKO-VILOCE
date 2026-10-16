@@ -52,6 +52,7 @@ import { useVoiceConnection } from './composables/voice-connection';
 import VoiceInteractionPanel from './components/VoiceInteractionPanel.vue';
 import VoicePlaybackControls from './components/VoicePlaybackControls.vue';
 import PersistentVoiceCallBar from './components/PersistentVoiceCallBar.vue';
+import NativeCallSession from './components/NativeCallSession.vue';
 import CreatorSaveStatus from './components/CreatorSaveStatus.vue';
 import { useCreatorEditorWrites } from './composables/creator-editor-writes';
 import { useUnsavedEditorGuard } from './composables/unsaved-editor-guard';
@@ -1561,6 +1562,7 @@ onBeforeUnmount(() => {
         ><component :is="Component" :key="workspaceViewKey" v-bind="viewBindings" /></KeepAlive
     ></RouterView>
     <PersistentVoiceCallBar />
+    <NativeCallSession />
   </WorkspaceShell>
   <div
     v-if="dialog"

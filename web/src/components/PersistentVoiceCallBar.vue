@@ -88,7 +88,7 @@ const label = computed(() =>
 </template>
 <style scoped>
 :global(.workspace-shell .workspace-content) {
-  padding-bottom: calc(32px + var(--koko-voice-call-space, 0px));
+  padding-bottom: calc(56px + var(--koko-voice-call-space, 0px) + var(--koko-native-call-space, 0px));
 }
 .persistent-voice-call {
   position: fixed;
