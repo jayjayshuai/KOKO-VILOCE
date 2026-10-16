@@ -278,18 +278,19 @@ public class ChatSocketServer implements SmartLifecycle {
                         }
                         long userId = Long.parseLong(identity);
                         String cookieHeader = request.headers().get(HttpHeaderNames.COOKIE);
+                        String tokenName = security.tokenName();
                         // Cookie decoder 会合并同名 Cookie；先拒绝歧义身份，不能任意选取其中一个令牌。
                         if (
                             java.util.Arrays.stream(cookieHeader.split(";", -1))
                                 .map(String::trim)
-                                .filter(part -> part.startsWith("koko-nexus-token="))
+                                .filter(part -> part.startsWith(tokenName + "="))
                                 .count() != 1
                         ) {
                             throw new IllegalArgumentException("连接会话 Cookie 缺失或重复");
                         }
                         String token = ServerCookieDecoder.STRICT.decode(cookieHeader)
                             .stream()
-                            .filter(cookie -> "koko-nexus-token".equals(cookie.name()))
+                            .filter(cookie -> tokenName.equals(cookie.name()))
                             .map(io.netty.handler.codec.http.cookie.Cookie::value)
                             .findFirst()
                             .orElse(null);

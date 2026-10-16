@@ -17,17 +17,34 @@ public class ChatSecurity {
     private final byte[] gatewayKey;
     /** 可发起跨协议握手/有副作用 HTTP 请求的精确 Origin 白名单。 */
     private final Set<String> origins;
+    /** 与 HTTP Sa-Token 配置一致的会话 Cookie 名，不包含会话值。 */
+    private final String tokenName;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ChatSecurity(
         @Value("${koko.chat.gateway-key}") String key,
-        @Value("${koko.chat.allowed-origins}") String origins
+        @Value("${koko.chat.allowed-origins}") String origins,
+        @Value("${sa-token.token-name:koko-nexus-token}") String tokenName
     ) {
         if (key == null || key.length() < 32) throw new IllegalStateException("聊天内部网关密钥至少 32 字符");
+        if (tokenName == null || !tokenName.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}")) {
+            throw new IllegalStateException("聊天会话 Cookie 名必须是有效的 HTTP token，最长 128 字符");
+        }
+        this.tokenName = tokenName;
         gatewayKey = key.getBytes(StandardCharsets.UTF_8);
         this.origins = Arrays.stream(origins.split(","))
             .map(String::trim)
             .filter(s -> !s.isBlank())
             .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /** 独立协议测试沿用默认名称；Spring 只使用完整配置构造器。 */
+    ChatSecurity(String key, String origins) {
+        this(key, origins, "koko-nexus-token");
+    }
+
+    public String tokenName() {
+        return tokenName;
     }
 
     public boolean trusted(String key) {

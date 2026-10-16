@@ -29,6 +29,7 @@ class ChatSocketServerTest {
 
     @BeforeEach
     void start() {
+        when(security.tokenName()).thenReturn("koko-nexus-token");
         when(security.trusted("test-key")).thenReturn(true);
         when(security.allowedOrigin("http://localhost:5173")).thenReturn(true);
         when(security.active(42, "test-session")).thenReturn(true);
@@ -296,6 +297,24 @@ class ChatSocketServerTest {
         return builder
             .buildAsync(URI.create("ws://127.0.0.1:" + server.boundPort() + "/api/chat/ws"), new Listener())
             .get(5, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void configuredCookieNameWorksAndDefaultOrDuplicateCannotAuthenticate() throws Exception {
+        when(security.tokenName()).thenReturn("koko-native-lab-session");
+        assertThrows(Exception.class, () -> customHandshake("42", "koko-nexus-token=test-session", false));
+        assertThrows(Exception.class, () ->
+            customHandshake("42", "koko-native-lab-session=test-session; koko-native-lab-session=other", false)
+        );
+        verify(security, never()).active(anyLong(), anyString());
+        var socket = customHandshake("42", "unrelated=value; koko-native-lab-session=test-session", false);
+        try {
+            assertTrue(server.connectedUsers().contains(42L));
+            verify(security).active(42, "test-session");
+            verifyNoInteractions(service);
+        } finally {
+            socket.abort();
+        }
     }
 
     private static class Listener implements WebSocket.Listener {
