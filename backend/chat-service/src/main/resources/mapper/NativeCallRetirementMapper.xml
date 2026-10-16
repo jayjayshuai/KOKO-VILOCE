@@ -6,7 +6,9 @@
     SELECT job_key,call_id,action,media_identity,attempts FROM chat_call_media_retirement
     WHERE (status='READY' AND (next_attempt_at IS NULL OR next_attempt_at &lt;= UTC_TIMESTAMP(6)))
       OR (status='PROCESSING' AND lease_until &lt;= UTC_TIMESTAMP(6))
-    ORDER BY created_at,job_key LIMIT 1 FOR UPDATE SKIP LOCKED
+    <!-- 新撤权先取得首次SFU确认；已确认的75秒重复排空按到期时间轮转，不能按旧created_at饿死新任务。 -->
+    ORDER BY (confirmed_at IS NOT NULL),COALESCE(next_attempt_at,created_at),created_at,job_key
+    LIMIT 1 FOR UPDATE SKIP LOCKED
   </select>
   <update id="claim">
     UPDATE chat_call_media_retirement SET status='PROCESSING',lease_token=#{lease},lease_until=UTC_TIMESTAMP(6)+INTERVAL 15 SECOND

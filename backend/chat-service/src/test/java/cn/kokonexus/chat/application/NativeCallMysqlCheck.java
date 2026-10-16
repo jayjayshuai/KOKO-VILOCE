@@ -479,6 +479,31 @@ public final class NativeCallMysqlCheck {
             "Exhausted failure not dead"
         );
         groups.add("RETIREMENT_REAL_SQL_EXPIRED_LEASE_RECLAIM_STALE_CAS_DRAIN_WINDOW_AND_BOUNDED_FAILURE");
+        jdbc.update("UPDATE chat_call_media_retirement SET status='DONE',lease_token=NULL,lease_until=NULL");
+        jdbc.update(
+            "UPDATE chat_call_media_retirement SET status='READY',attempts=0,confirmed_at=UTC_TIMESTAMP(6),created_at=UTC_TIMESTAMP(6)-INTERVAL 60 SECOND,next_attempt_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE job_key=?",
+            key
+        );
+        String freshRetirement = concurrentRing.id() + ":ROOM:99";
+        jdbc.update(
+            "INSERT INTO chat_call_media_retirement(job_key,call_id,source_version,action,status,created_at) VALUES(?,?,99,'ROOM','READY',UTC_TIMESTAMP(6))",
+            freshRetirement,
+            concurrentRing.id()
+        );
+        var freshJob = retirements.claim();
+        check(
+            freshJob != null && freshRetirement.equals(freshJob.getJobKey()),
+            "Confirmed drain work starved a new revocation"
+        );
+        check(retirements.confirmed(freshJob), "New revocation confirmation was not durable");
+        var priorDrain = retirements.claim();
+        check(
+            priorDrain != null && key.equals(priorDrain.getJobKey()),
+            "Due existing drain work did not resume after new revocation"
+        );
+        check(retirements.confirmed(priorDrain), "Old drain lease did not confirm");
+        jdbc.update("UPDATE chat_call_media_retirement SET status='DONE',lease_token=NULL,lease_until=NULL");
+        groups.add("NEW_UNCONFIRMED_REVOCATION_PRECEDES_CONFIRMED_DRAIN_AND_DUE_DRAIN_RESUMES_WITH_OWN_LEASE");
         check(calls.scan(null).isEmpty(), "Ended fixture calls remain in active scan");
         System.out.println(
             new ObjectMapper().writeValueAsString(
