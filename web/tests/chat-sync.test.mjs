@@ -89,6 +89,7 @@ async function harness(overrides = {}) {
       if (listeners.get(name) === callback) listeners.delete(name)
     },
   }
+  const route = vue.reactive({ name: 'messages', query: {} })
   const context = vm.createContext({
     AbortController,
     AbortSignal,
@@ -116,7 +117,14 @@ async function harness(overrides = {}) {
     './ChatHistoryTools.vue': { default: {} },
     '../stores/auth': { useAuthStore: () => ({ user: { id: '42' }, sessionRevision: 1 }) },
     '../stores/native-call': { useNativeCallStore: () => ({ enabled: false, occupied: false }) },
-    'vue-router': { useRoute: () => vue.reactive({ query: {} }), useRouter: () => ({ replace: async () => {} }) },
+    'vue-router': {
+      useRoute: () => route,
+      useRouter: () => ({
+        replace: async ({ query }) => {
+          route.query = { ...query }
+        },
+      }),
+    },
   }
   const module = new vm.SourceTextModule(code, { context })
   await module.link((name) => {
@@ -137,8 +145,83 @@ async function harness(overrides = {}) {
     unmount.forEach((callback) => callback())
     scope.stop()
   }
-  return { state, calls, expired, mounted, sockets, timers, listeners, document, dispose }
+  return { state, calls, expired, mounted, sockets, timers, listeners, document, route, dispose }
 }
+
+test('新群定位先于列表同步时移除旧会话，迟到列表只定位一次并保留后续草稿', async () => {
+  const wait = deferred(),
+    old = conversation('old'),
+    target = conversation('new')
+  let items = [old],
+    delayed = true
+  const h = await harness({ list: () => (delayed ? wait.promise : Promise.resolve(items)) })
+  try {
+    h.state.conversations.value = [old]
+    await h.state.select(old)
+    await vue.nextTick()
+    h.route.query = { conversation: target.id }
+    await vue.nextTick()
+    assert.equal(h.state.activeId.value, '')
+    items = [old, target]
+    delayed = false
+    wait.resolve(items)
+    await until(() => h.state.activeId.value === target.id && !h.state.loading.value)
+    const reads = h.calls.filter((c) => c.name === 'history' && c.args[0] === target.id).length
+    assert.equal(reads, 1)
+    h.state.body.value = '尚未发送的草稿'
+    await h.state.loadConversations()
+    await vue.nextTick()
+    assert.equal(h.state.body.value, '尚未发送的草稿')
+    assert.equal(h.calls.filter((c) => c.name === 'history' && c.args[0] === target.id).length, reads)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('待定位列表晚返回不能覆盖手动选择，返回列表取消定位意图', async () => {
+  const wait = deferred(),
+    old = conversation('old'),
+    target = conversation('new')
+  const h = await harness({ list: () => wait.promise })
+  try {
+    h.state.conversations.value = [old]
+    await h.state.select(old)
+    await vue.nextTick()
+    h.route.query = { conversation: target.id }
+    await vue.nextTick()
+    await h.state.select(old)
+    await vue.nextTick()
+    h.state.body.value = '手动会话草稿'
+    wait.resolve([old, target])
+    await until(() => !h.state.conversationsLoading.value)
+    await vue.nextTick()
+    assert.equal(h.state.activeId.value, old.id)
+    assert.equal(h.state.body.value, '手动会话草稿')
+    h.route.query = { conversation: target.id }
+    await vue.nextTick()
+    h.state.backToConversations()
+    await vue.nextTick()
+    await h.state.loadConversations()
+    await vue.nextTick()
+    assert.equal(h.state.activeId.value, '')
+    assert.equal(h.route.query.conversation, undefined)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('卸载取消未完成的路由定位，晚返回列表不再读取新会话历史', async () => {
+  const wait = deferred(),
+    target = conversation('new')
+  const h = await harness({ list: () => wait.promise })
+  h.route.query = { conversation: target.id }
+  await vue.nextTick()
+  h.dispose()
+  wait.resolve([target])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(h.calls.filter((c) => c.name === 'history').length, 0)
+  assert.equal(h.state.activeId.value, '')
+})
 
 test('加载首屏期间收到同步保留一次补拉，不忙循环也不漏掉新消息', async () => {
   const wait = deferred()

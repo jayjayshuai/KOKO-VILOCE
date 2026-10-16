@@ -68,6 +68,10 @@ const initiator = computed(
   () => state.view?.participants.find((p) => p.userId === state.view?.initiatorId)?.displayName ?? '联系人',
 );
 const title = computed(() => (incoming.value ? `${initiator.value} 邀请你语音` : '私信 / 群聊语音'));
+/** SDK 反馈只属于曾尝试连接的当前活动通话，不把上次断线红字带到新来电/响铃/终态。 */
+const currentVoiceError = computed(() =>
+  state.view?.id === mediaCallId && state.view?.state === 'ACTIVE' ? voiceError.value : '',
+);
 const label = computed(() =>
   state.view?.state === 'ENDED'
     ? '通话已结束'
@@ -291,7 +295,9 @@ onBeforeUnmount(() => {
       >
     </div>
     <p v-if="state.busy" class="native-call-note" role="status">正在确认通话操作…</p>
-    <p v-if="state.error || voiceError" class="native-call-note error" role="alert">{{ state.error || voiceError }}</p>
+    <p v-if="state.error || currentVoiceError" class="native-call-note error" role="alert">{{
+      state.error || currentVoiceError
+    }}</p>
     <p v-if="state.syncNote" class="native-call-note" role="status">{{ state.syncNote }}</p>
     <div v-if="audioPlaybackBlocked" class="native-call-note"
       ><button class="secondary" :disabled="audioPlaybackBusy" @click="media.resumeVoiceAudio">点击恢复声音播放</button

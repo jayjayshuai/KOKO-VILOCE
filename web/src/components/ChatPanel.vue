@@ -98,6 +98,8 @@ let disposed = false,
   syncing = false,
   needsSync = false;
 let syncTimer: ReturnType<typeof setTimeout> | undefined;
+/** 只消费一次路由定位意图；新会话尚未同步时保留，手动选择/返回/卸载使其失效。 */
+let requestedConversation = typeof route.query.conversation === 'string' ? route.query.conversation : '';
 const failure = (e: unknown) => (e instanceof Error ? e.message : '聊天操作失败');
 const unread = (c: Conversation) =>
   Math.max(0, c.lastSeq - (c.members.find((m) => m.userId === props.userId)?.readSeq || 0));
@@ -166,6 +168,7 @@ async function scrollBottom() {
   if (transcript.value) transcript.value.scrollTop = transcript.value.scrollHeight;
 }
 async function select(c: Conversation) {
+  requestedConversation = '';
   historyRequest.abort();
   historyRequest = new AbortController();
   const signal = AbortSignal.any([reads.signal, historyRequest.signal]);
@@ -474,14 +477,19 @@ function cleanupSocket() {
 }
 /** 移动端返回列表结束当前历史读取轮次，避免把草稿发到下一位联系人。 */
 function backToConversations() {
-  ++selection;
-  historyRequest.abort();
-  historyRequest = new AbortController();
-  activeId.value = '';
+  requestedConversation = '';
+  clearSelection();
   if (route.name === 'messages' && route.query.conversation)
     void router.replace({ query: { ...route.query, conversation: undefined } }).catch(() => {
       if (!disposed) error.value = '聊天地址未更新，可从会话列表重新打开。';
     });
+}
+/** 未取得新目标事实前移除旧会话操作区，避免路由已变化却向旧联系人发消息/拨号。 */
+function clearSelection() {
+  ++selection;
+  historyRequest.abort();
+  historyRequest = new AbortController();
+  activeId.value = '';
   messages.value = [];
   body.value = '';
   loading.value = false;
@@ -495,8 +503,6 @@ onMounted(async () => {
   try {
     await loadConversations();
     await loadBlocked();
-    const requested = conversations.value.find((c) => c.id === route.query.conversation);
-    if (requested) await select(requested);
   } catch (e) {
     error.value = failure(e);
   }
@@ -515,10 +521,29 @@ onMounted(async () => {
 watch(
   () => route.query.conversation,
   (id) => {
-    const requested = conversations.value.find((c) => c.id === id && c.id !== activeId.value);
-    if (requested && !disposed) void select(requested);
+    if (disposed) return;
+    requestedConversation = typeof id === 'string' ? id : '';
+    if (!requestedConversation || requestedConversation === activeId.value) {
+      requestedConversation = '';
+      return;
+    }
+    clearSelection();
+    resolveRequestedConversation();
+    if (requestedConversation)
+      void loadConversations().catch((cause) => {
+        if (!disposed && requestedConversation === id) syncError.value = `目标会话尚未读取：${failure(cause)}`;
+      });
   },
 );
+/** 列表晚于路由到达时只完成尚未消费的意图；后台同步不反复选择或清空草稿。 */
+function resolveRequestedConversation() {
+  if (disposed || !requestedConversation || route.query.conversation !== requestedConversation) return;
+  const target = conversations.value.find((c) => c.id === requestedConversation);
+  if (!target) return;
+  requestedConversation = '';
+  if (target.id !== activeId.value) void select(target);
+}
+watch(conversations, resolveRequestedConversation);
 watch(safetyOpen, (open) => {
   if (!open) void sync();
 });
@@ -527,6 +552,7 @@ watch(historyToolsOpen, (open) => {
 });
 onUnmounted(() => {
   disposed = true;
+  requestedConversation = '';
   selection++;
   safetyReads.abort();
   reads.abort();
