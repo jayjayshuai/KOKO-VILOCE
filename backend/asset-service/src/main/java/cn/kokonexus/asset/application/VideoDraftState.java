@@ -2,11 +2,13 @@ package cn.kokonexus.asset.application;
 
 import cn.kokonexus.asset.domain.VideoDraft;
 import cn.kokonexus.asset.infrastructure.persistence.VideoDraftMapper;
+import cn.kokonexus.common.api.ExternalDependencyUnavailableException;
 import cn.kokonexus.common.api.ResourceNotFoundException;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -100,7 +102,7 @@ public class VideoDraftState {
     public VideoDraft owned(long owner, String id) {
         if (owner <= 0) throw new IllegalArgumentException("用户标识无效");
         canonical(id);
-        var row = mapper.selectById(id);
+        var row = mapper.ownedOne(owner, id);
         if (row == null || row.getOwnerId() != owner) throw new ResourceNotFoundException("视频草稿不存在");
         return row;
     }
@@ -109,6 +111,94 @@ public class VideoDraftState {
         if (owner <= 0) throw new IllegalArgumentException("用户标识无效");
         return mapper.owned(owner);
     }
+
+    /** PUT前持久登记唯一写入；在途或未知的原写入不能靠新PUT冒充恢复。 */
+    @Transactional(timeout = 5)
+    public WriteTicket beginSource(long owner, String id) {
+        mapper.lockGlobal();
+        owned(owner, id);
+        var row = mapper.lockVideo(id);
+        if (
+            !row.getState().equals("UPLOADING") || !Boolean.TRUE.equals(row.getWriteTracking())
+        ) throw new IllegalStateException("视频已变化或旧版写入待核验，请刷新状态");
+        return begin(row, "SOURCE", null);
+    }
+
+    @Transactional(timeout = 5)
+    public WriteTicket beginOutput(VideoDraft job) {
+        mapper.lockGlobal();
+        var row = mapper.lockVideo(job.getId());
+        if (
+            row == null ||
+            !Boolean.TRUE.equals(row.getWriteTracking()) ||
+            !mapper.outputAllowed(row.getId(), job.getRunId())
+        ) throw new IllegalStateException("视频输出权限已失效");
+        return begin(row, "OUTPUT", job.getRunId());
+    }
+
+    private WriteTicket begin(VideoDraft row, String kind, String run) {
+        String id = UUID.randomUUID().toString();
+        try {
+            one(mapper.beginWrite(id, row.getId(), kind, run), "视频写入登记失败");
+        } catch (DuplicateKeyException duplicate) {
+            throw new ExternalDependencyUnavailableException("原对象写入仍待核验，不会重复写入", null);
+        }
+        return new WriteTicket(row.getId(), id, kind, run);
+    }
+
+    /** 仅在PUT返回成功后调用；删除已受理时只结清写入，不重新排队。 */
+    @Transactional(timeout = 5)
+    public VideoDraft sourceStored(long owner, WriteTicket ticket) {
+        if (!"SOURCE".equals(ticket.kind()) || ticket.runId() != null) throw new IllegalArgumentException(
+            "非原文件写入回执"
+        );
+        mapper.lockGlobal();
+        owned(owner, ticket.videoId());
+        mapper.lockVideo(ticket.videoId());
+        settle(ticket);
+        mapper.queue(ticket.videoId());
+        return owned(owner, ticket.videoId());
+    }
+
+    /** 输出回执和READY条件同事务；删除或过期后不能恢复预览。 */
+    @Transactional(timeout = 5)
+    public boolean outputStored(VideoDraft job, WriteTicket ticket) {
+        if (!"OUTPUT".equals(ticket.kind())) throw new IllegalArgumentException("非输出写入回执");
+        mapper.lockGlobal();
+        mapper.lockVideo(job.getId());
+        if (
+            !job.getId().equals(ticket.videoId()) || !job.getRunId().equals(ticket.runId())
+        ) throw new IllegalArgumentException("原输出写入不匹配");
+        settle(ticket);
+        return mapper.ready(job) == 1;
+    }
+
+    private void settle(WriteTicket ticket) {
+        if (
+            mapper.settleWrite(ticket.id(), ticket.videoId()) != 1 &&
+            !mapper.settledWrite(ticket.id(), ticket.videoId())
+        ) throw new IllegalStateException("原写入结果尚未确认");
+    }
+
+    @Transactional(timeout = 5)
+    public void writeUncertain(WriteTicket ticket) {
+        mapper.lockGlobal();
+        mapper.uncertainWrite(ticket.id(), ticket.videoId());
+    }
+
+    @Transactional(timeout = 5)
+    public void processed(VideoDraft job) {
+        mapper.lockGlobal();
+        mapper.processed(job.getId(), job.getRunId());
+    }
+
+    /** 内部写入围栏，不向HTTP返回操作令牌或对象键。 */
+    public record WriteTicket(
+        /** 原视频UUID。 */ String videoId,
+        /** 唯一PUT登记UUID。 */ String id,
+        /** SOURCE/OUTPUT。 */ String kind,
+        /** 输出领取轮次，可空。 */ String runId
+    ) {}
 
     public static void canonical(String id) {
         if (id == null || !UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException(

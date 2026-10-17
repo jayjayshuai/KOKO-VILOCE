@@ -61,8 +61,26 @@ public final class VideoDraftMysqlCheck {
             .dataSource(source)
             .table("asset_flyway_schema_history")
             .locations("classpath:db/migration")
+            .target("6")
             .load();
         check(flyway.migrate().migrationsExecuted == 1, "Existing asset V5 facts must upgrade only V6");
+        String legacy = UUID.randomUUID().toString();
+        jdbc.update(
+            "INSERT INTO video_draft(id,owner_id,request_id,title,description,source_sha256,source_bytes,state,created_at,updated_at) VALUES(?,901,?,'legacy','',?,64,'UPLOADING',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+            legacy,
+            UUID.randomUUID().toString(),
+            "a".repeat(64)
+        );
+        flyway = Flyway.configure()
+            .dataSource(source)
+            .table("asset_flyway_schema_history")
+            .locations("classpath:db/migration")
+            .load();
+        check(flyway.migrate().migrationsExecuted == 1, "V6 must upgrade only V7");
+        check(
+            !jdbc.queryForObject("SELECT write_tracking FROM video_draft WHERE id=?", Boolean.class, legacy),
+            "Legacy write falsely marked tracked"
+        );
         flyway.validate();
         check(
             jdbc.queryForObject(
@@ -95,6 +113,15 @@ public final class VideoDraftMysqlCheck {
             )
         );
         var state = (VideoDraftState) proxy.getProxy();
+        var deleteProxy = new ProxyFactory(new VideoDeletionState(mapper, state));
+        deleteProxy.setProxyTargetClass(true);
+        deleteProxy.addAdvice(
+            new TransactionInterceptor(
+                new DataSourceTransactionManager(source),
+                new AnnotationTransactionAttributeSource()
+            )
+        );
+        var deletions = (VideoDeletionState) deleteProxy.getProxy();
         var groups = new java.util.ArrayList<String>();
         groups.add("EXISTING_ASSET_V5_IMAGE_AND_QUOTA_FACTS_PRESERVED_BY_V6_UPGRADE_AND_FLYWAY_VALIDATE");
         String request = UUID.randomUUID().toString();
@@ -118,7 +145,11 @@ public final class VideoDraftMysqlCheck {
             "Failed owner budget leaked global reservation"
         );
         groups.add("REAL_OWNER_CAPACITY_FAILURE_ROLLS_BACK_GLOBAL_AND_INTENT");
-        state.queued(101, registered.getId());
+        check(
+            state.queued(101, registered.getId()).getState().equals("UPLOADING"),
+            "Queue accepted without settled source proof"
+        );
+        state.sourceStored(101, state.beginSource(101, registered.getId()));
         var barrier = new CyclicBarrier(2);
         var claimed = new java.util.ArrayList<VideoDraft>();
         try (var pool = Executors.newFixedThreadPool(2)) {
@@ -164,7 +195,7 @@ public final class VideoDraftMysqlCheck {
         for (int n = 0; n < 5; n++) state.register(input(102, UUID.randomUUID().toString()));
         expect(IllegalStateException.class, () -> state.register(input(103, UUID.randomUUID().toString())));
         check(
-            jdbc.queryForObject("SELECT COUNT(*) FROM video_draft", Integer.class) == 10,
+            jdbc.queryForObject("SELECT COUNT(*) FROM video_draft WHERE owner_id IN (101,102)", Integer.class) == 10,
             "Global capacity left partial intent"
         );
         jdbc.update("UPDATE video_draft SET created_at=UTC_TIMESTAMP(6)-INTERVAL 16 MINUTE WHERE state='UPLOADING'");
@@ -177,6 +208,10 @@ public final class VideoDraftMysqlCheck {
 
         // 下列全新预算只属于本隔离库：保留前面事实，但允许验证新视频的真实处理。
         jdbc.update("UPDATE video_capacity SET draft_count=0");
+        VideoDeletionMysqlScenarios.run(jdbc, state, deletions, legacy);
+        groups.add(
+            "REAL_V7_LEGACY_WRITES_BLOCKED_SOURCE_OUTPUT_DELETE_RACES_UNKNOWN_PUT_RETAINED_TOMBSTONE_REPLAY_STALE_CLEANUP_FENCE_BOTH_COUNTER_ROLLBACK_AND_FIVE_ATTEMPT_LIMIT"
+        );
         Path media = Path.of(required("VIDEO_CHECK_SOURCE")),
             work = Path.of(required("VIDEO_CHECK_WORK"));
         var multipart = new MultipartProperties();
@@ -192,6 +227,18 @@ public final class VideoDraftMysqlCheck {
         Path objectRoot = work.resolve("synthetic-object-store");
         Files.createDirectories(objectRoot);
         VideoStorage storage = new VideoStorage() {
+            public void removeAndConfirm(String key, long deadlineNanos) {
+                try {
+                    if (System.nanoTime() >= deadlineNanos) throw new IllegalStateException("Expired cleanup");
+                    Path path = objectRoot.resolve(key).normalize();
+                    check(path.startsWith(objectRoot), "Foreign fixture object");
+                    Files.deleteIfExists(path);
+                    check(!Files.exists(path), "Fixture object still exists");
+                } catch (java.io.IOException failure) {
+                    throw new RuntimeException(failure);
+                }
+            }
+
             public void put(String key, Path file) {
                 try {
                     Path target = objectRoot.resolve(key);
@@ -268,12 +315,38 @@ public final class VideoDraftMysqlCheck {
             failed.getState().equals("FAILED") && failed.getFailureCode().equals("INVALID_VIDEO"),
             "Invalid MP4 masqueraded as ready"
         );
-        VideoDraftBrowserHarness.run(uploads, state, storage, worker, work, media);
+        VideoDraftBrowserHarness.run(uploads, state, storage, worker, deletions, work, media);
         check(
-            jdbc.queryForObject("SELECT draft_count FROM video_capacity WHERE owner_id=201", Integer.class) == 2,
+            jdbc.queryForObject("SELECT draft_count FROM video_capacity WHERE owner_id=201", Integer.class) == 1,
             "Actual browser original upload retry reserved more than once"
         );
         worker.close();
+        check(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM video_draft WHERE owner_id=201 AND state='DELETED'",
+                Integer.class
+            ) == 1,
+            "Browser deletion did not confirm tombstone"
+        );
+        check(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM video_draft WHERE owner_id=201 AND state='DELETED' AND delete_attempts=1",
+                Integer.class
+            ) == 1,
+            "Browser retry duplicated cleanup"
+        );
+        var deleted = jdbc
+            .queryForList("SELECT id,run_id FROM video_draft WHERE owner_id=201 AND state='DELETED'")
+            .getFirst();
+        String deletedPrefix = "videos/201/" + deleted.get("id") + "/";
+        check(
+            !Files.exists(objectRoot.resolve(deletedPrefix + "source.mp4")) &&
+                !Files.exists(objectRoot.resolve(deletedPrefix + deleted.get("run_id") + ".mp4")),
+            "Deleted browser objects remain"
+        );
+        groups.add(
+            "ACTUAL_BROWSER_ORIGINAL_DELETE_REPLY_LOSS_REPLAY_DELETED_RECEIPT_SOURCE_OUTPUT_ABSENT_QUOTA_RELEASED_ONCE"
+        );
         groups.add("CORRUPT_FTYP_HEADER_REJECTED_BY_REAL_FFPROBE_NEVER_READY_NO_AUTOMATIC_RETRY");
         groups.add(
             "ACTUAL_TOMCAT_BROWSER_UPLOAD_UNKNOWN_ORIGINAL_RETRY_PROCESS_READY_PLAYBACK_SEEK_AND_OTHER_OWNER_404_WITH_EXPLICIT_TEST_IDENTITY_AND_FILE_STORAGE"

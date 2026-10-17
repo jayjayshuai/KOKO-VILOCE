@@ -16,14 +16,20 @@ const file = ref<File | null>(null),
   playerError = ref(''),
   fileInput = ref<HTMLInputElement | null>(null),
   previewRegion = ref<HTMLElement | null>(null);
-const locked = computed(() => state.busy || !!state.pending),
-  preview = computed(() => state.items.find((row) => row.id === selected.value && row.state === 'READY'));
+const locked = computed(() => state.busy || !!state.pending || !!state.pendingDeletion),
+  preview = computed(() =>
+    state.items.find(
+      (row) => row.id === selected.value && row.state === 'READY' && state.pendingDeletion?.id !== row.id,
+    ),
+  );
 const labels: Record<VideoDraft['state'], string> = {
   UPLOADING: '等待原上传确认',
   QUEUED: '排队等待处理',
   PROCESSING: '正在检查与转码',
   READY: '私有预览可用',
   FAILED: '处理失败',
+  DELETING: '等待清理核验',
+  DELETED: '已清理并回收额度',
 };
 const failures: Record<string, string> = {
   INVALID_VIDEO: '视频无效、损坏、超出时长/尺寸或无法完整解码。',
@@ -31,6 +37,19 @@ const failures: Record<string, string> = {
   STORAGE_UNAVAILABLE: '存储暂时不可用。',
   INTERRUPTED: '上传或处理被中断。',
 };
+const deletionReasons: Record<string, string> = {
+  LEGACY_WRITES_UNVERIFIED: '此草稿来自旧版写入，需运营核验后回收，当前保留额度。',
+  WRITES_UNVERIFIED: '原对象写入仍在进行或结果未知，需等待或由运营核验，当前保留额度。',
+  WAIT_PROCESSING: '正在等待已开始的处理结束，暂不释放额度。',
+  CLEANUP_FAILED: '自动清理未能核验成功，已停止重试，请联系运营。额度仍保留。',
+  STORAGE_UNVERIFIED: '存储清理暂未核验成功，将有限重试；当前保留额度。',
+};
+async function remove(row: VideoDraft) {
+  if (locked.value || state.trackedDeletion) return;
+  if (!window.confirm(`删除“${row.title}”？预览会撤回，待存储对象核验清理后才回收额度。此操作无法撤销。`)) return;
+  if (selected.value === row.id) closePreview();
+  await workspace.remove(row);
+}
 let timer: ReturnType<typeof setTimeout> | undefined,
   disposed = false,
   generation = 0;
@@ -98,12 +117,12 @@ function closePreview() {
 }
 function confirmLeave() {
   return (
-    (!file.value && !state.pending) ||
-    window.confirm('离开会丢失本页文件选择和原请求重试信息，不会撤回服务端已受理的上传。是否离开？')
+    (!file.value && !state.pending && !state.pendingDeletion) ||
+    window.confirm('离开会丢失本页文件选择和原请求重试信息，不会撤回服务端已受理的上传或删除。是否离开？')
   );
 }
 function beforeUnload(event: BeforeUnloadEvent) {
-  if (file.value || state.pending) {
+  if (file.value || state.pending || state.pendingDeletion) {
     event.preventDefault();
     event.returnValue = '';
   }
@@ -130,6 +149,14 @@ const mib = (value: number) => (value / 1048576).toFixed(1) + ' MiB';
   <template v-else>
     <p v-if="state.loading && !state.capability" role="status">正在核对视频能力…</p>
     <p v-if="state.error" class="form-error" role="alert">{{ state.error }}</p>
+    <p v-if="state.notice" class="hint" role="status">{{ state.notice }}</p>
+    <section v-if="state.pendingDeletion" class="video-pending" aria-label="待核验删除">
+      <p>“{{ state.pendingDeletion.title }}”的原删除结果尚未确认，暂不恢复预览。</p>
+      <button class="secondary" :disabled="state.busy || state.loading" @click="workspace.load()"
+        >查询原删除结果</button
+      >
+      <button class="secondary" :disabled="state.busy" @click="workspace.retryDeletion()">重试原删除</button>
+    </section>
     <button
       v-if="!state.capability || state.error"
       class="secondary"
@@ -172,7 +199,9 @@ const mib = (value: number) => (value / 1048576).toFixed(1) + ' MiB';
         >
         <p class="hint"
           >上传不等于公开发布。每条预留96
-          MiB源文件与产物预算；失败、未知上传也占额度，未实现核验清理前不释放。当前阶段不提供删除与公开发布。</p
+          MiB源文件与产物预算；失败、未知上传也占额度。仅在对象核验清理完成后回收额度。{{
+            state.capability.deletionEnabled ? '可在草稿卡片中申请删除。' : '删除核验尚未开放。'
+          }}当前阶段不提供公开发布。</p
         >
       </section>
       <section class="workspace-card"
@@ -203,7 +232,25 @@ const mib = (value: number) => (value / 1048576).toFixed(1) + ' MiB';
                   : '处理未完成，请联系运营核对。'
               }}
               不会自动重复转码。</p
-            ><button v-if="row.state === 'READY'" class="secondary" @click="select(row, $event)">预览视频</button></li
+            ><p v-if="row.state === 'DELETING'" class="hint">{{
+              row.deletionWaitReason && Object.hasOwn(deletionReasons, row.deletionWaitReason)
+                ? deletionReasons[row.deletionWaitReason]
+                : '删除已受理，等待存储核验；完成前仍占额度。'
+            }}</p>
+            <button
+              v-if="row.state === 'READY'"
+              class="secondary"
+              :disabled="state.pendingDeletion?.id === row.id"
+              @click="select(row, $event)"
+              >预览视频</button
+            >
+            <button
+              v-if="state.capability.deletionEnabled && row.state !== 'DELETING'"
+              class="secondary"
+              :disabled="locked || !!state.trackedDeletion"
+              @click="remove(row)"
+              >删除草稿</button
+            ></li
           ></ul
         >
       </section>

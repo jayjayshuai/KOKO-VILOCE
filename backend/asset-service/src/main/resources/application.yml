@@ -55,6 +55,8 @@ koko.asset:
     total-images: ${ASSET_TOTAL_QUOTA_IMAGES:10000}
 koko.video:
   enabled: ${VIDEO_DRAFTS_ENABLED:false}
+  # 全部视频写入节点升级且旧版任务排空后，核对视频前缀删除/版本列举权限再启用。
+  deletion-enabled: ${VIDEO_DELETION_ENABLED:false}
   # 图片账号只允许images/*，不能复用或扩大原账号；另配仅限videos/*的专用凭据。
   endpoint: ${VIDEO_MINIO_ENDPOINT:${ASSET_MINIO_ENDPOINT:http://localhost:9000}}
   bucket: ${VIDEO_MINIO_BUCKET:${ASSET_MINIO_BUCKET:koko-nexus-media}}

@@ -38,7 +38,15 @@ test('video policy template is narrowly permitted without exempting credentials 
   const policy = JSON.parse(source)
   const objectStatement = policy.Statement.find((statement) => statement.Action.includes('s3:GetObject'))
   assert.deepEqual(objectStatement.Resource, ['arn:aws:s3:::koko-nexus-media/videos/*'])
-  assert.equal(objectStatement.Action.includes('s3:DeleteObject'), false)
+  assert.equal(objectStatement.Action.includes('s3:DeleteObject'), true)
+  assert.equal(objectStatement.Action.includes('s3:DeleteObjectVersion'), true)
+  const versions = policy.Statement.find((statement) => statement.Action.includes('s3:ListBucketVersions'))
+  assert.deepEqual(versions.Resource, ['arn:aws:s3:::koko-nexus-media'])
+  assert.deepEqual(versions.Condition, { StringLike: { 's3:prefix': ['videos/*'] } })
+  assert.equal(
+    policy.Statement.some((statement) => statement.Action.includes('s3:*') || statement.Resource.includes('*')),
+    false,
+  )
   assert.ok(inspectFile('deploy/minio-koko-video-private.json', source).includes('private-path-or-artifact'))
   const secret = ['unpublished', '-canary'].join('')
   assert.ok(inspectFile(filename, JSON.stringify({ secret_key: secret })).includes('configuration-credential-literal'))

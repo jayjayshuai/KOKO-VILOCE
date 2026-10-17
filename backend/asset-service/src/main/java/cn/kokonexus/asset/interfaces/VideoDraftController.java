@@ -1,6 +1,7 @@
 package cn.kokonexus.asset.interfaces;
 
 import cn.kokonexus.asset.application.AssetUploadBusyException;
+import cn.kokonexus.asset.application.VideoDeletionState;
 import cn.kokonexus.asset.application.VideoDraftService;
 import cn.kokonexus.asset.application.VideoDraftState;
 import cn.kokonexus.asset.domain.VideoDraft;
@@ -33,6 +34,7 @@ public class VideoDraftController {
     /** 能力关闭时不实例化视频处理/存储资源。 */ private final ObjectProvider<VideoDraftService> uploads;
     /** 逐请求检查SQL所有者，而非仅在页面路由鉴权。 */ private final ObjectProvider<VideoDraftState> states;
     /** 私有有界流式存储。 */ private final ObjectProvider<VideoStorage> storage;
+    /** 独立上线门禁；全部写入节点升级且旧任务排空后才能启用删除。 */ private final ObjectProvider<VideoDeletionState> deletions;
     /** 单实例最多4个播放流；不按视频长度分配byte数组。 */ private final Semaphore streams = new Semaphore(4);
 
     @GetMapping("/capabilities")
@@ -41,7 +43,8 @@ public class VideoDraftController {
         description = "未部署或未配置FFmpeg/上传限制时不开放，不代表视频公开发布"
     )
     public Capability capability() {
-        return new Capability(uploads.getIfAvailable() != null, 33554432, 180, 5, 100663296);
+        boolean enabled = uploads.getIfAvailable() != null;
+        return new Capability(enabled, 33554432, 180, 5, 100663296, enabled && deletions.getIfAvailable() != null);
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -76,6 +79,25 @@ public class VideoDraftController {
     public View read(@Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long owner, @PathVariable String id) {
         return View.from(state().owned(owner, id));
     }
+
+    @PostMapping("/{id}/deletion")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @Operation(
+        summary = "受理本人视频删除意图或重试原请求",
+        description = "立即撤回后续预览；202不代表对象已删除或额度已释放。DELETED才证明已核验所有版本不存在并回收额度。未知写入及旧版写入需人工核验，不自动清额度。"
+    )
+    public View delete(
+        @Parameter(hidden = true) @RequestHeader("X-Koko-User-Id") long owner,
+        @PathVariable String id,
+        @RequestBody Deletion input
+    ) {
+        var service = deletions.getIfAvailable();
+        if (service == null) throw unavailable();
+        if (input == null) throw new IllegalArgumentException("缺少原删除请求");
+        return View.from(service.request(owner, id, input.requestId()));
+    }
+
+    public record Deletion(@Schema(description = "首次删除UUID；重试不可变更") String requestId) {}
 
     @RequestMapping(value = "/{id}/content", method = { RequestMethod.GET, RequestMethod.HEAD })
     @Operation(
@@ -157,7 +179,8 @@ public class VideoDraftController {
         @Schema(description = "最大原文件字节数") long maxBytes,
         @Schema(description = "最大时长秒数") int maxSeconds,
         @Schema(description = "本人最多预留草稿数，含失败") int maxDrafts,
-        @Schema(description = "每条固定预留字节数，含源文件与产物") long reservedBytesPerDraft
+        @Schema(description = "每条固定预留字节数，含源文件与产物") long reservedBytesPerDraft,
+        @Schema(description = "全部写入节点已升级并单独启用删除核验门禁") boolean deletionEnabled
     ) {}
 
     public record View(
@@ -165,7 +188,7 @@ public class VideoDraftController {
         @Schema(description = "本人原上传请求UUID") String requestId,
         @Schema(description = "标题") String title,
         @Schema(description = "私有说明") String description,
-        @Schema(description = "UPLOADING/QUEUED/PROCESSING/READY/FAILED") String state,
+        @Schema(description = "UPLOADING/QUEUED/PROCESSING/READY/FAILED/DELETING/DELETED") String state,
         @Schema(description = "原文件实际字节数") long sourceBytes,
         @Schema(description = "READY产物字节数，可空") Long outputBytes,
         @Schema(description = "READY产物时长毫秒，可空") Long durationMillis,
@@ -173,7 +196,9 @@ public class VideoDraftController {
         @Schema(description = "READY产物像素高，可空") Integer height,
         @Schema(description = "固定失败代码，可空") String failureCode,
         @Schema(description = "UTC创建时间") LocalDateTime createdAtUtc,
-        @Schema(description = "UTC最近变化时间") LocalDateTime updatedAtUtc
+        @Schema(description = "UTC最近变化时间") LocalDateTime updatedAtUtc,
+        @Schema(description = "已受理的原删除请求UUID，可空") String deleteRequestId,
+        @Schema(description = "删除等待原因固定枚举，不包含对象路径或供应商信息") String deletionWaitReason
     ) {
         static View from(VideoDraft row) {
             return new View(
@@ -189,7 +214,9 @@ public class VideoDraftController {
                 row.getHeight(),
                 row.getFailureCode(),
                 row.getCreatedAt(),
-                row.getUpdatedAt()
+                row.getUpdatedAt(),
+                row.getDeleteRequestId(),
+                row.getDeletionWaitReason()
             );
         }
     }

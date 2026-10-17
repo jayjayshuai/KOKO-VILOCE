@@ -24,21 +24,81 @@ class VideoDraftControllerTest {
         key = "synthetic-gateway-key-" + "x".repeat(32);
     private final VideoDraftState state = mock(VideoDraftState.class);
     private final VideoStorage storage = mock(VideoStorage.class);
+    private final VideoDeletionState deletions = mock(VideoDeletionState.class);
 
     private MockMvc mvc(boolean enabled) {
-        var beans = new StaticListableBeanFactory(
-            enabled ? Map.of("state", state, "storage", storage, "uploads", mock(VideoDraftService.class)) : Map.of()
-        );
+        return mvc(enabled, false);
+    }
+
+    private MockMvc mvc(boolean enabled, boolean deletionEnabled) {
+        var registered = new java.util.HashMap<String, Object>();
+        if (enabled) {
+            registered.put("state", state);
+            registered.put("storage", storage);
+            registered.put("uploads", mock(VideoDraftService.class));
+        }
+        if (enabled && deletionEnabled) registered.put("deletions", deletions);
+        var beans = new StaticListableBeanFactory(registered);
         return MockMvcBuilders.standaloneSetup(
             new VideoDraftController(
                 beans.getBeanProvider(VideoDraftService.class),
                 beans.getBeanProvider(VideoDraftState.class),
-                beans.getBeanProvider(VideoStorage.class)
+                beans.getBeanProvider(VideoStorage.class),
+                beans.getBeanProvider(VideoDeletionState.class)
             )
         )
             .setControllerAdvice(new GlobalExceptionHandler(), new AssetExceptionHandler())
             .addFilters(new AssetGatewayFilter(key))
             .build();
+    }
+
+    @Test
+    void deletionHasIndependentGateAndAcceptedReceiptDoesNotClaimPhysicalCompletion() throws Exception {
+        String request = UUID.randomUUID().toString();
+        var row = ready();
+        row.setSourceBytes(64L);
+        row.setDeleteRequestId(request);
+        row.setState("DELETING");
+        row.setDeletionWaitReason("WRITES_UNVERIFIED");
+        when(deletions.request(42, id, request)).thenReturn(row);
+        mvc(true)
+            .perform(get("/api/assets/videos/capabilities").header("X-Koko-Gateway-Key", key))
+            .andExpect(jsonPath("$.deletionEnabled").value(false));
+        mvc(true)
+            .perform(
+                post("/api/assets/videos/" + id + "/deletion")
+                    .header("X-Koko-Gateway-Key", key)
+                    .header("X-Koko-User-Id", "42")
+                    .contentType("application/json")
+                    .content("{\"requestId\":\"" + request + "\"}")
+            )
+            .andExpect(status().isServiceUnavailable());
+        verifyNoInteractions(deletions);
+        mvc(true, true)
+            .perform(
+                post("/api/assets/videos/" + id + "/deletion")
+                    .header("X-Koko-Gateway-Key", key)
+                    .header("X-Koko-User-Id", "42")
+                    .contentType("application/json")
+                    .content("{\"requestId\":\"" + request + "\"}")
+            )
+            .andExpect(status().isAccepted())
+            .andExpect(header().string("Cache-Control", "no-store"))
+            .andExpect(jsonPath("$.state").value("DELETING"))
+            .andExpect(jsonPath("$.deleteRequestId").value(request))
+            .andExpect(jsonPath("$.deletionWaitReason").value("WRITES_UNVERIFIED"))
+            .andExpect(jsonPath("$.deleteToken").doesNotExist())
+            .andExpect(jsonPath("$.runId").doesNotExist());
+        verifyNoInteractions(storage);
+        when(state.owned(42, id)).thenReturn(row);
+        mvc(true, true)
+            .perform(
+                get("/api/assets/videos/" + id + "/content")
+                    .header("X-Koko-Gateway-Key", key)
+                    .header("X-Koko-User-Id", "42")
+            )
+            .andExpect(status().isNotFound());
+        verifyNoInteractions(storage);
     }
 
     private VideoDraft ready() {

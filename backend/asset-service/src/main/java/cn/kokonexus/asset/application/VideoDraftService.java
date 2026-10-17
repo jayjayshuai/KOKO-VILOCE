@@ -74,8 +74,18 @@ public class VideoDraftService {
             input.setSourceSha256(HexFormat.of().formatHex(digest.digest()));
             VideoDraft row = state.register(input);
             if (row.getState().equals("UPLOADING")) {
-                storage.put(sourceKey(row), source);
-                return state.queued(owner, row.getId());
+                var ticket = state.beginSource(owner, row.getId());
+                try {
+                    storage.put(sourceKey(row), source);
+                } catch (RuntimeException failure) {
+                    try {
+                        state.writeUncertain(ticket);
+                    } catch (RuntimeException unconfirmed) {
+                        failure.addSuppressed(unconfirmed);
+                    }
+                    throw failure;
+                }
+                return state.sourceStored(owner, ticket);
             }
             return row;
         } finally {

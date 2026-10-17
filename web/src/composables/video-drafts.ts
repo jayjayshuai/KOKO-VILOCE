@@ -21,6 +21,16 @@ export function createVideoDraftWorkspace(
     /** 首次/手动读取状态。 */ loading: false,
     /** 当前上传调用。 */ busy: false,
     /** 首次上传的不可变参数，未知结果时保留。 */ pending: null as (VideoDraftUpload & { uncertain: boolean }) | null,
+    /** 删除参数只在首次确认生成，超时保持原意图直到查询原回执。 */ pendingDeletion: null as {
+      id: string
+      requestId: string
+      title: string
+    } | null,
+    /** 已受理删除的原回执，持续查询至DELETED而不根据列表缺失推断。 */ trackedDeletion: null as {
+      id: string
+      requestId: string
+    } | null,
+    /** 仅服务端DELETED事实可显示额度已回收。 */ notice: '',
     /** 明确读取或操作错误。 */ error: '',
     /** 安静轮询故障，不闪烁清空整页。 */ syncNote: '',
   })
@@ -48,6 +58,9 @@ export function createVideoDraftWorkspace(
       loading: false,
       busy: false,
       pending: null,
+      pendingDeletion: null,
+      trackedDeletion: null,
+      notice: '',
       error: '',
       syncNote: '',
     })
@@ -70,12 +83,25 @@ export function createVideoDraftWorkspace(
           capability.reservedBytesPerDraft !== 100663296
         )
           throw new Error('视频上传能力响应无效。')
-        state.capability = capability
+        if (capability.deletionEnabled !== undefined && typeof capability.deletionEnabled !== 'boolean')
+          throw new Error('视频删除能力响应无效。')
+        state.capability = { ...capability, deletionEnabled: capability.deletionEnabled === true }
       }
       if (!state.capability.enabled) return
       const rows = await api.list(reads.signal)
       if (!valid(scope) || version !== mutation) return
       state.items = rows
+      const deletion = state.pendingDeletion ?? state.trackedDeletion
+      if (deletion) {
+        const receipt = await api.read(deletion.id, reads.signal)
+        if (!valid(scope) || version !== mutation) return
+        if (
+          receipt.id === deletion.id &&
+          receipt.deleteRequestId === deletion.requestId &&
+          ['DELETING', 'DELETED'].includes(receipt.state)
+        )
+          acceptDeletion(receipt)
+      }
       failures = 0
       state.syncNote = ''
     } catch (failure) {
@@ -108,7 +134,9 @@ export function createVideoDraftWorkspace(
       const row = await api.upload(input)
       if (!valid(scope)) return
       if (row.requestId !== input.requestId) throw new Error('原请求结果尚未确认。')
-      state.items = [row, ...state.items.filter((item) => item.id !== row.id)].slice(0, 5)
+      state.items = [row, ...state.items.filter((item) => item.id !== row.id)]
+        .filter((item) => item.state !== 'DELETED')
+        .slice(0, 5)
       state.pending = null
     } catch (failure) {
       if (!valid(scope)) return
@@ -129,7 +157,8 @@ export function createVideoDraftWorkspace(
     }
   }
   async function upload(file: File | null, title: string, description: string) {
-    if (!state.capability?.enabled || !session.user || state.busy || state.pending || disposed) return
+    if (!state.capability?.enabled || !session.user || state.busy || state.pending || state.pendingDeletion || disposed)
+      return
     if (
       !file ||
       file.size < 16 ||
@@ -144,11 +173,64 @@ export function createVideoDraftWorkspace(
     state.pending = { requestId: uuid(), file, title: title.trim(), description: description.trim(), uncertain: false }
     await submit()
   }
+  function acceptDeletion(row: VideoDraft) {
+    state.items = state.items.filter((item) => item.id !== row.id)
+    if (row.state !== 'DELETED') state.items = [row, ...state.items].slice(0, 5)
+    state.pendingDeletion = null
+    state.trackedDeletion = row.state === 'DELETING' ? { id: row.id, requestId: row.deleteRequestId! } : null
+    state.error = ''
+    state.notice =
+      row.state === 'DELETED'
+        ? '视频对象已核验清理，额度已回收。'
+        : '删除已受理，预览已撤回；核验清理完成后才会释放额度。'
+  }
+  async function retryDeletion() {
+    const input = state.pendingDeletion
+    if (!input || state.busy || !session.user || disposed) return
+    const scope = capture()
+    mutation++
+    state.busy = true
+    state.error = ''
+    state.notice = ''
+    try {
+      const row = await api.delete(input.id, input.requestId)
+      if (!valid(scope)) return
+      if (
+        row.id !== input.id ||
+        row.deleteRequestId !== input.requestId ||
+        !['DELETING', 'DELETED'].includes(row.state)
+      )
+        throw new Error('原删除结果尚未确认')
+      acceptDeletion(row)
+    } catch (failure) {
+      if (valid(scope)) state.error = '删除结果尚未确认。可查询原结果或重试原删除；不会自动换请求或提前释放额度。'
+    } finally {
+      if (valid(scope)) state.busy = false
+    }
+  }
+  async function remove(row: VideoDraft) {
+    if (
+      !state.capability?.deletionEnabled ||
+      state.busy ||
+      state.pending ||
+      state.pendingDeletion ||
+      state.trackedDeletion ||
+      !session.user ||
+      disposed ||
+      ['DELETING', 'DELETED'].includes(row.state) ||
+      !state.items.some((item) => item.id === row.id)
+    )
+      return
+    state.pendingDeletion = { id: row.id, requestId: uuid(), title: row.title }
+    await retryDeletion()
+  }
   return {
     state,
     load,
     upload,
     retry: submit,
+    remove,
+    retryDeletion,
     reset,
     dispose() {
       reset()

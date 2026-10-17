@@ -19,6 +19,179 @@ class MinioVideoStorageTest {
     Path directory;
 
     @Test
+    void removesExactKeyVersionsAndDeleteMarkersButNeverSimilarPrefix() throws Exception {
+        String key = "videos/42/36f1fb46-91cd-4f32-b174-55b0c5d4bf17/source.mp4";
+        var deleted = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            try {
+                String query = exchange.getRequestURI().getQuery();
+                if (query != null && query.contains("location")) {
+                    xml(
+                        exchange,
+                        200,
+                        "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">us-east-1</LocationConstraint>"
+                    );
+                    return;
+                }
+                if (query != null && query.contains("versions")) {
+                    String entries = "";
+                    if (!deleted.contains("versionId=v1")) entries += version("Version", key, "v1");
+                    if (!deleted.contains("versionId=null")) entries += version("Version", key, "null");
+                    if (!deleted.contains("versionId=marker")) entries += version("DeleteMarker", key, "marker");
+                    entries += version("Version", key + "-other", "foreign");
+                    xml(exchange, 200, listing(key, entries));
+                    return;
+                }
+                if (exchange.getRequestMethod().equals("DELETE")) {
+                    if (
+                        !exchange
+                            .getRequestURI()
+                            .getPath()
+                            .equals("/private-test/" + key)
+                    ) {
+                        exchange.sendResponseHeaders(500, -1);
+                        return;
+                    }
+                    deleted.add(query);
+                    exchange.sendResponseHeaders(204, -1);
+                    return;
+                }
+                exchange.sendResponseHeaders(404, -1);
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            storage(server).removeAndConfirm(
+                key,
+                System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+            );
+            assertEquals(
+                java.util.Set.of("versionId=v1", "versionId=null", "versionId=marker"),
+                java.util.Set.copyOf(deleted)
+            );
+            assertEquals(3, deleted.size());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void cleanupNeverConfusesForbiddenServerErrorRemainingVersionOrExpiredBudgetWithAbsence() throws Exception {
+        String key = "videos/42/36f1fb46-91cd-4f32-b174-55b0c5d4bf17/source.mp4";
+        for (String mode : List.of("forbidden", "server", "remaining", "too-many", "head-forbidden", "head-present")) {
+            var mutations = new java.util.concurrent.atomic.AtomicInteger();
+            var server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                try {
+                    String query = exchange.getRequestURI().getQuery();
+                    if (query != null && query.contains("location")) {
+                        xml(
+                            exchange,
+                            200,
+                            "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">us-east-1</LocationConstraint>"
+                        );
+                        return;
+                    }
+                    if (query != null && query.contains("versions")) {
+                        if (mode.equals("forbidden")) {
+                            xml(exchange, 403, "<Error><Code>AccessDenied</Code><Message>synthetic</Message></Error>");
+                            return;
+                        }
+                        if (mode.equals("server")) {
+                            xml(exchange, 500, "<Error><Code>InternalError</Code><Message>synthetic</Message></Error>");
+                            return;
+                        }
+                        String entries = mode.equals("remaining") ? version("Version", key, "retained") : "";
+                        if (mode.equals("too-many")) for (int n = 0; n < 9; n++) entries += version(
+                            "Version",
+                            key,
+                            "v" + n
+                        );
+                        xml(exchange, 200, listing(key, entries));
+                        return;
+                    }
+                    if (exchange.getRequestMethod().equals("DELETE")) {
+                        mutations.incrementAndGet();
+                        exchange.sendResponseHeaders(204, -1);
+                        return;
+                    }
+                    exchange.sendResponseHeaders(mode.equals("head-present") ? 200 : 403, -1);
+                } finally {
+                    exchange.close();
+                }
+            });
+            server.start();
+            try {
+                var failure = assertThrows(
+                    ExternalDependencyUnavailableException.class,
+                    () ->
+                        storage(server).removeAndConfirm(
+                            key,
+                            System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+                        ),
+                    mode
+                );
+                assertEquals("视频对象清理尚未核验", failure.getMessage());
+                assertNull(failure.getCause());
+                if (!mode.equals("remaining")) assertEquals(0, mutations.get(), mode);
+                assertThrows(ExternalDependencyUnavailableException.class, () ->
+                    storage(server).removeAndConfirm(key, System.nanoTime() - 1)
+                );
+            } finally {
+                server.stop(0);
+            }
+        }
+    }
+
+    private static MinioVideoStorage storage(HttpServer server) {
+        return new MinioVideoStorage(
+            "http://127.0.0.1:" + server.getAddress().getPort(),
+            "private-test",
+            "synthetic-access",
+            "synthetic-secret-for-test"
+        );
+    }
+
+    private static String listing(String key, String entries) {
+        return (
+            "<ListVersionsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>private-test</Name><Prefix>" +
+            key +
+            "</Prefix><KeyMarker/><VersionIdMarker/><MaxKeys>16</MaxKeys><IsTruncated>false</IsTruncated>" +
+            entries +
+            "</ListVersionsResult>"
+        );
+    }
+
+    private static String version(String type, String key, String id) {
+        return (
+            "<" +
+            type +
+            "><Key>" +
+            key +
+            "</Key><VersionId>" +
+            id +
+            "</VersionId><IsLatest>false</IsLatest><LastModified>2026-10-17T00:00:00.000Z</LastModified>" +
+            (type.equals("Version")
+                ? "<ETag>synthetic</ETag><Size>16</Size><StorageClass>STANDARD</StorageClass>"
+                : "") +
+            "</" +
+            type +
+            ">"
+        );
+    }
+
+    private static void xml(com.sun.net.httpserver.HttpExchange exchange, int status, String value)
+        throws java.io.IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/xml");
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+    }
+
+    @Test
     void fixedPrivatePrefixStreamsBytesAndRangeAndNeverPresignsOrReadsWholeFile() throws Exception {
         var requests = new ArrayList<String>();
         byte[] bytes = new byte[1024];

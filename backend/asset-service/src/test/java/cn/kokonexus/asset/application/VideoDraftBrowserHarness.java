@@ -53,6 +53,7 @@ public final class VideoDraftBrowserHarness {
         VideoDraftState state,
         VideoStorage storage,
         VideoDraftWorker worker,
+        VideoDeletionState deletions,
         Path work,
         Path source
     ) throws Exception {
@@ -73,6 +74,7 @@ public final class VideoDraftBrowserHarness {
             factory.registerSingleton("videoUpload", upload);
             factory.registerSingleton("videoState", state);
             factory.registerSingleton("videoStorage", storage);
+            factory.registerSingleton("videoDeletions", deletions);
         });
         var factory = new TomcatServletWebServerFactory();
         factory.setPort(0);
@@ -92,10 +94,12 @@ public final class VideoDraftBrowserHarness {
             var filter = servletContext.addFilter("trustedTestGateway", new AssetGatewayFilter(key));
             filter.addMappingForUrlPatterns(EnumSet.of(DispatcherType.REQUEST), false, "/*");
         });
-        var scheduler = Executors.newSingleThreadScheduledExecutor();
+        var scheduler = Executors.newScheduledThreadPool(2);
+        var cleaner = new VideoDeletionWorker(deletions, storage);
         try {
             server.start();
             scheduler.scheduleWithFixedDelay(worker::work, 0, 1, TimeUnit.SECONDS);
+            scheduler.scheduleWithFixedDelay(cleaner::work, 0, 1, TimeUnit.SECONDS);
             var builder = new ProcessBuilder("node", script)
                 .directory(Path.of(script).toAbsolutePath().getParent().toFile())
                 .redirectErrorStream(true)
@@ -123,6 +127,7 @@ public final class VideoDraftBrowserHarness {
             server.stop();
             server.destroy();
             context.close();
+            cleaner.close();
         }
     }
 }

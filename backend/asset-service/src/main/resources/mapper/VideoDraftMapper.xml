@@ -22,11 +22,12 @@
   >SELECT * FROM video_draft WHERE owner_id=#{owner} AND request_id=#{request} FOR UPDATE</select>
   <insert
     id="insertDraft"
-  >INSERT INTO video_draft(id,owner_id,request_id,title,description,source_sha256,source_bytes,state,created_at,updated_at)
-    VALUES(#{row.id},#{row.ownerId},#{row.requestId},#{row.title},#{row.description},#{row.sourceSha256},#{row.sourceBytes},'UPLOADING',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))</insert>
+  >INSERT INTO video_draft(id,owner_id,request_id,title,description,source_sha256,source_bytes,state,write_tracking,created_at,updated_at)
+    VALUES(#{row.id},#{row.ownerId},#{row.requestId},#{row.title},#{row.description},#{row.sourceSha256},#{row.sourceBytes},'UPLOADING',TRUE,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))</insert>
   <update
     id="queue"
-  >UPDATE video_draft SET state='QUEUED',updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='UPLOADING'</update>
+  >UPDATE video_draft SET state='QUEUED',updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='UPLOADING'
+    AND EXISTS(SELECT 1 FROM video_object_write WHERE video_id=#{id} AND kind='SOURCE' AND state='SETTLED')</update>
   <update id="expire">UPDATE video_draft SET state='FAILED',failure_code='INTERRUPTED',updated_at=UTC_TIMESTAMP(6)
     WHERE (state='PROCESSING' AND lease_until &lt;= UTC_TIMESTAMP(6)) OR (state='UPLOADING' AND created_at &lt; UTC_TIMESTAMP(6)-INTERVAL 15 MINUTE) LIMIT 50</update>
   <select
@@ -34,16 +35,16 @@
     resultType="int"
     useCache="false"
     flushCache="true"
-  >SELECT COUNT(*) FROM video_draft WHERE state='PROCESSING'</select>
+  >SELECT COUNT(*) FROM video_draft WHERE state='PROCESSING' OR (processing_settled=FALSE AND lease_until &gt; UTC_TIMESTAMP(6))</select>
   <select
     id="next"
     resultType="cn.kokonexus.asset.domain.VideoDraft"
     useCache="false"
     flushCache="true"
-  >SELECT * FROM video_draft WHERE state='QUEUED' ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED</select>
+  >SELECT * FROM video_draft WHERE state='QUEUED' AND write_tracking=TRUE ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED</select>
   <update
     id="claim"
-  >UPDATE video_draft SET state='PROCESSING',run_id=#{run},lease_until=UTC_TIMESTAMP(6)+INTERVAL 180 SECOND,updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='QUEUED'</update>
+  >UPDATE video_draft SET state='PROCESSING',processing_settled=FALSE,run_id=#{run},lease_until=UTC_TIMESTAMP(6)+INTERVAL 180 SECOND,updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='QUEUED' AND write_tracking=TRUE</update>
   <!-- 下载完成后仍须为100秒处理和有界上传留出余量，迟到任务不能再启动昂贵进程。 -->
   <select
     id="canProcess"
@@ -54,14 +55,93 @@
   <update
     id="ready"
   >UPDATE video_draft SET state='READY',output_bytes=#{row.outputBytes},duration_millis=#{row.durationMillis},width=#{row.width},height=#{row.height},updated_at=UTC_TIMESTAMP(6)
-    WHERE id=#{row.id} AND state='PROCESSING' AND run_id=#{row.runId} AND lease_until &gt; UTC_TIMESTAMP(6)</update>
+    WHERE id=#{row.id} AND state='PROCESSING' AND run_id=#{row.runId} AND lease_until &gt; UTC_TIMESTAMP(6)
+    AND EXISTS(SELECT 1 FROM video_object_write w WHERE w.video_id=#{row.id} AND w.kind='OUTPUT' AND w.run_id=#{row.runId} AND w.state='SETTLED')</update>
   <update
     id="fail"
   >UPDATE video_draft SET state='FAILED',failure_code=#{code},updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='PROCESSING' AND run_id=#{run}</update>
+  <sql id="viewColumns">v.*,
+    CASE WHEN v.state&lt;&gt;'DELETING' THEN NULL
+      WHEN v.write_tracking=FALSE THEN 'LEGACY_WRITES_UNVERIFIED'
+      WHEN EXISTS(SELECT 1 FROM video_object_write w WHERE w.video_id=v.id AND w.state&lt;&gt;'SETTLED') THEN 'WRITES_UNVERIFIED'
+      WHEN v.processing_settled=FALSE AND v.lease_until&gt;UTC_TIMESTAMP(6) THEN 'WAIT_PROCESSING'
+      WHEN v.delete_attempts&gt;=5 AND (v.delete_lease_until IS NULL OR v.delete_lease_until&lt;=UTC_TIMESTAMP(6)) THEN 'CLEANUP_FAILED'
+      ELSE v.delete_error END AS deletion_wait_reason
+  </sql>
   <select
     id="owned"
     resultType="cn.kokonexus.asset.domain.VideoDraft"
     useCache="false"
     flushCache="true"
-  >SELECT * FROM video_draft WHERE owner_id=#{owner} ORDER BY created_at DESC,id DESC LIMIT 5</select>
+  >SELECT <include
+      refid="viewColumns"
+    /> FROM video_draft v WHERE v.active_owner_id=#{owner} ORDER BY v.created_at DESC,v.id DESC LIMIT 5</select>
+  <select
+    id="ownedOne"
+    resultType="cn.kokonexus.asset.domain.VideoDraft"
+    useCache="false"
+    flushCache="true"
+  >SELECT <include refid="viewColumns" /> FROM video_draft v WHERE v.id=#{id} AND v.owner_id=#{owner}</select>
+  <select
+    id="lockVideo"
+    resultType="cn.kokonexus.asset.domain.VideoDraft"
+    useCache="false"
+    flushCache="true"
+  >SELECT * FROM video_draft WHERE id=#{id} FOR UPDATE</select>
+  <insert
+    id="beginWrite"
+  >INSERT INTO video_object_write(id,video_id,kind,run_id,state,created_at) VALUES(#{id},#{video},#{kind},#{run},'WRITING',UTC_TIMESTAMP(6))</insert>
+  <update
+    id="settleWrite"
+  >UPDATE video_object_write SET state='SETTLED',settled_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND video_id=#{video} AND state='WRITING'</update>
+  <select
+    id="settledWrite"
+    resultType="boolean"
+    useCache="false"
+    flushCache="true"
+  >SELECT EXISTS(SELECT 1 FROM video_object_write WHERE id=#{id} AND video_id=#{video} AND state='SETTLED')</select>
+  <select
+    id="outputAllowed"
+    resultType="boolean"
+    useCache="false"
+    flushCache="true"
+  >SELECT EXISTS(SELECT 1 FROM video_draft WHERE id=#{id} AND write_tracking=TRUE AND state='PROCESSING' AND run_id=#{run} AND lease_until&gt;UTC_TIMESTAMP(6))</select>
+  <update
+    id="uncertainWrite"
+  >UPDATE video_object_write SET state='UNCERTAIN' WHERE id=#{id} AND video_id=#{video} AND state='WRITING'</update>
+  <select
+    id="unresolvedWrites"
+    resultType="int"
+    useCache="false"
+    flushCache="true"
+  >SELECT COUNT(*) FROM video_object_write WHERE video_id=#{id} AND state&lt;&gt;'SETTLED'</select>
+  <update id="processed">UPDATE video_draft SET processing_settled=TRUE WHERE id=#{id} AND run_id=#{run}</update>
+  <update
+    id="requestDelete"
+  >UPDATE video_draft SET state='DELETING',delete_request_id=#{request},delete_requested_at=UTC_TIMESTAMP(6),delete_next_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state NOT IN ('DELETING','DELETED')</update>
+  <select
+    id="cleanupBusy"
+    resultType="int"
+    useCache="false"
+    flushCache="true"
+  >SELECT COUNT(*) FROM video_draft WHERE state='DELETING' AND delete_lease_until&gt;UTC_TIMESTAMP(6)</select>
+  <select id="nextDeletion" resultType="cn.kokonexus.asset.domain.VideoDraft" useCache="false" flushCache="true">
+    SELECT v.* FROM video_draft v WHERE v.state='DELETING' AND v.write_tracking=TRUE AND v.delete_attempts&lt;5
+    AND v.delete_next_at&lt;=UTC_TIMESTAMP(6) AND (v.delete_lease_until IS NULL OR v.delete_lease_until&lt;=UTC_TIMESTAMP(6))
+    AND (v.processing_settled=TRUE OR v.lease_until IS NULL OR v.lease_until&lt;=UTC_TIMESTAMP(6))
+    AND NOT EXISTS(SELECT 1 FROM video_object_write w WHERE w.video_id=v.id AND w.state&lt;&gt;'SETTLED')
+    ORDER BY v.delete_next_at,v.id LIMIT 1 FOR UPDATE SKIP LOCKED
+  </select>
+  <update
+    id="claimDeletion"
+  >UPDATE video_draft SET delete_token=#{token},delete_lease_until=UTC_TIMESTAMP(6)+INTERVAL 120 SECOND,delete_attempts=delete_attempts+1 WHERE id=#{id} AND state='DELETING' AND delete_attempts&lt;5</update>
+  <update
+    id="deletionDone"
+  >UPDATE video_draft SET state='DELETED',deleted_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6),delete_token=NULL,delete_lease_until=NULL,delete_next_at=NULL,delete_error=NULL WHERE id=#{id} AND state='DELETING' AND delete_token=#{token} AND delete_lease_until&gt;UTC_TIMESTAMP(6)</update>
+  <update
+    id="deletionFailed"
+  >UPDATE video_draft SET delete_token=NULL,delete_lease_until=NULL,delete_error='STORAGE_UNVERIFIED',delete_next_at=CASE WHEN delete_attempts&lt;5 THEN TIMESTAMPADD(SECOND,POW(2,delete_attempts),UTC_TIMESTAMP(6)) ELSE NULL END WHERE id=#{id} AND state='DELETING' AND delete_token=#{token} AND delete_lease_until&gt;UTC_TIMESTAMP(6)</update>
+  <update
+    id="release"
+  >UPDATE video_capacity SET draft_count=draft_count-1 WHERE owner_id=#{owner} AND draft_count&gt;0</update>
 </mapper>

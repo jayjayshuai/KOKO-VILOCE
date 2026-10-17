@@ -14,6 +14,7 @@ const id = '36f1fb46-91cd-4f32-b174-55b0c5d4bf17',
   requestId = '46f1fb46-91cd-4f32-b174-55b0c5d4bf17'
 const capability = {
   enabled: true,
+  deletionEnabled: true,
   maxBytes: 33554432,
   maxSeconds: 180,
   maxDrafts: 5,
@@ -47,7 +48,14 @@ function deferred() {
 async function setup(overrides = {}) {
   const session = vue.reactive({ user: { id: '42' }, sessionRevision: 1 }),
     calls = []
-  const api = { capability: async () => capability, list: async () => [], upload: async () => row(), ...overrides }
+  const api = {
+    capability: async () => capability,
+    list: async () => [],
+    upload: async () => row(),
+    read: async () => row(),
+    delete: async () => row({ state: 'DELETING', deleteRequestId: requestId }),
+    ...overrides,
+  }
   const observed = Object.fromEntries(
     Object.entries(api).map(([key, fn]) => [
       key,
@@ -197,4 +205,106 @@ test('损坏READY产物不能得到预览URL，源文件和对象键不出现在
     module.videoDraft(row({ state: 'READY', outputBytes: 2048, durationMillis: 2000, width: 1280, height: 720 })).state,
     'READY',
   )
+})
+
+test('未知删除保持原UUID，不根据列表缺失或404假报清理；只显式重试原请求', async () => {
+  let fail = true,
+    missing = false
+  const h = await setup({
+    list: async () => (missing ? [] : [row()]),
+    read: async () => {
+      throw new ApiRequestError('not found', 404)
+    },
+    delete: async () => {
+      if (fail) throw new ApiRequestError('lost', 0)
+      return row({ state: 'DELETING', deleteRequestId: requestId })
+    },
+  })
+  await h.workspace.remove(h.workspace.state.items[0])
+  assert.ok(h.workspace.state.pendingDeletion)
+  missing = true
+  await h.workspace.load()
+  assert.ok(h.workspace.state.pendingDeletion)
+  assert.equal(h.workspace.state.notice, '')
+  await h.workspace.upload(file, 'another', '')
+  assert.equal(
+    h.calls.some((c) => c.key === 'upload'),
+    false,
+  )
+  fail = false
+  await h.workspace.retryDeletion()
+  assert.equal(h.workspace.state.pendingDeletion, null)
+  assert.ok(h.workspace.state.trackedDeletion)
+  assert.match(h.workspace.state.notice, /完成后才会释放/)
+  const writes = h.calls.filter((c) => c.key === 'delete')
+  assert.equal(writes.length, 2)
+  assert.deepEqual(writes[0].args, writes[1].args)
+})
+
+test('删除轮询需要本人原DELETED回执才显示额度回收，受理不等于完成', async () => {
+  let receipt = row({ state: 'DELETING', deleteRequestId: requestId }),
+    listed = [row()]
+  const h = await setup({ list: async () => listed, read: async () => receipt })
+  await h.workspace.remove(h.workspace.state.items[0])
+  assert.equal(h.workspace.state.items.length, 1)
+  assert.equal(h.workspace.state.items[0].state, 'DELETING')
+  listed = []
+  receipt = row({ state: 'DELETED', deleteRequestId: requestId })
+  await h.workspace.load(true)
+  assert.equal(h.workspace.state.items.length, 0)
+  assert.equal(h.workspace.state.trackedDeletion, null)
+  assert.match(h.workspace.state.notice, /额度已回收/)
+})
+
+test('账号轮次变化后迟到删除回执不能修改新账号，旧列表不能覆盖删除', async () => {
+  const wait = deferred()
+  const h = await setup({ list: async () => [row()], delete: () => wait.promise })
+  const removing = h.workspace.remove(h.workspace.state.items[0])
+  h.session.sessionRevision++
+  h.workspace.reset()
+  wait.resolve(row({ state: 'DELETED', deleteRequestId: requestId }))
+  await removing
+  assert.equal(h.workspace.state.items.length, 0)
+  assert.equal(h.workspace.state.notice, '')
+  assert.equal(h.workspace.state.pendingDeletion, null)
+})
+
+test('旧服务没有删除门禁时不提交删除；伪造DELETED或不匹配回执不清理原意图', async () => {
+  const old = await setup({
+    capability: async () => ({ ...capability, deletionEnabled: undefined }),
+    list: async () => [row()],
+  })
+  await old.workspace.remove(old.workspace.state.items[0])
+  assert.equal(
+    old.calls.some((c) => c.key === 'delete'),
+    false,
+  )
+  const mismatch = await setup({
+    list: async () => [row()],
+    delete: async () => row({ state: 'DELETED', deleteRequestId: '56f1fb46-91cd-4f32-b174-55b0c5d4bf17' }),
+  })
+  await mismatch.workspace.remove(mismatch.workspace.state.items[0])
+  assert.ok(mismatch.workspace.state.pendingDeletion)
+  assert.equal(mismatch.workspace.state.items.length, 1)
+  assert.equal(mismatch.workspace.state.notice, '')
+})
+
+test('删除API固定UUID且不携带对象键，损坏墓碑/等待原因被拒绝', async () => {
+  const calls = []
+  const module = await executeTs('services/video-drafts.ts', {
+    './http': {
+      apiBaseUrl: '/koko-api',
+      request: async (path, options) => {
+        calls.push({ path, options })
+        return row({ state: 'DELETING', deleteRequestId: requestId })
+      },
+    },
+    './chat': { messageUuid: () => requestId },
+  })
+  await module.videoDraftApi.delete(id, requestId)
+  assert.equal(calls[0].path, `/assets/videos/${id}/deletion`)
+  assert.deepEqual(JSON.parse(calls[0].options.body), { requestId })
+  assert.throws(() => module.videoDraft(row({ state: 'DELETED' })), /删除状态/)
+  assert.throws(() => module.videoDraft(row({ deletionWaitReason: 'vendor-secret' })), /删除状态/)
+  assert.equal(module.videoDraft(row()).deleteRequestId, null)
 })

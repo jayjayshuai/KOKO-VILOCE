@@ -87,12 +87,22 @@ public class VideoDraftWorker {
                 "Video processing lease budget"
             );
             var result = processor.process(source, output);
-            storage.put(VideoDraftService.outputKey(row), output);
+            var ticket = state.beginOutput(row);
+            try {
+                storage.put(VideoDraftService.outputKey(row), output);
+            } catch (RuntimeException failure) {
+                try {
+                    state.writeUncertain(ticket);
+                } catch (RuntimeException unconfirmed) {
+                    failure.addSuppressed(unconfirmed);
+                }
+                throw failure;
+            }
             row.setOutputBytes(Files.size(output));
             row.setDurationMillis(result.durationMillis());
             row.setWidth(result.width());
             row.setHeight(result.height());
-            if (!state.ready(row)) log.warn("Video completion fenced id={}", row.getId());
+            if (!state.outputStored(row, ticket)) log.warn("Video completion fenced id={}", row.getId());
         } catch (Exception failure) {
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             if (row != null) {
@@ -112,6 +122,11 @@ public class VideoDraftWorker {
                 log.warn("Video processing failed id={} type={}", row.getId(), failure.getClass().getSimpleName());
             } else log.warn("Video scan unavailable type={}", failure.getClass().getSimpleName());
         } finally {
+            if (row != null) try {
+                state.processed(row);
+            } catch (RuntimeException unconfirmed) {
+                log.warn("Video processing completion unconfirmed id={}", row.getId());
+            }
             if (directory != null) try {
                 files.cleanup(directory);
             } catch (Exception failure) {

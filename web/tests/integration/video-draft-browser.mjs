@@ -16,9 +16,11 @@ assert.ok(key.startsWith('synthetic-browser-gateway-'), 'Only the isolated test 
 await mkdir(evidence, { recursive: false })
 let actor = '201',
   loseReply = true,
+  loseDeleteReply = true,
   origin,
   backendRequests = 0
 const originals = [],
+  deletionOriginals = [],
   ranges = [],
   sockets = new Set()
 const report = {
@@ -44,7 +46,9 @@ const server = createServer(async (req, res) => {
       const chunks = []
       for await (const chunk of req) chunks.push(chunk)
       const body = Buffer.concat(chunks)
-      if (req.method === 'POST')
+      const deleting = path.endsWith('/deletion')
+      if (req.method === 'POST' && deleting) deletionOriginals.push(JSON.parse(body.toString('utf8')).requestId)
+      if (req.method === 'POST' && !deleting)
         originals.push(body.toString('latin1').match(/name="requestId"\r\n\r\n([a-f0-9-]+)/)?.[1])
       const headers = { ...req.headers, host: '127.0.0.1:' + port, 'x-koko-user-id': actor, 'x-koko-gateway-key': key }
       delete headers.connection
@@ -58,6 +62,17 @@ const server = createServer(async (req, res) => {
         },
         (reply) => {
           backendRequests++
+          if (req.method === 'POST' && deleting && loseDeleteReply && reply.statusCode === 202) {
+            loseDeleteReply = false
+            reply.resume()
+            reply.on('end', () =>
+              send(res, 503, {
+                code: 'EXPLICIT_LOST_DELETE_REPLY',
+                message: 'Runtime injected response loss after actual accepted deletion',
+              }),
+            )
+            return
+          }
           if (req.method === 'POST' && loseReply && reply.statusCode === 202) {
             loseReply = false
             reply.resume()
@@ -216,6 +231,46 @@ try {
   assert.equal(await page.locator('video').count(), 0)
   assert.equal(await page.getByRole('button', { name: '预览视频', exact: true }).count(), 0)
   report.groups.push('REAL_SQL_OTHER_OWNER_PREVIEW_404_NO_PRIVATE_VIDEO_IN_OTHER_ACCOUNT_LIST')
+  const deletedId = previewPath.split('/').at(-2)
+  const deniedDelete = await page.evaluate(
+    async ({ id, requestId }) =>
+      (
+        await fetch(`/koko-api/assets/videos/${id}/deletion`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requestId }),
+        })
+      ).status,
+    { id: deletedId, requestId: '80ddc61b-e7ac-48dc-94cc-061d864ac345' },
+  )
+  assert.equal(deniedDelete, 404)
+  deletionOriginals.length = 0
+  actor = '201'
+  await page.reload()
+  const removeTile = page.locator('.video-draft-list li').filter({ hasText: '浏览器真实视频' })
+  await removeTile.getByRole('button', { name: '预览视频', exact: true }).click()
+  await page.locator('video').waitFor()
+  page.once('dialog', (dialog) => dialog.accept())
+  await removeTile.getByRole('button', { name: '删除草稿', exact: true }).click()
+  await page.getByRole('alert').filter({ hasText: '删除结果尚未确认' }).waitFor()
+  assert.equal(await page.locator('video').count(), 0)
+  await page.getByRole('button', { name: '重试原删除', exact: true }).click()
+  assert.equal(deletionOriginals.length, 2)
+  assert.equal(deletionOriginals[0], deletionOriginals[1])
+  await page.getByText('视频对象已核验清理，额度已回收。', { exact: true }).waitFor({ timeout: 20000 })
+  assert.equal(await removeTile.count(), 0)
+  const receipt = await page.evaluate(async (id) => {
+    const response = await fetch(`/koko-api/assets/videos/${id}`)
+    return { status: response.status, row: await response.json() }
+  }, deletedId)
+  assert.equal(receipt.status, 200)
+  assert.equal(receipt.row.state, 'DELETED')
+  assert.equal(receipt.row.deleteRequestId, deletionOriginals[0])
+  assert.equal(await page.evaluate(async (path) => (await fetch(path)).status, previewPath), 404)
+  await page.screenshot({ path: evidence + '/deleted-verified.png', fullPage: true })
+  report.groups.push(
+    'OTHER_OWNER_DELETE_404_REAL_DELETE_ACCEPT_REPLY_LOST_ORIGINAL_RETRY_WITHDRAW_PREVIEW_DELETED_RECEIPT_AND_QUOTA_FACT',
+  )
   assert.equal(report.pageErrors, 0)
   report.passed = true
 } catch (failure) {
