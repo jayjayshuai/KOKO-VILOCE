@@ -8,6 +8,7 @@ const views = {
   'voice-room': () => import('../views/VoiceRoomView.vue'),
   studio: () => import('../views/StudioView.vue'),
   assets: () => import('../views/AssetWorkspaceView.vue'),
+  'video-studio': () => import('../views/VideoStudioView.vue'),
   'voice-owner': () => import('../views/VoiceOwnerView.vue'),
   messages: () => import('../components/ChatPanel.vue'),
   notifications: () => import('../views/NotificationCenterView.vue'),

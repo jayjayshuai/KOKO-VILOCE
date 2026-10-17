@@ -82,6 +82,14 @@ export const workspacePages: WorkspacePage[] = [
     requiresAuth: true,
   },
   {
+    name: 'video-studio',
+    path: '/studio/videos',
+    title: '视频工作台',
+    description: '管理私有视频草稿、真实处理状态与本人预览。',
+    group: 'creator',
+    requiresAuth: true,
+  },
+  {
     name: 'voice-owner',
     path: '/studio/voice',
     title: '我的语音房',
