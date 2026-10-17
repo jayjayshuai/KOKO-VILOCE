@@ -18,6 +18,9 @@ test('private files stay blocked even with Git force-add', () => {
     'backend/voice-service/src/main/resources/application-prod.yml',
     'backend/gateway-service/src/main/resources/application-prod.yaml',
     'backend/chat-service/src/main/resources/application-prod.properties',
+    'minio.license',
+    'config/minio.license.bak',
+    'private/AISTOR.LICENSE',
   ]) {
     assert.ok(inspectFile(file, 'redacted').includes('private-path-or-artifact'))
   }
@@ -203,6 +206,22 @@ test('actual force-added private production profile is blocked even without lite
   assert.equal(result.status, 1)
   assert.ok(result.stderr.includes('private-path-or-artifact'))
   assert.ok(result.stderr.includes(relative))
+})
+
+test('actual forced vendor runtime license is blocked without exposing opaque contents; legal LICENSE remains allowed', () => {
+  const directory = repository()
+  const opaque = ['synthetic', '-opaque-runtime-license-canary'].join('')
+  writeFileSync(path.join(directory, '.gitignore'), 'minio.license\n')
+  writeFileSync(path.join(directory, 'minio.license'), opaque)
+  git(directory, ['add', '-f', 'minio.license'])
+  const result = scan(directory, '--staged')
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('private-path-or-artifact'))
+  assert.ok(!result.stderr.includes(opaque))
+  git(directory, ['rm', '--cached', 'minio.license'])
+  writeFileSync(path.join(directory, 'LICENSE'), 'Synthetic public software license notice')
+  git(directory, ['add', 'LICENSE'])
+  assert.equal(scan(directory, '--staged').status, 0)
 })
 
 test('actual deleted historical secret stays blocked and non-HEAD push cannot bypass', () => {

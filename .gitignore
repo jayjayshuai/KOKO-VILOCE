@@ -73,6 +73,11 @@ __pycache__/
 *.pem
 *.p12
 *.pfx
+# 供应商运行许可是私有凭据；与允许发布的开源 LICENSE/NOTICE 文件区分。
+minio.license
+minio.license.*
+aistor.license
+aistor.license.*
 *.log
 .DS_Store
 Thumbs.db

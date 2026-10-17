@@ -80,6 +80,7 @@ export function inspectFile(filename, source, privateHosts = [], currentConfigur
     /\.(?:tgz|tar\.gz|zip|jar|class|dump|pem|key|p12|pfx|pyc|tsbuildinfo|log)$/i.test(normalized) ||
     (/^\.env(?:\.|$)/.test(basename) && !/^\.env(?:\.[a-z0-9_-]+)?\.example$/i.test(basename)) ||
     /^(?:runtime(?:[._-].*)?\.json|credentials?\.json|secrets?\.(?:json|ya?ml|toml|properties))$/i.test(basename) ||
+    /^(?:minio|aistor)\.license(?:\..*)?$/i.test(basename) ||
     /(^|\/)src\/main\/resources\/application-prod\.(?:ya?ml|properties)$/i.test(normalized) ||
     (/\.sql$/i.test(normalized) &&
       !/^backend\/[^/]+\/src\/(?:main\/resources\/db\/migration|test\/resources)\//.test(normalized))

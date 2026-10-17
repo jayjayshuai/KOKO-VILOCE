@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -34,8 +34,10 @@ test('开发文档、办公文档及docs目录不发布，源码、迁移和必�
 })
 
 test('实际Git：历史文档不强推重写，当前文档移出保留本地，强制添加再被提交/推送守卫拒绝', () => {
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'),
-    directory = mkdtempSync(path.join(root, '.runtime', 'document-policy-fixture-'))
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+  // 全新归档/CI中也能独立运行，不能依赖另一测试碰巧先创建私有运行目录。
+  mkdirSync(path.join(root, '.runtime'), { recursive: true })
+  const directory = mkdtempSync(path.join(root, '.runtime', 'document-policy-fixture-'))
   const env = {
     ...process.env,
     GIT_AUTHOR_NAME: 'Policy Fixture',
