@@ -150,7 +150,7 @@ public final class NativeCallMysqlCheck {
         );
         expect(IllegalStateException.class, () -> calls.command(2, SCOPE, ring.id(), accept, 1, "DECLINE"));
         expect(IllegalStateException.class, () ->
-            calls.command(2, SCOPE, ring.id(), UUID.randomUUID().toString(), 1, "LEAVE")
+            calls.command(2, SCOPE, ring.id(), UUID.randomUUID().toString(), 3, "LEAVE")
         );
         calls.heartbeat(2, SCOPE, ring.id());
         expect(IllegalStateException.class, () -> calls.heartbeat(2, OTHER_SCOPE, ring.id()));
@@ -257,8 +257,8 @@ public final class NativeCallMysqlCheck {
         expect(IllegalStateException.class, () ->
             calls.command(504, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 4, "ACCEPT")
         );
-        expect(IllegalStateException.class, () ->
-            calls.command(502, SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 1, "LEAVE")
+        expect(ForbiddenOperationException.class, () ->
+            calls.command(502, OTHER_SCOPE, concurrentRing.id(), UUID.randomUUID().toString(), 1, "LEAVE")
         );
         jdbc.update(
             "UPDATE chat_call SET ring_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE id=?",
@@ -275,6 +275,110 @@ public final class NativeCallMysqlCheck {
         groups.add(
             "CONCURRENT_INVITEES_SAME_VERSION_ACCEPT_EXACT_RECEIPTS_WITH_CROSS_SCOPE_FUTURE_LEAVE_EXPIRY_AND_ENDED_FENCES"
         );
+
+        String departuresGroup = conversation(jdbc, "GROUP", 601, 602, 603, 604, 605, 606);
+        var departures = calls.invite(
+            601,
+            SCOPE,
+            departuresGroup,
+            UUID.randomUUID().toString(),
+            List.of(602L, 603L, 604L, 605L, 606L)
+        );
+        for (long userId : List.of(602L, 604L, 605L))
+            calls.command(userId, SCOPE, departures.id(), UUID.randomUUID().toString(), 1, "ACCEPT");
+        expect(IllegalStateException.class, () ->
+            calls.command(601, SCOPE, departures.id(), UUID.randomUUID().toString(), 1, "END")
+        );
+        expect(IllegalStateException.class, () ->
+            calls.command(602, SCOPE, departures.id(), UUID.randomUUID().toString(), 5, "LEAVE")
+        );
+        expect(ForbiddenOperationException.class, () ->
+            calls.command(602, OTHER_SCOPE, departures.id(), UUID.randomUUID().toString(), 1, "LEAVE")
+        );
+        String declineId = UUID.randomUUID().toString();
+        var departureBarrier = new CyclicBarrier(2);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var decline = executor.submit(() -> {
+                departureBarrier.await(5, TimeUnit.SECONDS);
+                return calls.command(603, SCOPE, departures.id(), declineId, 1, "DECLINE");
+            });
+            var acceptLast = executor.submit(() -> {
+                departureBarrier.await(5, TimeUnit.SECONDS);
+                return calls.command(606, SCOPE, departures.id(), UUID.randomUUID().toString(), 1, "ACCEPT");
+            });
+            check(
+                java.util.Set.of(
+                    decline.get(10, TimeUnit.SECONDS).appliedVersion(),
+                    acceptLast.get(10, TimeUnit.SECONDS).appliedVersion()
+                ).equals(java.util.Set.of(5L, 6L)),
+                "Concurrent decline/accept lost a participant action"
+            );
+        }
+        check(
+            calls.command(603, SCOPE, departures.id(), declineId, 1, "DECLINE").current().version() == 6,
+            "Original stale decline receipt was not recoverable"
+        );
+        expect(IllegalStateException.class, () ->
+            calls.command(603, SCOPE, departures.id(), UUID.randomUUID().toString(), 1, "ACCEPT")
+        );
+        check(
+            jdbc.queryForObject(
+                "SELECT media_identity IS NULL AND busy_user_id IS NULL FROM chat_call_participant WHERE call_id=? AND user_id=603",
+                Boolean.class,
+                departures.id()
+            ),
+            "Declined user acquired media or retained busy slot"
+        );
+        groups.add(
+            "INDEPENDENT_STALE_DECLINE_CONCURRENT_ACCEPT_EXACT_RECEIPT_NO_MEDIA_OR_BUSY_AND_END_FUTURE_SCOPE_FENCES"
+        );
+
+        var leaves = Map.of(601L, UUID.randomUUID().toString(), 602L, UUID.randomUUID().toString());
+        var leaveBarrier = new CyclicBarrier(2);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var results = new java.util.ArrayList<java.util.concurrent.Future<NativeCallService.Result>>();
+            for (long userId : List.of(601L, 602L))
+                results.add(
+                    executor.submit(() -> {
+                        leaveBarrier.await(5, TimeUnit.SECONDS);
+                        return calls.command(userId, SCOPE, departures.id(), leaves.get(userId), 1, "LEAVE");
+                    })
+                );
+            var versions = new java.util.HashSet<Long>();
+            for (var result : results) versions.add(result.get(10, TimeUnit.SECONDS).appliedVersion());
+            check(versions.equals(java.util.Set.of(7L, 8L)), "Concurrent original leaves did not both commit");
+        }
+        for (long userId : List.of(601L, 602L)) {
+            var receipt = calls.command(userId, SCOPE, departures.id(), leaves.get(userId), 1, "LEAVE");
+            check(
+                receipt.current().state().equals("ACTIVE") &&
+                    receipt.current().version() == 8 &&
+                    calls.current(userId) == null,
+                "Original leave replay ended remaining members or retained busy slot"
+            );
+            check(
+                !calls.mediaAllows(userId, SCOPE, departures.id(), UUID.randomUUID().toString()),
+                "Departed user retained media access"
+            );
+        }
+        check(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM chat_call_media_retirement WHERE call_id=? AND action='PARTICIPANT'",
+                Integer.class,
+                departures.id()
+            ) == 2,
+            "Leave replay duplicated retirement or lost an original intent"
+        );
+        calls.command(604, SCOPE, departures.id(), UUID.randomUUID().toString(), 8, "LEAVE");
+        calls.command(605, SCOPE, departures.id(), UUID.randomUUID().toString(), 9, "LEAVE");
+        check(
+            calls.read(606, departures.id()).state().equals("ENDED"),
+            "Last two members leaving did not end the call"
+        );
+        expect(IllegalStateException.class, () ->
+            calls.command(606, SCOPE, departures.id(), UUID.randomUUID().toString(), 1, "LEAVE")
+        );
+        groups.add("CONCURRENT_STALE_SELF_LEAVES_RELEASE_BUSY_MEDIA_RETIRE_ONCE_REMAINDER_CONTINUES_AND_ENDED_FENCE");
 
         String busyA = conversation(jdbc, "DIRECT", 7, 8),
             busyB = conversation(jdbc, "DIRECT", 7, 9);

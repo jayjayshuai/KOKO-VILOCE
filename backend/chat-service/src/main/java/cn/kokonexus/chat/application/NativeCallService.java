@@ -235,13 +235,22 @@ public class NativeCallService {
         );
         // 群内其他人接听可先推进全局版本，但不消费本人的邀请。仅允许仍然待接听的
         // 本人按原明确意图接听；下方仍核验响铃期限、成员UUID、联系授权及所有有效租约。
-        // 同一人的跨网站抢接、未来版本和其他动作不放宽，原UUID收据也保留原请求版本。
+        // 同一人的跨网站抢接、未来版本和结束全体通话不放宽，原UUID收据保留原请求版本。
         boolean independentAcceptance =
             type.equals("ACCEPT") &&
             row.getVersion() > expectedVersion &&
             row.getState().equals("ACTIVE") &&
             self.getState().equals("INVITED");
-        if (row.getVersion() != expectedVersion && !independentAcceptance) throw conflict("通话状态已变化，请先刷新");
+        // 拒接和离开只撤销本人的参与，不能因他人接听/拒接推进版本而阻止本人退出。
+        // 仍保留成员UUID、本人状态及下方原接听网站核验；不能据此结束已变化的全体通话。
+        boolean independentDeparture =
+            row.getVersion() > expectedVersion &&
+            !row.getState().equals("ENDED") &&
+            ((type.equals("DECLINE") && self.getState().equals("INVITED")) ||
+                (type.equals("LEAVE") && self.getState().equals("ACCEPTED")));
+        if (row.getVersion() != expectedVersion && !independentAcceptance && !independentDeparture) throw conflict(
+            "通话状态已变化，请先刷新"
+        );
         if (row.getState().equals("ENDED")) {
             if (!type.equals("LEAVE") && !type.equals("END")) throw conflict("通话已经结束");
         } else {

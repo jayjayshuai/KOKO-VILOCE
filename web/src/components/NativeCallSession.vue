@@ -7,6 +7,7 @@ import { useNativeCallStore } from '../stores/native-call';
 import { nativeCallApi } from '../services/native-calls';
 import { audioConnectionOwnership } from '../services/audio-ownership';
 import { createNativeCallControl } from '../composables/native-call-control';
+import { nativeCallStatus, nativeParticipantLabel } from '../composables/native-call-presentation';
 import { useVoiceConnection } from '../composables/voice-connection';
 import { useDialogAccessibility } from '../composables/dialog-accessibility';
 
@@ -67,26 +68,20 @@ const visible = computed(() => !!auth.user && (!!state.view || !!state.pending |
 const initiator = computed(
   () => state.view?.participants.find((p) => p.userId === state.view?.initiatorId)?.displayName ?? '联系人',
 );
-const title = computed(() => (incoming.value ? `${initiator.value} 邀请你语音` : '私信 / 群聊语音'));
+const title = computed(() => {
+  if (incoming.value) return `${initiator.value} 邀请你语音`;
+  const others = state.view?.participants.filter((p) => p.userId !== auth.user?.id) ?? [];
+  const names = others
+    .slice(0, 2)
+    .map((p) => p.displayName)
+    .join('、');
+  return names ? `与 ${names}${others.length > 2 ? ' 等' : ''} 语音` : '私信 / 群聊语音';
+});
 /** SDK 反馈只属于曾尝试连接的当前活动通话，不把上次断线红字带到新来电/响铃/终态。 */
 const currentVoiceError = computed(() =>
   state.view?.id === mediaCallId && state.view?.state === 'ACTIVE' ? voiceError.value : '',
 );
-const label = computed(() =>
-  state.view?.state === 'ENDED'
-    ? '通话已结束'
-    : incoming.value
-      ? '接听前不会采集你的麦克风'
-      : state.view?.state === 'RINGING'
-        ? '等待对方接听…'
-        : phase.value === 'connected'
-          ? '音频已连接'
-          : phase.value === 'joining'
-            ? '正在连接音频…'
-            : phase.value === 'reconnecting'
-              ? '网络恢复中…'
-              : '声音未连接',
-);
+const label = computed(() => nativeCallStatus(state.view, auth.user?.id, phase.value, state.stopped));
 const draftOpen = computed(() => store.draft?.kind === 'GROUP');
 const selected = ref<string[]>([]);
 const peers = computed(() => store.draft?.members.filter((p) => p.userId !== auth.user?.id) ?? []);
@@ -163,14 +158,18 @@ let disposed = false,
   watchdog: ReturnType<typeof setInterval> | undefined;
 async function poll(revision: number) {
   if (disposed || revision !== lifecycle || !auth.user) return;
-  if (!state.checked || !state.enabled) await control.initialize();
+  if (control.shouldCheckCapability()) await control.initialize();
   if (disposed || revision !== lifecycle) return;
-  // 未开放/旧后端只核对一次，不每30秒制造404；重新登录或刷新后重新核对。
-  if (!state.enabled) return;
-  await control.heartbeat();
-  await control.refresh();
-  if (!disposed && revision === lifecycle)
-    polling = setTimeout(() => void poll(revision), document.visibilityState === 'hidden' ? 8000 : 3000);
+  if (state.enabled) {
+    await control.heartbeat();
+    await control.refresh();
+  }
+  // 明确关闭/旧服务404不轮询；临时故障退避重试，恢复后无需重新登录。
+  if (!disposed && revision === lifecycle && (state.enabled || state.capabilityRetryAt > 0))
+    polling = setTimeout(
+      () => void poll(revision),
+      Math.max(document.visibilityState === 'hidden' ? 8000 : 3000, state.capabilityRetryAt - Date.now()),
+    );
 }
 watch(
   () => [auth.user?.id, auth.sessionRevision],
@@ -256,7 +255,7 @@ onBeforeUnmount(() => {
           :disabled="microphoneBusy"
           @click="media.toggleMicrophone()"
           ><MicOff v-if="microphoneEnabled" :size="16" /><Mic v-else :size="16" />{{
-            microphoneEnabled ? '关闭麦克风' : '开启麦克风'
+            microphoneBusy ? '正在处理麦克风…' : microphoneEnabled ? '关闭麦克风' : '开启麦克风'
           }}</button
         >
         <button
@@ -266,14 +265,7 @@ onBeforeUnmount(() => {
           @click="reconnect"
           >重新连接声音</button
         >
-        <button
-          class="secondary"
-          :disabled="state.busy || !!state.pending"
-          @click="
-            control.command(
-              state.view.initiatorId === auth.user?.id && state.view.state === 'RINGING' ? 'END' : 'LEAVE',
-            )
-          "
+        <button class="secondary" :disabled="state.busy || !!state.pending" @click="control.command('LEAVE')"
           ><PhoneOff :size="16" />挂断</button
         >
       </template>
@@ -294,6 +286,16 @@ onBeforeUnmount(() => {
         >打开聊天</RouterLink
       >
     </div>
+    <details v-if="state.view" class="native-call-members">
+      <summary>通话成员（{{ state.view.participants.length }}）</summary>
+      <p>“已接听”只表示同意通话，不代表麦克风已开启。</p>
+      <ul>
+        <li v-for="person in state.view.participants" :key="person.userId">
+          <span>{{ person.displayName }}{{ person.userId === auth.user?.id ? '（你）' : '' }}</span>
+          <span>{{ nativeParticipantLabel[person.state] }}</span>
+        </li>
+      </ul>
+    </details>
     <p v-if="state.busy" class="native-call-note" role="status">正在确认通话操作…</p>
     <p v-if="state.error || currentVoiceError" class="native-call-note error" role="alert">{{
       state.error || currentVoiceError
@@ -370,6 +372,37 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  overflow-wrap: anywhere;
+}
+.native-call-members {
+  flex-basis: 100%;
+  color: #cbc4dd;
+  font-size: 0.875rem;
+}
+.native-call-members summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: list-item;
+  align-content: center;
+}
+.native-call-members p {
+  margin: 4px 0 12px;
+}
+.native-call-members ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.native-call-members li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.native-call-members li span:last-child {
+  flex-shrink: 0;
 }
 .native-call-summary span,
 .native-call-note {

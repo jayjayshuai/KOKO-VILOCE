@@ -116,6 +116,131 @@ test('没有能力/旧服务404不显示假通话能力，也不发送呼叫', a
     assert.equal(h.control.state.syncNote, '')
   }
 })
+test('能力临时故障按3/6/12/24/30秒退避，恢复不需要重新登录且不授权设备', async () => {
+  let fail = true
+  const h = await setup({
+    capability: async () => {
+      if (fail) throw new ApiRequestError('unavailable', 503)
+      return { enabled: true }
+    },
+  })
+  assert.equal(h.control.state.enabled, false)
+  assert.match(h.control.state.syncNote, /后台重试/)
+  await h.control.invite(b)
+  await h.control.refresh()
+  for (const delay of [3000, 6000, 12000, 24000, 30000, 30000]) {
+    const count = h.calls.length
+    assert.equal(h.control.shouldCheckCapability(), false)
+    await h.control.initialize()
+    assert.equal(h.calls.length, count)
+    h.advance(delay - 1)
+    assert.equal(h.control.shouldCheckCapability(), false)
+    h.advance(1)
+    assert.equal(h.control.shouldCheckCapability(), true)
+    await h.control.initialize()
+    assert.equal(h.calls.length, count + 1)
+  }
+  fail = false
+  h.advance(30000)
+  await h.control.initialize()
+  assert.equal(h.control.state.enabled, true)
+  assert.equal(h.control.state.capabilityRetryAt, 0)
+  assert.equal(h.control.state.syncNote, '')
+  assert.equal(h.control.state.localConsent, false)
+  assert.equal(
+    h.calls.every((c) => c.key === 'capability'),
+    true,
+  )
+})
+
+test('明确关闭/旧404/未认证或无权访问不制造能力请求重试风暴', async () => {
+  for (const status of [200, 401, 403, 404]) {
+    const h = await setup({
+      capability: async () => {
+        if (status !== 200) throw new ApiRequestError('denied', status)
+        return { enabled: false }
+      },
+    })
+    h.advance(600000)
+    await h.control.initialize()
+    assert.equal(h.control.shouldCheckCapability(), false)
+    assert.equal(h.control.state.capabilityRetryAt, 0)
+    assert.equal(h.calls.length, 1)
+  }
+})
+
+test('损坏的能力响应可恢复；每个登录轮次最多一个在途核对，旧响应不能关闭新账号能力', async () => {
+  const wait = deferred()
+  let calls = 0
+  const h = await setup({
+    capability: async () => {
+      calls++
+      if (calls === 1) return { enabled: 'true' }
+      if (calls === 2) return wait.promise
+      return { enabled: true }
+    },
+  })
+  assert.equal(h.control.state.enabled, false)
+  h.advance(3000)
+  const old = h.control.initialize()
+  await h.control.initialize()
+  assert.equal(calls, 2)
+  h.session.sessionRevision++
+  h.control.reset()
+  await h.control.initialize()
+  assert.equal(h.control.state.enabled, true)
+  wait.resolve({ enabled: false })
+  await old
+  assert.equal(h.control.state.enabled, true)
+  assert.equal(h.control.state.capabilityRetryAt, 0)
+  h.control.dispose()
+  await h.control.initialize()
+  assert.equal(calls, 3)
+})
+
+test('临时故障后能力被明确关闭时清除等待提示，不冒充已恢复可用', async () => {
+  let calls = 0
+  const h = await setup({
+    capability: async () => {
+      if (++calls === 1) throw new ApiRequestError('unavailable', 503)
+      return { enabled: false }
+    },
+  })
+  h.advance(3000)
+  await h.control.initialize()
+  assert.equal(h.control.state.enabled, false)
+  assert.equal(h.control.state.capabilityRetryAt, 0)
+  assert.equal(h.control.state.syncNote, '')
+})
+
+test('通话文案区分业务接听、声音连接、本人退出和安全的已知结束原因', async () => {
+  const { nativeCallStatus, nativeParticipantLabel } = await executeTs('composables/native-call-presentation.ts')
+  assert.equal(nativeCallStatus(view(), '43', 'idle', true), '接听前不会采集你的麦克风')
+  assert.match(nativeCallStatus(view(), '42', 'idle', false), /等待对方接听/)
+  assert.equal(nativeCallStatus(active(), '42', 'idle', false), '声音未连接')
+  assert.equal(nativeCallStatus(active(), '42', 'connected', false), '音频已连接')
+  assert.match(nativeCallStatus(active(), '42', 'connected', true), /本机声音已停止/)
+  assert.equal(nativeCallStatus(active(), '42', 'joining', false), '正在连接音频…')
+  assert.equal(nativeCallStatus(active(), '42', 'reconnecting', false), '网络恢复中…')
+  assert.equal(
+    nativeCallStatus(
+      active({ participants: active().participants.map((p) => ({ ...p, state: 'LEFT' })) }),
+      '42',
+      'connected',
+      false,
+    ),
+    '你已退出本次通话',
+  )
+  assert.match(
+    nativeCallStatus(active({ state: 'ENDED', endReason: 'NO_ANSWER' }), '42', 'connected', false),
+    /无人接听/,
+  )
+  for (const endReason of ['constructor', '__proto__', 'toString', 'unknown', null, 'COMPLETED'])
+    assert.equal(nativeCallStatus(active({ state: 'ENDED', endReason }), '42', 'connected', false), '通话已结束')
+  assert.equal(nativeParticipantLabel.ACCEPTED, '已接听')
+  assert.equal(nativeParticipantLabel.DECLINED, '已拒接')
+})
+
 test('明确发起才拥有本网页同意，轮询已接听事实不能恢复麦克风许可', async () => {
   const h = await setup({ current: async () => active() })
   await h.control.refresh()

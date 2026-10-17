@@ -32,6 +32,7 @@ export function createNativeCallControl(
   const state = reactive({
     /** 能力未确认或关闭均不得发起调用。 */ enabled: false,
     /** 已核对当前登录轮次的能力。 */ checked: false,
+    /** 临时故障的下一次核对时间；0表示无需后台重试（明确关闭或旧服务404）。 */ capabilityRetryAt: 0,
     /** 服务端当前事实，不等于SDK已连通。 */ view: null as NativeCallView | null,
     /** 当前写操作，和后台补拉分别互斥。 */ busy: false,
     /** 未确认原命令，重试不得改UUID、版本或目标。 */ pending: null as Pending | null,
@@ -49,6 +50,8 @@ export function createNativeCallControl(
     failures = 0,
     lastVerified = 0,
     lastHeartbeat = 0
+  let checkingCapability = false,
+    capabilityFailures = 0
   let reads = new AbortController(),
     disposed = false
   const capture = () => ({ generation, userId: session.user?.id, revision: session.sessionRevision })
@@ -79,6 +82,7 @@ export function createNativeCallControl(
     Object.assign(state, {
       enabled: false,
       checked: false,
+      capabilityRetryAt: 0,
       view: null,
       busy: false,
       pending: null,
@@ -90,6 +94,8 @@ export function createNativeCallControl(
     failures = 0
     lastVerified = 0
     lastHeartbeat = 0
+    checkingCapability = false
+    capabilityFailures = 0
   }
   function apply(view: NativeCallView | undefined) {
     if (view && !view.participants.some((p) => p.userId === session.user?.id))
@@ -100,24 +106,35 @@ export function createNativeCallControl(
     if (!view || view.state === 'ENDED' || self()?.state !== 'ACCEPTED') stopLocal()
     lastVerified = now()
   }
+  function shouldCheckCapability() {
+    return !state.checked || (state.capabilityRetryAt > 0 && now() >= state.capabilityRetryAt)
+  }
   async function initialize() {
     const scope = capture()
-    if (!scope.userId) return
+    if (!scope.userId || disposed || checkingCapability || !shouldCheckCapability()) return
+    checkingCapability = true
     try {
       const capability = await api.capability(reads.signal)
       if (!valid(scope)) return
       if (typeof capability?.enabled !== 'boolean') throw new Error('通话能力响应无效。')
       if (state.enabled && !capability.enabled) stopLocal()
       state.enabled = capability.enabled
+      state.capabilityRetryAt = 0
+      capabilityFailures = 0
       state.syncNote = ''
     } catch (failure) {
       if (!valid(scope)) return
+      if (state.enabled) stopLocal()
       state.enabled = false
       // 已部署的旧服务没有此接口；不开启不存在的能力，也不影响已有消息/语音房。
-      if (!(failure instanceof ApiRequestError && failure.status === 404))
-        state.syncNote = '直接通话能力暂时无法核对，请稍后重试。'
+      const unavailable = failure instanceof ApiRequestError && [401, 403, 404].includes(failure.status)
+      state.capabilityRetryAt = unavailable ? 0 : now() + Math.min(30000, 3000 * 2 ** Math.min(capabilityFailures++, 4))
+      state.syncNote = unavailable ? '' : '直接通话能力暂时无法核对，正在后台重试。'
     } finally {
-      if (valid(scope)) state.checked = true
+      if (valid(scope)) {
+        state.checked = true
+        checkingCapability = false
+      }
     }
   }
   async function refresh() {
@@ -267,6 +284,7 @@ export function createNativeCallControl(
   return {
     state,
     initialize,
+    shouldCheckCapability,
     refresh,
     invite,
     command,

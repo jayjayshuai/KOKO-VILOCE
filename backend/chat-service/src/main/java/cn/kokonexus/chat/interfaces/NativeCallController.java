@@ -138,7 +138,9 @@ public class NativeCallController {
         @NotNull
         @Pattern(regexp = "[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}")
         String requestId,
-        @Schema(description = "原已核对控制版本") @Min(1) long expectedVersion,
+        @Schema(description = "首次操作核对的控制版本；重试不改，结束全体要求与当前版本一致")
+        @Min(1)
+        long expectedVersion,
         @Schema(description = "ACCEPT/DECLINE/LEAVE/END")
         @NotNull
         @Pattern(regexp = "ACCEPT|DECLINE|LEAVE|END")
