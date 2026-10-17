@@ -4,6 +4,6 @@ package cn.kokonexus.asset.application;
 public class AssetUploadBusyException extends RuntimeException {
 
     public AssetUploadBusyException() {
-        super("图片处理繁忙，请稍后重试");
+        super("媒体处理繁忙，请稍后重试");
     }
 }

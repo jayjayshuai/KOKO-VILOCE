@@ -58,6 +58,7 @@ __pycache__/
 !/deploy/renew-ip-certificate.py
 !/deploy/.dockerignore
 !/deploy/minio-koko-policy.json
+!/deploy/minio-koko-video-policy.json
 !/deploy/Dockerfile.java
 !/deploy/Dockerfile.web
 /deploy/tests/*.log

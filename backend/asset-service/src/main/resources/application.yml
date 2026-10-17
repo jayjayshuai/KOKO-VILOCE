@@ -1,6 +1,9 @@
 server:
   port: 8086
-  tomcat.max-swallow-size: 6MB
+  tomcat.max-swallow-size: ${ASSET_MAX_REQUEST_SIZE:6MB}
+  servlet.encoding:
+    charset: UTF-8
+    force: true
 spring:
   application.name: koko-nexus-asset
   datasource:
@@ -9,9 +12,10 @@ spring:
     password: ${DATABASE_PASSWORD:}
   flyway.table: asset_flyway_schema_history
   servlet.multipart:
-    max-file-size: 5MB
-    max-request-size: 6MB
+    max-file-size: ${ASSET_MAX_FILE_SIZE:5MB}
+    max-request-size: ${ASSET_MAX_REQUEST_SIZE:6MB}
     file-size-threshold: 0
+    location: ${ASSET_MULTIPART_DIRECTORY:}
   cloud.nacos.discovery:
     server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
     username: ${NACOS_USERNAME:nacos}
@@ -49,6 +53,16 @@ koko.asset:
     owner-images: ${ASSET_OWNER_QUOTA_IMAGES:100}
     total-bytes: ${ASSET_TOTAL_QUOTA_BYTES:1073741824}
     total-images: ${ASSET_TOTAL_QUOTA_IMAGES:10000}
+koko.video:
+  enabled: ${VIDEO_DRAFTS_ENABLED:false}
+  # 图片账号只允许images/*，不能复用或扩大原账号；另配仅限videos/*的专用凭据。
+  endpoint: ${VIDEO_MINIO_ENDPOINT:${ASSET_MINIO_ENDPOINT:http://localhost:9000}}
+  bucket: ${VIDEO_MINIO_BUCKET:${ASSET_MINIO_BUCKET:koko-nexus-media}}
+  access-key: ${VIDEO_MINIO_ACCESS_KEY:}
+  secret-key: ${VIDEO_MINIO_SECRET_KEY:}
+  work-directory: ${VIDEO_WORK_DIRECTORY:}
+  ffmpeg: ${VIDEO_FFMPEG_PATH:}
+  ffprobe: ${VIDEO_FFPROBE_PATH:}
 management:
   endpoints.web.exposure.include: health,info,prometheus
   endpoint.health.show-details: never

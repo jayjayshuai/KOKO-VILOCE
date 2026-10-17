@@ -40,7 +40,9 @@ public class AssetExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)
     public ApiError tooLarge(MaxUploadSizeExceededException exception, HttpServletRequest request) {
-        return ApiError.of("IMAGE_TOO_LARGE", "图片不能超过 5 MiB", request.getHeader("X-Request-Id"));
+        return request.getRequestURI().startsWith("/api/assets/videos")
+            ? ApiError.of("VIDEO_TOO_LARGE", "视频不能超过32MiB", request.getHeader("X-Request-Id"))
+            : ApiError.of("IMAGE_TOO_LARGE", "图片不能超过 5 MiB", request.getHeader("X-Request-Id"));
     }
 
     @ExceptionHandler(AssetReferenceUnavailableException.class)

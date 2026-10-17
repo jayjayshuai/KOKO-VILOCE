@@ -31,6 +31,19 @@ test('private files stay blocked even with Git force-add', () => {
   )
 })
 
+test('video policy template is narrowly permitted without exempting credentials or other deploy files', () => {
+  const filename = 'deploy/minio-koko-video-policy.json'
+  const source = readFileSync(new URL('../../deploy/minio-koko-video-policy.json', import.meta.url), 'utf8')
+  assert.deepEqual(inspectFile(filename, source), [])
+  const policy = JSON.parse(source)
+  const objectStatement = policy.Statement.find((statement) => statement.Action.includes('s3:GetObject'))
+  assert.deepEqual(objectStatement.Resource, ['arn:aws:s3:::koko-nexus-media/videos/*'])
+  assert.equal(objectStatement.Action.includes('s3:DeleteObject'), false)
+  assert.ok(inspectFile('deploy/minio-koko-video-private.json', source).includes('private-path-or-artifact'))
+  const secret = ['unpublished', '-canary'].join('')
+  assert.ok(inspectFile(filename, JSON.stringify({ secret_key: secret })).includes('configuration-credential-literal'))
+})
+
 test('private keys and provider tokens are rejected without echoing their value', () => {
   const key = ['-----BEGIN ', 'PRIVATE KEY-----'].join('')
   const token = ['gh', 'p_', 'A'.repeat(40)].join('')

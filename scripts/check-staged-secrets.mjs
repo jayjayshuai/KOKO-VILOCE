@@ -14,6 +14,7 @@ const DEPLOY_TEMPLATES = new Set([
   'deploy/edge-locations.conf',
   'deploy/livekit.yaml',
   'deploy/minio-koko-policy.json',
+  'deploy/minio-koko-video-policy.json',
   'deploy/nginx-web.conf',
   'deploy/nginx-tls.conf',
   'deploy/renew-ip-certificate.py',

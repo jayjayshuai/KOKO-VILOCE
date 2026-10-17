@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.kokonexus.asset.infrastructure.persistence.VideoDraftMapper">
+  <insert
+    id="ensureCapacity"
+  >INSERT INTO video_capacity(owner_id) VALUES(#{owner}) ON DUPLICATE KEY UPDATE owner_id=owner_id</insert>
+  <!-- 所有登记及领取先锁同一全局行，跨JVM也只有一个有效处理租约。 -->
+  <select
+    id="lockGlobal"
+    resultType="int"
+    useCache="false"
+    flushCache="true"
+  >SELECT draft_count FROM video_capacity WHERE owner_id=0 FOR UPDATE</select>
+  <update
+    id="reserve"
+  >UPDATE video_capacity SET draft_count=draft_count+1 WHERE owner_id=#{owner} AND draft_count &lt; #{limit}</update>
+  <select
+    id="original"
+    resultType="cn.kokonexus.asset.domain.VideoDraft"
+    useCache="false"
+    flushCache="true"
+  >SELECT * FROM video_draft WHERE owner_id=#{owner} AND request_id=#{request} FOR UPDATE</select>
+  <insert
+    id="insertDraft"
+  >INSERT INTO video_draft(id,owner_id,request_id,title,description,source_sha256,source_bytes,state,created_at,updated_at)
+    VALUES(#{row.id},#{row.ownerId},#{row.requestId},#{row.title},#{row.description},#{row.sourceSha256},#{row.sourceBytes},'UPLOADING',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))</insert>
+  <update
+    id="queue"
+  >UPDATE video_draft SET state='QUEUED',updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='UPLOADING'</update>
+  <update id="expire">UPDATE video_draft SET state='FAILED',failure_code='INTERRUPTED',updated_at=UTC_TIMESTAMP(6)
+    WHERE (state='PROCESSING' AND lease_until &lt;= UTC_TIMESTAMP(6)) OR (state='UPLOADING' AND created_at &lt; UTC_TIMESTAMP(6)-INTERVAL 15 MINUTE) LIMIT 50</update>
+  <select
+    id="processingCount"
+    resultType="int"
+    useCache="false"
+    flushCache="true"
+  >SELECT COUNT(*) FROM video_draft WHERE state='PROCESSING'</select>
+  <select
+    id="next"
+    resultType="cn.kokonexus.asset.domain.VideoDraft"
+    useCache="false"
+    flushCache="true"
+  >SELECT * FROM video_draft WHERE state='QUEUED' ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED</select>
+  <update
+    id="claim"
+  >UPDATE video_draft SET state='PROCESSING',run_id=#{run},lease_until=UTC_TIMESTAMP(6)+INTERVAL 180 SECOND,updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='QUEUED'</update>
+  <!-- 下载完成后仍须为100秒处理和有界上传留出余量，迟到任务不能再启动昂贵进程。 -->
+  <select
+    id="canProcess"
+    resultType="boolean"
+    useCache="false"
+    flushCache="true"
+  >SELECT EXISTS(SELECT 1 FROM video_draft WHERE id=#{id} AND state='PROCESSING' AND run_id=#{run} AND lease_until &gt; UTC_TIMESTAMP(6)+INTERVAL 130 SECOND)</select>
+  <update
+    id="ready"
+  >UPDATE video_draft SET state='READY',output_bytes=#{row.outputBytes},duration_millis=#{row.durationMillis},width=#{row.width},height=#{row.height},updated_at=UTC_TIMESTAMP(6)
+    WHERE id=#{row.id} AND state='PROCESSING' AND run_id=#{row.runId} AND lease_until &gt; UTC_TIMESTAMP(6)</update>
+  <update
+    id="fail"
+  >UPDATE video_draft SET state='FAILED',failure_code=#{code},updated_at=UTC_TIMESTAMP(6) WHERE id=#{id} AND state='PROCESSING' AND run_id=#{run}</update>
+  <select
+    id="owned"
+    resultType="cn.kokonexus.asset.domain.VideoDraft"
+    useCache="false"
+    flushCache="true"
+  >SELECT * FROM video_draft WHERE owner_id=#{owner} ORDER BY created_at DESC,id DESC LIMIT 5</select>
+</mapper>
